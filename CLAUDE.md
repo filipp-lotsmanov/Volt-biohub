@@ -73,8 +73,12 @@ distance, **max 7.0 µm**, scale `(z, y, x) = (1.625, 0.40625, 0.40625)` µm/vox
    optimum — tune it last, it interacts with detection and linking both.
    **But `N_true` is unreadable at inference**: it lives only in the GT geff, and the
    test set ships images alone (see Data). It also varies 20× across samples
-   (3,783–78,644), so the sweep yields one global setting fitted on CV, and any
-   per-sample adaptation has to come from the image.
+   (3,783–78,644). **It is, however, predictable from metadata the test set *does*
+   carry** — the stored intensity quantiles give Spearman **0.856** against `q0.9` and a
+   log-linear fit on `p90` alone reaches R² 0.72 / 25 % median error (`check_t_true.py`).
+   That matters because a single global `N_pred` is expensive: the best constant scores a
+   weighted multiplier of **0.936** (min 0.627, 63 samples below 0.9) while a per-sample
+   predicted target reaches **0.993**. So this knob is *not* condemned to be global.
 5. **7 µm is generous** — ~4 z-voxels, ~17 xy-voxels. Sub-voxel localization is
    worthless here.
 
@@ -82,10 +86,17 @@ Consequences:
 
 - Tune the detector for **recall at a fixed node budget**, not F1: sweep (detection
   threshold, suppression radius) against CV score, never against detection P/R.
-- Set the suppression radius near the **cell pitch**, not near 7 µm and **not** off GT
-  nearest-neighbour spacing — GT is sparsely sampled, so its ~23 µm spacing is a
-  sampling artifact (see Data). But the pitch is a *distribution*, **11.3–31.0 µm,
-  median 18.5 µm**, so there is no single derived value: sweep it. The one real cost of
+- **The suppression radius is squeezed from both sides, and the upper bound is the one
+  that binds.** Cell pitch argues for a large radius — it is a *distribution*,
+  **11.3–31.0 µm, median 18.5 µm**, so no single value is derivable and it wants
+  sweeping — and GT nearest-neighbour spacing (~23 µm) must *not* be used, being a
+  sparse-sampling artifact. But **sister separation one frame after a division caps it
+  hard: min 2.87 µm, p1 4.11, p5 5.41, median 10.57** over all 151 events. Any radius
+  above the separation merges the two daughters into one detection and makes the division
+  unrecoverable. At the current 3.0 µm exactly one event is already lost; 4 µm risks one
+  or two more; 5.4 µm risks about seven (~0.005 of score at the 0.1 division weight).
+  **So the pitch argument is bounded at ~4 µm, not 18 µm** — the two constraints
+  disagree by 5× and the division term is what breaks the tie. The one real cost of
   over-detection is a spurious point winning the assignment the true node should have
   taken.
 - The node penalty is mild in both directions: predicting 2× `N_true` costs ~10%
@@ -313,6 +324,20 @@ train and test samples carries `multiscales` (scale `(1.0, 1.625, 0.40625, 0.406
 sample (e.g. 0.001/0.999 of 44.9/1577 vs 26.2/2145), so per-sample normalization is doing
 real domain-shift work across embryos — keep it.
 
+**Which quantiles — `DATASET.md` is right about `io.py` and wrong about the pipeline, so
+don't act on it.** It reports that the loader normalizes by true **min/max**
+(`_process_on_gpu` defaults `q_min=0.000, q_max=1.000`) and that this compresses real
+signal, spreading the normalized p90 42× across samples. True of
+`io.open_dataset(normalize=True)` — but **neither `train` nor `predict` goes through it**.
+Both call `open_dataset(normalize=False)` and then normalize themselves from
+`quantiles["0.001"]`/`["0.999"]` with `clamp(min=0)` and no upper clamp
+(`train_unet_transformer.py:335`, `predict_unet_transformer.py:369`). The two paths agree
+exactly, so there is **no train/inference normalization mismatch** and no min/max problem
+to fix in the training path. `_process_on_gpu`'s min/max default only reaches
+visualization and other `open_dataset` callers — worth fixing there, but it is not a
+scoring bug. Residual spread under the *actual* 0.001/0.999 normalization, measured over
+all 199 samples: normalized p90 ranges **0.066 → 0.726, an 11× spread**.
+
 **Uniformity — measured across all 203 downloaded samples, not spot-checked.** Every
 sample is *exactly* `(100, 64, 256, 256)` uint16, chunked `(1, 64, 256, 256)` (one
 timepoint per chunk), scale `(1.0, 1.625, 0.40625, 0.40625)`, and **all 203 carry
@@ -351,7 +376,10 @@ edge filter never bites on GT).
 
 **The two embryos are wildly asymmetric in metric weight, and this is the CV constraint
 that matters most.** `44b6` is 71 samples but only **0.77 %** annotated (median 214
-nodes); `6bba` is 128 samples at **5.37 %** (median 826). So `44b6` carries **just 15 %
+nodes); `6bba` is 128 samples at **5.37 %** (median 826) — that 5.37 % is the *ratio of
+totals*; the median of per-sample ratios is **9.71 %**, and the two definitions must not
+be mixed (`44b6` gives 0.77 % under both, which is why the inconsistency was invisible).
+So `44b6` carries **just 15 %
 of the total GT edges** despite being 36 % of the samples. The two LOEO folds are
 therefore *not* two comparable estimates: the fold scored on `44b6` rests on a sixth of
 the evidence. Weight them accordingly and expect the `44b6` fold to be the noisier one.
@@ -371,6 +399,25 @@ was therefore teaching the network that the brightest blobs in the image are bac
 A bright-voxel threshold of **0.3** sits below 90.9 % of GT centroids and above ~95 % of
 non-GT peaks while masking 17.5 % of voxels — comfortably more than the 3–12 % that
 cells actually occupy at the observed densities.
+
+**But 17.5 % is a mean over a wildly skewed distribution, and the level is wrong.**
+Measured over all 199 samples under the *training* normalisation (0.001/0.999, three
+frames each): the fraction of voxels the PU mask can drop is **median 11.1 %, p5 1.9 %,
+p95 49.0 %** — a **25× spread**, and systematically per embryo (`44b6` median 25.5 %,
+`6bba` 7.5 %). On **23 samples it drops >40 % of voxels** from the negative term, which
+is most of the background holding the logits down. Two consequences, and they point in
+opposite directions:
+
+- **The fixed threshold is not arbitrary — it is accidentally density-adaptive.** The
+  masked fraction tracks the cell occupancy implied by `estimated_number_of_nodes` at
+  **Spearman +0.87** (nucleus volume ≈ 40 voxels on the 1.625 µm grid). So it is already
+  doing the per-sample job a global constant has no right to do, which is a real defence
+  of the design and an argument *against* replacing it with a fixed masked fraction —
+  true occupancy varies 13× across samples, so a constant fraction would be worse.
+- **The level over-masks by 4.5× at the median** (p5 1.7×, p95 9.0×) against implied
+  occupancy of median 2.7 %. So `bright_threshold` wants raising, and it is a **single
+  scalar sweep on CV** — the cheapest open knob in the detector. Sweep it together with
+  `--det-threshold`, since both move the same precision/recall trade.
 
 **Measured motion — pooled over all 128,883 GT edges**, which is the distribution a
 linking gate must actually cover:
@@ -408,12 +455,20 @@ folder contains **`.zarr` images and nothing else**: no `.geff`, and the image g
 attrs carry only `image_statistics` and `multiscales`. Verified by exhaustive search of
 the test tree. Consequences:
 
-- The node-count penalty's `N_true` is knowable in CV and **unknowable on the hidden test
-  set**, so the total-node-count sweep (metric fact 4) can only produce a *global*
-  setting, not a per-sample one.
-- Any per-sample adaptation — suppression radius from cell pitch included — must be
-  estimated **from the image**, not read from metadata. Given pitch spans 11–31 µm, that
-  is a real modelling opportunity and not merely bookkeeping.
+- The node-count penalty's `N_true` is knowable in CV and **not directly readable on the
+  hidden test set** — but it is **well predicted by metadata the test set does carry**.
+  The stored `image_statistics.quantiles` give Spearman **0.856** against `N_true`
+  (`q0.9`; `q0.1` 0.838, `p90−p10` 0.82), and a log-linear fit on `p90` alone reaches
+  **R² 0.72, 25 % median relative error**, against 54 % for a per-embryo constant. So
+  metric fact 4's sweep is *not* restricted to one global setting: the per-sample
+  predicted target is worth **0.993 vs 0.936** weighted multiplier. Earlier notes here
+  said this had to come from the image; it does not.
+- `N_true` and annotated edge count are mildly **negatively** correlated (Spearman
+  −0.28), so the samples most exposed to the node penalty carry **28.8 %** of total edge
+  weight against a 25 % population share. Edge weighting does not shield them.
+- Any per-sample adaptation of the *suppression radius* still has to come from the image
+  or from a fixed sweep, since pitch spans 11–31 µm — but see the division cap above:
+  the usable range is much narrower than the pitch spread suggests.
 
 **Only two embryos exist in train** (measured from the file manifest): **199 samples,
 79.8 GiB, `44b6` (71 samples) and `6bba` (128)**, ~411 MiB each. Folders are
@@ -486,7 +541,7 @@ than silently extracting nothing.
 | `src/volt_biohub/io.py` | 396 | zarr/geff I/O, resample, normalize | heavy rework |
 | `src/volt_biohub/img_proc.py` | 187 | normalization, coord rescaling, `nms_3d` | keep, extend |
 | `src/volt_biohub/gpu.py` | 218 | shared-box GPU scan/rank, device resolver | ours; keep |
-| `src/volt_biohub/detection_targets.py` | 268 | Gaussian targets, PU mask, detection loss | ours; keep |
+| `src/volt_biohub/detection_targets.py` | 297 | Gaussian targets, PU mask, detection loss | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
 | `scripts/dataspec.py` | 40 | path resolution | keep |
@@ -496,6 +551,11 @@ than silently extracting nothing.
 | `scripts/geffs_to_csv.py` / `csv_to_geffs.py` | 85 / 89 | submission round-trip | wrap in a validator |
 | `scripts/evaluate.py` | 142 | score pred vs GT geffs | keep, add per-video diagnostics |
 | `scripts/augmentations.py` | 63 | brightness shift + axis flips only | extend |
+| `scripts/explore_data.py` | 1319 | full-dataset measurement → `reports/eda/` | B's; keep |
+| `scripts/check_integrity.py` | 603 | asserts pipeline assumptions, non-zero exit | B's; keep |
+| `scripts/check_t_true.py` | 149 | can `N_true` be predicted per sample | B's; keep |
+| `scripts/visualize_data.py` | 704 | matplotlib figures → `reports/figures/` | B's; keep |
+| `DATASET.md` | 554 | B's measured dataset write-up | see the normalization caveat |
 | `visualize/` | 512 | napari GT/prediction viewers, TP/FP/FN colours | keep — debugger *and* figure source |
 
 `scripts/` is not a package: `dataspec`, `evaluate` and `train_unet_transformer` are
@@ -542,9 +602,15 @@ Modelling and scoring:
   harness exists — and note `detect_and_match` thresholds raw **logits** at 0.3 during
   training while `predict` thresholds a **sigmoid** at 0.99. Those are not the same
   quantity and the mismatch has never been checked.
-- **Checkpoint selection does not use the competition metric.** `train()` keeps the best
-  epoch by `test_acc × test_recall` (`train_unet_transformer.py:1237`), where accuracy is
-  per-cell agreement on the edge matrix. The real scorer is in-repo and unused here.
+- **Checkpoint selection does not use the competition metric, and the number it does use
+  is worthless — measured.** `train()` keeps the best epoch by `test_acc × test_recall`
+  (`train_unet_transformer.py:1237`), where accuracy is per-cell agreement on the edge
+  matrix. After **20 iterations** on a 4-video fold it already reads
+  `acc=0.9943, recall=0.9408`. The edge matrix is overwhelmingly zeros, so accuracy is
+  near 1 by default and the product saturates before the model has learned anything. It
+  cannot rank epochs and it certainly cannot compare loss variants. **Do not read the
+  training console as evidence about a design choice** — score with `evaluate.py`.
+  The real scorer is in-repo and unused here.
 - **The two knobs the metric says matter most are unreachable from the CLI.**
   `PredictConfig` holds `pool_kernel_um` (suppression radius), `threshold` (edge
   probability), `edge_activation` and `det_tta`, but `main()` forwards only
@@ -566,8 +632,15 @@ Hygiene, each capable of wasting a day:
 - `--method baseline` in the README/commands matches nothing — `DEFAULT_METHOD` is
   `unet_transformer`, so it looks for `weights/baseline/split_0/edge_predictor_best.pth`,
   which nothing writes.
-- `dataset_splits.json` is silently auto-generated as a seed-0 90/10 split when absent,
-  and it is a *video* split, not embryo-grouped. Write it deliberately.
+- ~~`dataset_splits.json` is silently auto-generated as a seed-0 90/10 split when
+  absent, and it is a *video* split, not embryo-grouped.~~ **A deliberate one now
+  exists** at `$VOLT_DATA_DIR/dataset_splits.json` (not in git — it lives beside the
+  data): split **0** = train `44b6` → test `6bba` (the fold carrying 85 % of metric
+  weight), **1** = the reverse (noisier, 15 % of weight), **2** = within-`6bba` FOV
+  split for fast iteration, **3** = a 4-train/2-test smoke fold for checking a command
+  before committing hours. Still open: it is a throwaway script, not the
+  `scripts/make_splits.py` that step 2 of the Plan asks for, so it is not reproducible
+  from the repo.
 - Both `train` and `predict` **raise** if a zarr lacks `image_statistics.quantiles`. The
   real data does carry it on both train and test (see Data), so this is latent rather
   than active — but it is a hard crash, not a fallback, if the hidden test set ever
@@ -581,10 +654,22 @@ Hygiene, each capable of wasting a day:
   the shared training box means all 8 — including cards other tenants have filled. The
   slow test dies in `torch/nn/parallel/comm.py` with `CUDA error: out of memory` while
   scattering, even with 47 GB free on device 0, and the message names memory rather than
-  the real cause. It passes with a single pinned card. Until it takes a `--devices`
-  argument, **every run on that box needs `CUDA_VISIBLE_DEVICES`**; DataParallel is also
-  the wrong tool at this model size (1.5 M params, 3.4 GiB per training step), so the
-  fix is probably to drop it rather than parameterise it.
+  the real cause. It passes with a single pinned card. **`--single-gpu` already turns it
+  off** (the flag exists; the earlier note here claiming no such argument was wrong), but
+  it defaults **on**, so **every run on that box still needs both
+  `CUDA_VISIBLE_DEVICES=$(volt_gpu)` and `--single-gpu`**. DataParallel is the wrong tool
+  at this model size (1.5 M params, 3.4 GiB per training step), so the fix is to drop it
+  and flip the default rather than keep parameterising it.
+- **`_stamp` dropped GT nodes at the far edge of the volume** — fixed 2026-09-02, kept
+  here as the shape of bug to watch for. `get_window_data` divides raw coords by the
+  downsample factor as floats, so at `1,4,4` original `y=255` becomes `63.75` on a grid
+  of extent 64; `.round()` sent it to 64, outside the volume, so no positive target was
+  stamped and `n_pos` silently undercounted. **225 of 133,318 real GT nodes, up to 7.2 %
+  on `44b6_c96cfa10`** — and since a missed node costs two edges, ~450 edges. The legacy
+  loss floored and clamped, so it kept them: the bug made our own ablation unfair
+  against us. `_snap_centres` now snaps the sub-voxel overhang and still drops centroids
+  genuinely outside the window (the legacy clamp-anything behaviour was its own bug,
+  stamping false positives on the border). Two regression tests pin both halves.
 
 ## Commands
 
@@ -594,17 +679,31 @@ uv run pytest -m "not slow"
 uv run ruff check .
 uv run python scripts/fetch_data.py zip --split both --all      # bulk; see Data placement
 uv run python scripts/fetch_data.py status                      # progress, any terminal
-uv run python scripts/train_unet_transformer.py --method baseline --split 0 --epochs 1
-uv run python scripts/predict_unet_transformer.py --method baseline --split 0
+uv run python scripts/predict_unet_transformer.py --split 0
 uv run python scripts/evaluate.py --pred-dir <dir> --gt-dir $env:VOLT_DATA_DIR
 uv run python scripts/geffs_to_csv.py --in-dir <dir> --csv submission.csv
-uv run python visualize/visualize_predictions.py --method baseline --split 0
+uv run python visualize/visualize_predictions.py --split 0
+uv run python scripts/explore_data.py --data-root <parent of train/> --out reports/eda
+uv run python scripts/check_integrity.py --data-root <parent of train/>
 ```
+
+Note `--method` is omitted above: `DEFAULT_METHOD` is `unet_transformer` and
+`--method baseline` matches nothing that writes weights. The EDA scripts want the
+*parent* of `train/`, not `$VOLT_DATA_DIR` itself, and do not read `VOLT_DATA_DIR`.
 
 Same on Linux with `$VOLT_DATA_DIR` and forward slashes. On the server the environment
 comes from `. /home/y2a/.volt-env.sh` (already sourced by `.bashrc`/`.profile`, and
-re-wired by `startup.sh` after a container rebuild), and every GPU run should pin a card:
-`CUDA_VISIBLE_DEVICES=$(volt_gpu) uv run python ...`.
+re-wired by `startup.sh` after a container rebuild). **Every GPU run needs a pinned card
+*and* `--single-gpu`**, or DataParallel scatters onto cards other tenants have filled:
+
+```bash
+CUDA_VISIBLE_DEVICES=$(volt_gpu) uv run python scripts/train_unet_transformer.py \
+    --split 3 --epochs 4 --single-gpu --batch-size 8 --num-workers 8 --max-iters 40
+```
+
+Split 3 is the smoke fold (~70 s/epoch); use split 2 for real iteration and 0/1 for the
+LOEO number. `volt_gpu` is a console script declared in `pyproject.toml` — it needs a
+`uv sync` after a fresh clone, and `python -m volt_biohub.gpu` is the fallback.
 
 ## Status
 
@@ -664,9 +763,31 @@ the code review.
 whitespace). Inherited, not ours, and concentrated in code slated for rework — but the
 lint gate is not green today, so don't read a clean run as a regression signal yet.
 
-Not done: `scripts/inspect_data.py` as a committed script (the sweep above was done
-ad hoc and its findings are recorded here, but it is not reproducible from the repo yet),
-embryo-grouped splits, any modelling, Kaggle team.
+**PR #2 (B's EDA) is merged into `main` as of 2026-09-02** and supersedes the
+`inspect_data.py` item above: `explore_data.py`, `check_integrity.py`, `check_t_true.py`
+and `visualize_data.py` make the whole sweep reproducible, plus `DATASET.md`. Verified by
+re-running all three measurement scripts against the full 199 samples on the server —
+every headline number reproduces exactly (11 s for `explore_data.py`, 3.7 s and
+0 FAIL / 7 WARN for `check_integrity.py`). Three of its findings changed this file:
+`N_true` *is* predictable from test-time metadata (metric fact 4), sister separation caps
+the suppression radius at ~4 µm rather than the ~18 µm cell pitch (metric fact 5
+consequences), and the median parent→far-daughter displacement of 7.13 µm exceeds the p99
+of ordinary motion, so a learned motion prior scores the second division edge as
+implausible by construction. Still to fix in that PR: the four EDA-only packages
+(`kagglehub`, `python-dotenv`, `pandas`, `matplotlib`) landed in runtime `dependencies`
+rather than an extra — that list is what gets bundled as offline wheels for Kaggle — and
+`kagglehub`/`python-dotenv` are used by nothing. B is fixing the `--data-root` defaults.
+
+**Identity trap, worth knowing before the next PR:** GitHub attributes commits by *email*,
+and `240247@buas.nl` / `240843@buas.nl` are verified on the university accounts
+(`OleksiiKrasnoshtanov240247`, `FilippLotsmanov240843`), not on `Gfgf96` /
+`filipp-lotsmanov`. PR #3's four commits were rewritten to
+`145783662+Gfgf96@users.noreply.github.com` and `.git/config` now pins it — local scope
+deliberately, since `/root` is the container's ephemeral overlay.
+
+Not done: `scripts/make_splits.py` as a committed script (a deliberate
+`dataset_splits.json` now exists beside the data, but from a throwaway script), any
+modelling with a CV number attached, Kaggle team.
 
 ## Plan
 
@@ -705,10 +826,18 @@ nothing recovers a miss.
    `--no-det-pu-mask` retained so each half can be ablated. All three paths train and
    detect on the fixture. **What is missing is the only thing that matters: a CV number.**
    The fixture is a 5-frame overfit and proves nothing about generalisation, so this
-   stays open until step 2 exists and the ablation runs through it. Still to do here:
-   switch checkpoint selection to the real scorer (currently `test_acc × test_recall`),
-   re-sweep `--det-threshold` now that calibration has changed, and reconcile the
-   logit-vs-sigmoid threshold mismatch noted under Known defects. Fallback if the UNet
+   stays open until step 2 exists and the ablation runs through it. Still to do here,
+   in the order that unblocks the most:
+   **(a) switch checkpoint selection to the real scorer** — this is now the gating item,
+   not a tidy-up: `test_acc × test_recall` reads 0.9943/0.9408 after *20 iterations*
+   (see Known defects), so nothing printed during training can rank a loss variant, and
+   until it is replaced the ablation cannot be run at all;
+   **(b) sweep `bright_threshold`** — measured to over-mask by 4.5× at the median while
+   correctly tracking density at ρ +0.87, so it is one scalar with a known direction
+   (raise it), the cheapest open knob here;
+   **(c) re-sweep `--det-threshold`** now that calibration has changed, reconciling the
+   logit-vs-sigmoid mismatch noted under Known defects.
+   Fallback if the UNet
    will not converge in budget: Spotiflow 3D, which trains natively from point labels
    and is legal here (pre-trained models are explicitly allowed).
 6. **Linking (week 3)**, in priority order: (a) **global frame-to-frame registration

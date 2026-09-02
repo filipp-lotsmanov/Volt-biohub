@@ -71,6 +71,32 @@ def _offset_grid(
     return grid.reshape(-1, 3)
 
 
+def _snap_centres(
+    coords: torch.Tensor, mask: torch.Tensor, shape: tuple[int, int, int]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Round GT centroids to voxel indices, keeping the ones inside the volume.
+
+    The half-voxel overhang at the far edge is the subtle case and it is not
+    hypothetical. ``get_window_data`` divides raw coordinates by ``downsample``
+    as floats, so at the default ``1,4,4`` a node at original ``y=255`` becomes
+    ``63.75`` on a grid of extent 64. Rounding sends it to 64, which is outside
+    — yet the cell is plainly *in* the field of view, and the strided read did
+    sample it. Dropping it stamps no positive target and silently undercounts
+    ``n_pos``. Measured over the full training set: 225 of 133,318 nodes, up to
+    7.2 % on one video. The legacy single-voxel loss floored and clamped, so it
+    never hit this; the fix must not make the ablation look worse for a reason
+    unrelated to the target shape.
+
+    So a centre within one voxel of the volume is snapped to the nearest valid
+    index, and only a centre genuinely outside is dropped.
+    """
+    centre = coords.round().long()
+    ext = torch.as_tensor(shape, dtype=torch.long, device=coords.device)
+    in_fov = ((centre >= -1) & (centre <= ext)).all(dim=-1)
+    centre = torch.minimum(centre.clamp(min=0), ext - 1)
+    return centre, mask & in_fov
+
+
 def _stamp(
     coords: torch.Tensor,
     mask: torch.Tensor,
@@ -95,12 +121,16 @@ def _stamp(
     dist_um = torch.linalg.vector_norm(offs.float() * vox, dim=-1)   # (K,)
     vals = values_fn(dist_um)                                  # (K,)
 
-    # (B, N, K, 3) absolute voxel positions of every stamp element.
-    pos = coords.round().long().unsqueeze(2) + offs.view(1, 1, -1, 3)
+    centre, node_ok = _snap_centres(coords, mask, shape)
+
+    # (B, N, K, 3) absolute voxel positions of every stamp element. Kernel
+    # elements falling off the edge are dropped here — a nucleus on the border
+    # correctly gets a truncated Gaussian — but its *centre* is not.
+    pos = centre.unsqueeze(2) + offs.view(1, 1, -1, 3)
     inside = torch.ones(pos.shape[:3], dtype=torch.bool, device=device)
     for ax, extent in enumerate(shape):
         inside &= (pos[..., ax] >= 0) & (pos[..., ax] < extent)
-    keep = inside & mask.unsqueeze(-1) & (vals.view(1, 1, -1) > 0)
+    keep = inside & node_ok.unsqueeze(-1) & (vals.view(1, 1, -1) > 0)
 
     out = torch.zeros((B, *shape), dtype=torch.float32, device=device)
     if not keep.any():
@@ -148,7 +178,7 @@ def gaussian_targets(
         (B, *shape) float32 in [0, 1], peaking at 1.0 on each centroid.
     """
     if warn_on_collapse:
-        _warn_collapsed(coords, mask)
+        _warn_collapsed(coords, mask, shape)
 
     two_sig_sq = 2.0 * sigma_um * sigma_um
     return _stamp(
@@ -200,12 +230,19 @@ def ignore_mask(
     return (images > bright_threshold) & ~near_gt
 
 
-def _warn_collapsed(coords: torch.Tensor, mask: torch.Tensor) -> None:
+def _warn_collapsed(
+    coords: torch.Tensor, mask: torch.Tensor, shape: tuple[int, int, int]
+) -> None:
+    # Must snap exactly as _stamp does, or the count reported here is not the
+    # count of cells that actually share a target voxel.
+    centre, node_ok = _snap_centres(coords, mask, shape)
     for b in range(coords.shape[0]):
-        n = int(mask[b].sum().item())
+        n = int(node_ok[b].sum().item())
         if n <= 1:
             continue
-        c = coords[b, :n].round().long()
+        # Index by the mask rather than assuming the real nodes come first:
+        # padded slots sit at (0, 0, 0) and would read as collapsed.
+        c = centre[b][node_ok[b]]
         n_unique = torch.unique(c, dim=0).shape[0]
         if n_unique < n:
             warnings.warn(

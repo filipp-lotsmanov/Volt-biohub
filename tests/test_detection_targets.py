@@ -124,6 +124,37 @@ def test_out_of_bounds_centroid_does_not_wrap_or_crash():
     assert tgt[0, -1, -1, -1] == pytest.approx(0.0)   # no wraparound
 
 
+def test_far_edge_overhang_is_snapped_not_dropped():
+    """The 1,4,4 grid leaves y,x in [0, 63.75]; rounding must not drop the node.
+
+    ``get_window_data`` divides raw coords by the downsample factor as floats,
+    so original y=255 becomes 63.75 on a grid of extent 64. Rounding it to 64
+    used to fall outside the volume, stamping no positive and undercounting
+    n_pos — 225 of 133,318 real GT nodes, up to 7.2 % on one video. The legacy
+    single-voxel loss floored and clamped, so it kept them; a regression here
+    would make the Gaussian-vs-voxel ablation unfair for the wrong reason.
+    """
+    shape = (64, 64, 64)
+    coords = torch.tensor([[[63.0, 63.75, 63.75]]], dtype=torch.float32)
+    mask = torch.ones((1, 1), dtype=torch.bool)
+    tgt = gaussian_targets(coords, mask, shape, ISO)
+    assert tgt[0, 63, 63, 63] == pytest.approx(1.0)
+    assert int((tgt >= 1.0 - 1e-6).sum()) == 1
+
+
+def test_centroid_genuinely_outside_the_volume_is_still_dropped():
+    """Snapping the half-voxel overhang must not resurrect the legacy clamp bug.
+
+    The inherited loss clamped *any* coordinate to the border, so a node far
+    outside the window stamped a false positive on the edge. Only the
+    sub-voxel overhang is legitimate.
+    """
+    coords = torch.tensor([[[8, 16, 40]]], dtype=torch.float32)   # x=40 > 32
+    mask = torch.ones((1, 1), dtype=torch.bool)
+    tgt = gaussian_targets(coords, mask, SHAPE, ISO)
+    assert tgt.max() == pytest.approx(0.0)
+
+
 def test_collapsed_centroids_warn():
     """Two cells on one voxel are individually undetectable -- must not be silent."""
     coords = torch.tensor([[[8, 16, 16], [8, 16, 16]]], dtype=torch.float32)
