@@ -1216,8 +1216,10 @@ def train(
     print(
         f"Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}, "
         f"target={det_target}"
-        + (f" (sigma={det_sigma_um:.2f} um)" if det_target == "gaussian" else "")
-        + f", pu_mask={det_pu_mask}",
+        # Only the gaussian path takes `images`, so reporting pu_mask=True beside
+        # target=voxel misrecords the ablation in the run config.
+        + (f" (sigma={det_sigma_um:.2f} um), pu_mask={det_pu_mask}"
+           if det_target == "gaussian" else ", pu_mask=n/a for this target"),
         flush=True,
     )
 

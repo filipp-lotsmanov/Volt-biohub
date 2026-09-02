@@ -615,6 +615,29 @@ Modelling and scoring:
   `PredictConfig` holds `pool_kernel_um` (suppression radius), `threshold` (edge
   probability), `edge_activation` and `det_tta`, but `main()` forwards only
   `--det-threshold` and the ILP weights. Sweeping today means editing the dataclass.
+- **The edge threshold is not scale-free in detection count, and this blocks the
+  detection sweep.** `predict` takes `softmax(logits, dim=0)` — normalised over
+  *sources* for each target — and keeps pairs above a **hardcoded 0.5**. So emitting any
+  edge at all requires one source to hold over half the column mass, and the number of
+  competitors it must beat is the detection count. Measured on one real frame pair,
+  varying `--det-threshold` alone: **753 → 117 → 48 → 42 → 34 candidate sources** for
+  thresholds 0.3 / 0.5 / 0.9 / 0.99 / 0.999. A 20× swing in the denominator with the
+  numerator's threshold fixed means **`--det-threshold` and the edge threshold are one
+  coupled knob, not two** — and since metric fact 2 pushes detection density *up*, the
+  coupling works against the score. `--det-threshold 0.99` is therefore load-bearing for
+  the **linker**, not only a calibration workaround for the detection loss; the two
+  defects are one defect. Fix by exposing `threshold` and making it scale-aware (or
+  scoring per-target top-1 with a margin instead of an absolute probability) *before*
+  sweeping detection, or the sweep measures the threshold artifact rather than the
+  detector.
+- **`--det-neg-weight` defaults to 1e-2 on the CLI but 0.1 everywhere else** —
+  `detection_loss` and `compute_detection_loss` both document and default to 0.1, and
+  `train_epoch` signs 0.1, while `train()` signs 1e-2 and the CLI passes it. So the
+  as-run negative term is **10× weaker than the loss was designed for**, giving a 100:1
+  positive:negative weight ratio before the PU mask removes a further 1.9–49 % of the
+  negatives. A detector that is barely penalised for firing saturates high, which is a
+  second and independent reason inference needed `sigmoid > 0.99`. Pass it explicitly
+  and sweep it; do not trust either default.
 - **`predict()` cannot enumerate a directory** — it needs a `dataset_splits.json` with a
   `"test"` list, which the competition test folder has none of. Blocks full test-set
   inference until fixed.
@@ -762,6 +785,39 @@ the code review.
 `train_unet_transformer.py`: unsorted imports, `zip` without `strict=`, trailing
 whitespace). Inherited, not ours, and concentrated in code slated for rework — but the
 lint gate is not green today, so don't read a clean run as a regression signal yet.
+
+**Gaussian vs legacy-voxel, first head-to-head on real held-out data — and it does not
+settle the question, but it relocates it.** Identical budget (split 3, 8 epochs, 60
+iters, batch 8, lr 1e-3, one pinned card, ~70 s/epoch), then detector calibration
+measured on the two held-out videos at 5 timepoints each (62 GT centroids, paired
+random-voxel sample):
+
+| cut | gaussian+PU: GT kept / random voxels | legacy voxel: GT kept / random voxels |
+|---|---|---|
+| 0.3 | 100.0 % / **20.4 %** | 100.0 % / **27.9 %** |
+| 0.5 | 98.4 % / **13.7 %** | 100.0 % / **20.4 %** |
+| 0.9 | 98.4 % / 5.1 % | 98.4 % / 5.2 % |
+| 0.99 | 95.2 % / 2.3 % | 96.8 % / 2.1 % |
+
+- The precision edge to the Gaussian loss at low cuts is on a large paired background
+  sample and is probably real; the GT-recall column is 62 points and is noise. **But
+  there is one run per arm and `--seed` does not reach the CLI**, so init and data order
+  are uncontrolled — per our own experiment discipline this is one sample of a noisy
+  process, not a result. Do not cite it as the ablation.
+- **What it does settle is that neither target shape nor PU masking is the dominant
+  problem.** Both detectors are *saturated*: median sigmoid at GT centroids is 1.0000
+  and the random-voxel p99 is ~0.999. At cut 0.99 — the inference default — **~6,000
+  voxels per frame are still above threshold**, against a median true density of 179
+  cells/frame and 786 in the densest sample. The detection map carries almost no usable
+  ranking information, which is why NMS radius and threshold are doing all the work.
+- The cause is not mysterious: `--det-neg-weight 1e-2` (see Known defects) makes the
+  negative term 100× weaker than the positive before the PU mask removes a further
+  1.9–49 % of it. **So the order is: fix checkpoint selection, sweep `det_neg_weight`,
+  then sweep `bright_threshold`, and only then ask whether the target shape matters.**
+  Ablating target shape underneath a saturated detector measures nothing.
+- `acc × test_recall` ranked *legacy* higher (0.9451 vs 0.9377), and in the Gaussian run
+  it froze at epoch 2 while `det` loss improved for six more epochs. Further evidence
+  that number cannot be used for selection or comparison.
 
 **PR #2 (B's EDA) is merged into `main` as of 2026-09-02** and supersedes the
 `inspect_data.py` item above: `explore_data.py`, `check_integrity.py`, `check_t_true.py`
