@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 import tracksdata as td
 
-from tracking_cellmot.io import open_dataset, save_graph
+from volt_biohub.io import open_dataset, save_graph
 
 # Import model and helpers from companion training script.
 sys.path.insert(0, str(Path(__file__).parent))
@@ -32,11 +32,11 @@ from train_unet_transformer import (
     extract_pos_features,
     _POS_EMBED_DIM,
 )
-from tracking_cellmot.models import TemporalUNet3D
+from volt_biohub.models import TemporalUNet3D
 
 from dataspec import USERNAME, INTERACTIVE, WEIGHTS_PATH
 from evaluate import evaluate_run
-from tracking_cellmot.metrics import summarise
+from volt_biohub.metrics import summarise
 
 
 # =============================================================================

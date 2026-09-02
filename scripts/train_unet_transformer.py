@@ -29,8 +29,8 @@ from tqdm import tqdm
 
 import tracksdata as td
 
-from tracking_cellmot.io import invert_time_graph, open_dataset
-from tracking_cellmot.models import SimpleNodeTransformer, TemporalUNet3D
+from volt_biohub.io import invert_time_graph, open_dataset
+from volt_biohub.models import SimpleNodeTransformer, TemporalUNet3D
 
 from itertools import cycle as _cycle
 

@@ -21,8 +21,8 @@ import tracksdata as td
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.dataspec import DATASET_PATH, PREDICTIONS_PATH, USERNAME
-from tracking_cellmot.io import open_dataset
-from tracking_cellmot.metrics import _evaluate_matched_graph, evaluate as compute_metric
+from volt_biohub.io import open_dataset
+from volt_biohub.metrics import _evaluate_matched_graph, evaluate as compute_metric
 
 from visualize_utils import _compute_contrast_limits
 

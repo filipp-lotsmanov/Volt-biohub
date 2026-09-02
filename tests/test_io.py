@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from pathlib import Path
 
-from tracking_cellmot.io import Dataset, list_datasets, open_dataset
+from volt_biohub.io import Dataset, list_datasets, open_dataset
 
 
 import sys
@@ -24,7 +24,7 @@ def _require_training_data() -> None:
         pytest.fail(
             f"Training dataset '{DS_NAME}' not found under DATASET_PATH={DATA_DIR}.\n"
             f"These tests use the competition TRAINING data — download it from Kaggle and "
-            f"point CELLMOT_DATA_DIR at the folder containing '{DS_NAME}.zarr' and "
+            f"point VOLT_DATA_DIR at the folder containing '{DS_NAME}.zarr' and "
             f"'{DS_NAME}.geff' (auto-detected on the Kaggle mount).",
             pytrace=False,
         )

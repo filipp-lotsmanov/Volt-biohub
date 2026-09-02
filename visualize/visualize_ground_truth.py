@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.dataspec import DATASET_PATH
-from tracking_cellmot.io import list_datasets, open_dataset
+from volt_biohub.io import list_datasets, open_dataset
 
 from visualize_utils import show_with_napari
 

@@ -8,7 +8,7 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 from dataspec import DATASET_PATH
 
-from tracking_cellmot.metrics import (
+from volt_biohub.metrics import (
     _compute_score,
     _evaluate_matched_graph,
     evaluate,
@@ -24,7 +24,7 @@ def _load_geff():
         pytest.fail(
             f"Training dataset geff not found: {GEFF_PATH}.\n"
             f"The geff-based metric tests use the competition TRAINING data — download it "
-            f"from Kaggle and point CELLMOT_DATA_DIR at the folder containing it "
+            f"from Kaggle and point VOLT_DATA_DIR at the folder containing it "
             f"(auto-detected on the Kaggle mount).",
             pytrace=False,
         )
@@ -1223,7 +1223,7 @@ def test_summarise_no_divisions_warns_and_drops_term():
     """When no sample contains any division, ``summarise`` should warn and
     drop the division term instead of returning NaN for ``score``."""
     import math
-    from tracking_cellmot.metrics import summarise, per_sample_metrics, EvaluationResult
+    from volt_biohub.metrics import summarise, per_sample_metrics, EvaluationResult
 
     # Two samples, no divisions anywhere, edges all correct.
     rows = [

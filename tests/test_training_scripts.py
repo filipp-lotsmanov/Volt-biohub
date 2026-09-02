@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from train_unet_transformer import train, DEFAULT_AUGMENTATIONS
 from predict_unet_transformer import predict_video, build_graph, load_model, PredictConfig
-from tracking_cellmot.io import open_dataset
-from tracking_cellmot.metrics import evaluate, node_recall
+from volt_biohub.io import open_dataset
+from volt_biohub.metrics import evaluate, node_recall
 
 
 # 5-frame clip extracted from the full dataset: frames 26–30, division at t=2.
