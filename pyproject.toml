@@ -25,6 +25,10 @@ dependencies = [
     "dask[array]",
     "scipy",
     "tqdm",
+    "kagglehub>=1.0.2",
+    "python-dotenv>=1.2.3",
+    "pandas>=3.0.5",
+    "matplotlib>=3.11.1",
 ]
 
 [project.optional-dependencies]
