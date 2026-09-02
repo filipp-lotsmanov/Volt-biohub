@@ -60,7 +60,9 @@ distance, **max 7.0 µm**, scale `(z, y, x) = (1.625, 0.40625, 0.40625)` µm/vox
 2. **False positives outside annotated regions are free.** A predicted edge counts
    at all (TP *or* FP) only when `out_valid(matched source) OR in_valid(matched
    target)` — an endpoint matched a GT node that itself has GT edges. Everything
-   else is discarded, not penalized. **Dense over-detection is nearly cost-free.**
+   else is discarded, not penalized. **Dense over-detection is nearly cost-free**
+   *for the edge term* — but see the caveat below: it is **taxed on the division
+   term**, which is the one place over-detection bites.
 3. `edge_FN = gt_num_edges - TP`. With (2): **recall dominates, global precision
    barely matters.**
 4. **The node-count penalty is soft and non-monotonic:**
@@ -69,6 +71,10 @@ distance, **max 7.0 µm**, scale `(z, y, x) = (1.625, 0.40625, 0.40625)` µm/vox
    costs ~10% relative; predicting *fewer* nodes multiplies J *above* 1.0 (hence
    scores > 1.0). Total node count is a scalar hyperparameter with an interior
    optimum — tune it last, it interacts with detection and linking both.
+   **But `N_true` is unreadable at inference**: it lives only in the GT geff, and the
+   test set ships images alone (see Data). It also varies 20× across samples
+   (3,783–78,644), so the sweep yields one global setting fitted on CV, and any
+   per-sample adaptation has to come from the image.
 5. **7 µm is generous** — ~4 z-voxels, ~17 xy-voxels. Sub-voxel localization is
    worthless here.
 
@@ -76,11 +82,12 @@ Consequences:
 
 - Tune the detector for **recall at a fixed node budget**, not F1: sweep (detection
   threshold, suppression radius) against CV score, never against detection P/R.
-- Set the suppression radius near the **cell pitch derived from
-  `estimated_number_of_nodes` (~15 µm)**, not near 7 µm and **not** off GT
-  nearest-neighbour spacing — GT is 0.2–1.6% sampled, so its ~23 µm spacing is a
-  sampling artifact (see Data). The one real cost of over-detection is a spurious point
-  winning the assignment the true node should have taken.
+- Set the suppression radius near the **cell pitch**, not near 7 µm and **not** off GT
+  nearest-neighbour spacing — GT is sparsely sampled, so its ~23 µm spacing is a
+  sampling artifact (see Data). But the pitch is a *distribution*, **11.3–31.0 µm,
+  median 18.5 µm**, so there is no single derived value: sweep it. The one real cost of
+  over-detection is a spurious point winning the assignment the true node should have
+  taken.
 - The node penalty is mild in both directions: predicting 2× `N_true` costs ~10%
   relative, and the bonus for under-predicting is capped at +10% (the ratio bottoms out
   at −1). Since a missed node costs two edges outright, **the asymmetry favours
@@ -88,6 +95,17 @@ Consequences:
 - Never spend effort on centroid refinement, sub-voxel peak fitting, or segmentation
   masks. None of it is measured.
 - A missed detection costs two edges, not one.
+- **Over-detection is free on edges but taxed on divisions, and this is measured, not
+  theorised.** The overfit test (see Status) memorised a 5-frame clip to a perfect
+  **edge Jaccard of 1.000** with node recall 1.0 — and still scored **division
+  Jaccard 0.5**. With exactly one GT division in the fixture that arithmetic pins
+  down to TP=1, FN=0, **FP=1**: it found the real division and invented a second one,
+  while predicting 28 nodes against 22 GT. The mechanism is structural — a spurious
+  extra detection near a real cell lets the ≤2-children rule attach a second child,
+  and a fork in an *annotated* region is a division FP (only forks in unannotated
+  regions are ignored). So the node budget is not a pure edge-recall trade: pushing
+  detection density up buys edge recall almost free and pays for it in division
+  precision. Sweep the two terms together, never the edge term alone.
 - Aggressive detector + *selective* linker beats conservative detector + permissive
   linker.
 
@@ -149,7 +167,7 @@ error costs a submission slot, and near the deadline the competition. Invariants
 | Role | Machine | Purpose |
 |---|---|---|
 | Dev | Windows 11, RTX 5070 (12 GB) | iteration, debugging, visualization |
-| Train | University Linux server, RTX 6000 rack | all real training |
+| Train | University Linux box, 8× 48 GB (A6000 / RTX 6000 Ada), shared | all real training |
 | Inference | Kaggle notebook, T4/P100 (16 GB) | submission only |
 
 Code must run unmodified on all three. The binding constraint is asymmetric:
@@ -175,17 +193,60 @@ windows the 12 GB card is genuinely usable for real training at this scale, not 
 for the `division_clip` fixture — the server is for sweeps and long runs, not for
 making training possible at all.
 
-**Linux server.** `git clone` (the venv is not portable), `uv sync`, export
-`VOLT_DATA_DIR`, `uv run pytest -m "not slow"`. Establish before trusting it: which
-RTX 6000 (Ada `sm_89` 48 GB vs Pro Blackwell `sm_120` 96 GB — if Blackwell, widen
-the cu130 marker to Linux); whether compute nodes have outbound internet, since
-`tracksdata` is a git dependency and `uv sync` resolves over the network; SLURM or
-bare SSH (either way, training must checkpoint-and-resume so preemption is free);
-whether the data filesystem handles many small files, since zarr is exactly that.
-The Kaggle CLI is in the dev group, so `uv sync` provides it; auth is the new-style
-`KGAT_…` token in `~/.kaggle/access_token` at mode 600 (or `$KAGGLE_API_TOKEN`) — **not**
-the retired `kaggle.json` username/key pair. The competition rules must be accepted in
-the browser or the API returns 403. Data is CC0, so university storage is fine.
+**Linux server** — measured 2026-09-02, all the open questions are now answered.
+It is a **Docker container on a shared 8-GPU box** (`coder.ai` workspace), not a
+SLURM cluster: **no scheduler**, bare shell, 256 cores, 1 TB RAM.
+
+- **GPUs: 4× RTX A6000 (`sm_86`) + 4× RTX 6000 Ada (`sm_89`), 48 GB each.**
+  Not Blackwell, so the cu130 index marker **stays Windows-only**. Linux's default
+  PyPI wheel is now `torch 2.13.0+cu130` anyway, whose arch list is
+  `sm_75/80/86/90/100/120` — **`sm_89` is absent**, but CUDA guarantees binary
+  compatibility upward across minor revisions, so the `sm_86` cubins run on Ada.
+  Verified by executing `conv3d` on an Ada device, not assumed.
+- **The GPUs are shared with other tenants**, and *which* cards are busy changes day
+  to day, so a hardcoded index is wrong by tomorrow. `nvidia-smi` sees their memory
+  but **not their processes** from inside the container — never infer "idle" from an
+  empty process table. **Always pin `CUDA_VISIBLE_DEVICES`**, chosen at run time by
+  `src/volt_biohub/gpu.py`: `CUDA_VISIBLE_DEVICES=$(volt_gpu)`, or `volt_gpu --list`
+  to see the box and `volt_gpu --interactive` for a table plus a prompt. It samples
+  each card several times (one instantaneous reading reports a busy card as idle
+  often enough to matter) and ranks on free memory, then a 10 %-bucketed
+  utilisation, then compute capability. `/home/set_gpu.py` (shipped on the box) does
+  **not** work for this: it sets `os.environ` in a process that immediately exits.
+- **256 cores and 1 TB RAM make CPU-side work essentially free here** — registration,
+  classical detection, zarr decode and large `num_workers` all cost nothing on this
+  box. **This does not transfer to Kaggle**, whose notebooks have a small
+  single-digit vCPU count (verify it on the box in week 2 rather than trusting this
+  line). So CPU-heavy *preprocessing* is a fine way to explore ideas cheaply, but any
+  CPU cost that lands in the *inference* path must be budgeted against the 12 h cap
+  on Kaggle's hardware, not this machine's.
+- **Keep the whole project under 100 GB** — the box admins object above that. It sits
+  at **94 GB** today (83 GB data + 5.7 GB repo/venv + 5.6 GB uv cache), so there is
+  little headroom: weights and predictions need a budget, and the 81 GB archive was
+  deleted after extraction for exactly this reason. Beware that a file-manager delete
+  moves files to `~/.Trash-0` and **frees nothing** — check `du -sh ~/.Trash-0` after
+  deleting anything large. If space gets tight the prunable items are the uv cache
+  (5.6 GB, costs a re-download on rebuild) and `test/` (1.8 GB of byte-identical
+  copies of train samples).
+- **Only `/home/y2a` is persistent** (an ext4 volume, 6.6 TB free). Everything else,
+  `/root` included, is the container's ephemeral overlay. So `uv` lives in
+  `/home/y2a/.local/bin`, `UV_CACHE_DIR` in `/home/y2a/.cache/uv` (5.6 GB — a rebuild
+  would otherwise re-download it), and the venv is already under the repo. A rebuild
+  needs only `bash startup.sh`, which restores the SSH keys and re-sources
+  `~/.volt-env.sh` into `.bashrc`/`.profile`.
+- **Outbound internet works** (pypi, github, kaggle all 200), so the `tracksdata` git
+  dependency resolves. Training must still checkpoint-and-resume — not for preemption
+  but because the container can be rebuilt out from under a run.
+- **The filesystem handles zarr's many small files comfortably**: 5.5 k 64 KiB
+  writes/s (348 MiB/s), 21 k reads/s. 24,886 files is a non-issue.
+
+`uv sync` provides the Kaggle CLI. Auth is the new-style `KGAT_…` token — **not** the
+retired `kaggle.json` pair — and `KAGGLE_CONFIG_DIR` does **not** apply to it:
+`kagglesdk` hardcodes `~/.kaggle/access_token`, which is ephemeral here. Since
+`KAGGLE_API_TOKEN` accepts a *path* (`kagglesdk/kaggle_env.py:99`), it points at
+`/home/y2a/.kaggle/access_token` on the persistent volume. The competition rules must
+be accepted in the browser or the API returns 403. Data is CC0, so university storage
+is fine.
 
 **Kaggle notebook.** Internet **disabled**, ≤12 h, output `submission.csv`.
 `tracksdata` is **not on PyPI**, so **keep the inference path free of tracksdata** —
@@ -252,31 +313,91 @@ train and test samples carries `multiscales` (scale `(1.0, 1.625, 0.40625, 0.406
 sample (e.g. 0.001/0.999 of 44.9/1577 vs 26.2/2145), so per-sample normalization is doing
 real domain-shift work across embryos — keep it.
 
-**How sparse "sparse" actually is** (measured on two samples): `6bba_c328f2fd` has 511
-nodes / 500 edges / **2** divisions against `estimated_number_of_nodes = 31228` — **1.6%**
-of cells, ~5.3 annotated nodes per frame. `44b6_0113de3b` has 52 nodes / 50 edges / **0**
-divisions against 25755 — **0.2%**, exactly **one annotated node per frame, i.e. a single
-lineage for the whole video**. Annotation starts at t=4, not t=0. This is far sparser than
-"a subset", and it means:
+**Uniformity — measured across all 203 downloaded samples, not spot-checked.** Every
+sample is *exactly* `(100, 64, 256, 256)` uint16, chunked `(1, 64, 256, 256)` (one
+timepoint per chunk), scale `(1.0, 1.625, 0.40625, 0.40625)`, and **all 203 carry
+`image_statistics.quantiles`** — so the hard-crash-on-missing-quantiles path in
+`train`/`predict` is latent, not active. Quantile *values* vary far more than the earlier
+two-sample check suggested (q0.001 spans 0.0–465, q0.999 spans 615–5398), so per-sample
+normalization is doing more domain-shift work than assumed, not less.
 
-- Per-frame edge supervision is 1–5 rows of the transition matrix. The learned linker is
-  extremely data-starved; the detector, which sees whole images, is the better lever.
-- Per-sample metric weight `w_i = TP+FP+FN` therefore ranges from ~50 to ~500+, so the
-  weighted score is dominated by the densely annotated videos.
-- Divisions are a handful per video, so per-video division Jaccard is pure noise; only
-  the micro-average over all videos means anything.
+**How sparse "sparse" actually is** — the earlier figures came from two unusually sparse
+samples and understated density by ~3×. Measured over all 199 GT files: **133,318 nodes /
+128,883 edges / 151 divisions**, all 199 readable with plain zarr, **zero integrity
+problems** (no duplicate ids, every edge endpoint resolves, all centroids integer and
+inside the volume, no out-degree > 2, and **no GT edge with `dt != 1`** so the scorer's
+edge filter never bites on GT).
 
-**Measured motion and spacing** — these are the numbers the hyperparameters come from:
+| per sample | min | p10 | p50 | p90 | max |
+|---|---|---|---|---|---|
+| GT nodes | 50 | 150 | **659** | 1230 | 1950 |
+| GT edges | 49 | 147 | **639** | 1187 | 1879 |
+| divisions | 0 | 0 | **0** | 2 | 5 |
+| `estimated_number_of_nodes` | 3783 | 5553 | **17909** | 57347 | 78644 |
+| annotated fraction | 0.13 % | 0.41 % | **3.56 %** | 15.1 % | 20.2 % |
+| annotated nodes/frame | 0.7 | 1.7 | **6.6** | 12.7 | 20.1 |
 
-- GT displacement t→t+1: **median 1.7–2.9 µm, p90 ~4.5 µm, max 7.8–13.4 µm.** The 7 µm
-  matching tolerance is *larger than the median inter-frame motion*. A linking gate of
-  ~5–10 µm covers essentially all real motion.
-- **Do not read the suppression radius off GT nearest-neighbour spacing.** Measured, it is
-  ~23 µm median, but that is an artifact of annotating 1.6% of cells, not the cell pitch.
-  Derive the pitch from `estimated_number_of_nodes` instead: ~260–310 cells in a
-  ~104 µm cube gives **~15 µm cell-to-cell spacing**. The current defaults (5 µm in
-  training, 3 µm at inference) sit far below that, so the detector over-detects heavily —
-  nearly free per metric fact 2, but it spends the node budget.
+- The median sample is **3.56 %** annotated, not 0.2–1.6 %; only **7 of 199** are
+  single-lineage like `44b6_0113de3b`. The linker is still data-starved in absolute terms
+  (~7 annotated nodes per frame), but "one row of the transition matrix" was wrong.
+- Annotation starts at **t=0 in the median sample** (max t=46), not t=4.
+- **112 of 199 samples contain zero divisions** and there are only 151 divisions in the
+  entire training set, so per-video division Jaccard is pure noise — and `summarise()`
+  silently drops the division term for a split with none, which a within-embryo split can
+  easily produce.
+- The weighted score is **not** dominated by a few videos: the top-20 samples by
+  `w_i` carry only **22 %** of all GT edges. It is spread across ~199 samples, so a
+  per-sample regression hides easily and the aggregate moves slowly.
+
+**The two embryos are wildly asymmetric in metric weight, and this is the CV constraint
+that matters most.** `44b6` is 71 samples but only **0.77 %** annotated (median 214
+nodes); `6bba` is 128 samples at **5.37 %** (median 826). So `44b6` carries **just 15 %
+of the total GT edges** despite being 36 % of the samples. The two LOEO folds are
+therefore *not* two comparable estimates: the fold scored on `44b6` rests on a sixth of
+the evidence. Weight them accordingly and expect the `44b6` fold to be the noisier one.
+
+**Measured motion — pooled over all 128,883 GT edges**, which is the distribution a
+linking gate must actually cover:
+
+| p50 | p75 | p90 | p95 | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|
+| 1.82 µm | 2.73 | 4.14 | 5.34 | 8.38 | 13.8 | 60.8 |
+
+- The 7 µm matching tolerance is indeed **larger than the median inter-frame motion**
+  (1.82 µm), confirming sub-voxel localization is worthless.
+- **A 5 µm gate forfeits 6.30 % of real edges outright** (8,119 of 128,883) — the low end
+  of the old "~5–10 µm" advice is not safe. Gate at **≥10 µm** (misses 0.30 %) or 12 µm
+  (0.18 %). Since recall dominates and false positives outside annotated regions are
+  free, the gate should err generous.
+- Motion is anisotropic in a way that matters: **`|dz|` has median 0.00 µm** (cells move
+  under one 1.625 µm z-voxel per frame) while `|dxy|` median is 1.22 µm. A spherical gate
+  in µm is fine; a gate in *voxels* would be wrong by 4×.
+- **`6bba_f20478e9` contains a single 60.8 µm displacement, 60.1 µm of it in z** — 37
+  z-voxels in one frame. That is almost certainly an annotation artifact or an id swap,
+  not biology. Treat it as suspect rather than as evidence that the gate must be 60 µm.
+
+**Cell pitch is not one number.** `estimated_number_of_nodes` ranges **3,783 to 78,644**
+(38 to 786 cells per frame in the same ~104 µm cube), giving a per-sample pitch of
+**11.3 µm (min) to 31.0 µm (max), median 18.5 µm**. The earlier "~15 µm" sits at the 24th
+percentile — it is not a global constant. Do still refuse to read the suppression radius
+off GT nearest-neighbour spacing (~23 µm, an artifact of sparse annotation), but the
+replacement is a *distribution*, so a fixed radius is a compromise on most samples and
+the knob wants sweeping rather than deriving. The current defaults (5 µm training, 3 µm
+inference) sit below even the densest sample's pitch, so the detector over-detects
+everywhere — nearly free per metric fact 2, but it spends the node budget.
+
+**`estimated_number_of_nodes` is NOT available at inference — this constrains the
+method.** It lives only in the GT `.geff` metadata (`attributes.geff.extra`). The test
+folder contains **`.zarr` images and nothing else**: no `.geff`, and the image group
+attrs carry only `image_statistics` and `multiscales`. Verified by exhaustive search of
+the test tree. Consequences:
+
+- The node-count penalty's `N_true` is knowable in CV and **unknowable on the hidden test
+  set**, so the total-node-count sweep (metric fact 4) can only produce a *global*
+  setting, not a per-sample one.
+- Any per-sample adaptation — suppression radius from cell pitch included — must be
+  estimated **from the image**, not read from metadata. Given pitch spans 11–31 µm, that
+  is a real modelling opportunity and not merely bookkeeping.
 
 **Only two embryos exist in train** (measured from the file manifest): **199 samples,
 79.8 GiB, `44b6` (71 samples) and `6bba` (128)**, ~411 MiB each. Folders are
@@ -296,10 +417,20 @@ with no error bars. So:
   therefore real information. Still don't search on it, but weigh it more than you
   normally would against a 2-fold CV.
 
-**The local `test/` folder is fake** — it holds copies of train samples. At notebook
-rerun a hidden test set is swapped in, **approximately the size of the training set**.
-So the 12 h budget must be measured against roughly train-sized throughput, and a local
-`test/` score means nothing.
+**The local `test/` folder is fake** — now proven, not inferred. It holds exactly **4
+samples, byte-identical to their train counterparts** (`44b6_0113de3b`, `44b6_0b24845f`,
+`6bba_05b6850b`, `6bba_05db0fb1` — md5 of the concatenated chunks matches train), and
+they are images only, no `.geff`. At notebook rerun a hidden test set is swapped in,
+**approximately the size of the training set**. So the 12 h budget must be measured
+against roughly train-sized throughput, and a local `test/` score means nothing.
+
+**`sample_submission.csv` names exactly those 4 placeholder datasets** (20 data rows: 3
+nodes and 2 edges each). It is the format oracle for *column layout and conventions* —
+node rows carry `source_id=target_id=-1`, edge rows carry `node_id=t=z=y=x=-1`, and
+`node_id` restarts at 1 in every dataset, confirming node ids need only be unique
+per-dataset. It is **not** a source of dataset names: at rerun those change. **The
+submission writer must enumerate the test directory**, never read the dataset list out of
+`sample_submission.csv`.
 
 `tests/conftest.py` auto-builds `tests/data/division_clip` from frames 26–31 of
 `6bba_c328f2fd` (real division at original t=28 → fixture t=2) with recomputed quantile
@@ -307,8 +438,28 @@ attrs. **The dev-loop asset**: 5 frames, known division, seconds on the 5070 or 
 
 **Data placement.** The Windows box has ~100 GB free, so the full 88 GB does not belong
 here — pull a handful of samples (including `6bba_c328f2fd` for the fixture) locally and
-put the complete set on the Linux server. Needs `~/.kaggle/access_token` (see the Linux
-section for the token format).
+put the complete set on the Linux server.
+
+**Download it as the bulk archive, not file by file.** `fetch_data.py zip` issues one
+`competition_download_files` request for the whole competition and extracts it, filtered
+by the same `--samples`/`--embryos`/`--per-embryo`/`--all` flags. That is not a
+preference: Kaggle rate-limits the *per-file* endpoint hard, rejected requests still
+count against the bucket, and 25k of them collapses to a crawl — it fails on subsets, not
+just on `--all`, which is why `get --all` is now refused outright and `get` is only for
+surgical top-ups. The archive path is strictly better in three ways beyond throughput:
+the transfer resumes across runs via HTTP Range (ETag-validated against a
+`.kaggle-partial` marker, so a stale partial is re-fetched rather than concatenated), the
+archive's own central directory *is* the manifest so no throttled `competition_list_files`
+paging is needed at all, and extraction is idempotent on a size check. The cost is
+all-or-nothing transfer: `--samples` narrows what gets *extracted*, never what gets
+*transferred*, and peak disk is 2× (archive + extracted) unless `--rm-zip` is passed.
+
+One trap worth knowing, since it is invisible: `select()` keys off the sample stem, so
+top-level files have no sample and fall out of every selection. `sample_submission.csv`
+is one of them, and it is the submission-format oracle — the `zip` command therefore
+re-adds root files by hand. `tests/test_fetch_data.py` pins that, along with the layout
+guard that fails loudly if Kaggle ever wraps the archive in a top-level folder rather
+than silently extracting nothing.
 
 ## Codebase map
 
@@ -318,10 +469,11 @@ section for the token format).
 | `src/volt_biohub/division_metrics.py` | 574 | division TP/FP/FN | semantics frozen |
 | `src/volt_biohub/io.py` | 396 | zarr/geff I/O, resample, normalize | heavy rework |
 | `src/volt_biohub/img_proc.py` | 187 | normalization, coord rescaling, `nms_3d` | keep, extend |
+| `src/volt_biohub/gpu.py` | 218 | shared-box GPU scan/rank, device resolver | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
 | `scripts/dataspec.py` | 40 | path resolution | keep |
-| `scripts/fetch_data.py` | 320 | Kaggle subset/full downloader, manifest cache, resumable | ours; keep |
+| `scripts/fetch_data.py` | 757 | Kaggle downloader: bulk archive + per-file, resumable | ours; keep |
 | `scripts/train_unet_transformer.py` | 1294 | joint training | rework or replace |
 | `scripts/predict_unet_transformer.py` | 677 | inference; `--use-ilp`, `--det-threshold` (0.99) | rework |
 | `scripts/geffs_to_csv.py` / `csv_to_geffs.py` | 85 / 89 | submission round-trip | wrap in a validator |
@@ -403,6 +555,14 @@ Hygiene, each capable of wasting a day:
   is survivable; `load_image=False` gives metadata only.
 - Detections are stored as `int16` (`predict_unet_transformer.py:293,496`). Fine for
   256³-scale volumes, silently wrong if a future sample exceeds 32767 in any axis.
+- **`train()` wraps the UNet in `nn.DataParallel` across every visible GPU**, which on
+  the shared training box means all 8 — including cards other tenants have filled. The
+  slow test dies in `torch/nn/parallel/comm.py` with `CUDA error: out of memory` while
+  scattering, even with 47 GB free on device 0, and the message names memory rather than
+  the real cause. It passes with a single pinned card. Until it takes a `--devices`
+  argument, **every run on that box needs `CUDA_VISIBLE_DEVICES`**; DataParallel is also
+  the wrong tool at this model size (1.5 M params, 3.4 GiB per training step), so the
+  fix is probably to drop it rather than parameterise it.
 
 ## Commands
 
@@ -410,6 +570,8 @@ Hygiene, each capable of wasting a day:
 uv sync                                    # add --extra viz for napari
 uv run pytest -m "not slow"
 uv run ruff check .
+uv run python scripts/fetch_data.py zip --split both --all      # bulk; see Data placement
+uv run python scripts/fetch_data.py status                      # progress, any terminal
 uv run python scripts/train_unet_transformer.py --method baseline --split 0 --epochs 1
 uv run python scripts/predict_unet_transformer.py --method baseline --split 0
 uv run python scripts/evaluate.py --pred-dir <dir> --gt-dir $env:VOLT_DATA_DIR
@@ -417,7 +579,10 @@ uv run python scripts/geffs_to_csv.py --in-dir <dir> --csv submission.csv
 uv run python visualize/visualize_predictions.py --method baseline --split 0
 ```
 
-Same on Linux with `$VOLT_DATA_DIR` and forward slashes.
+Same on Linux with `$VOLT_DATA_DIR` and forward slashes. On the server the environment
+comes from `. /home/y2a/.volt-env.sh` (already sourced by `.bashrc`/`.profile`, and
+re-wired by `startup.sh` after a container rebuild), and every GPU run should pin a card:
+`CUDA_VISIBLE_DEVICES=$(volt_gpu) uv run python ...`.
 
 ## Status
 
@@ -427,27 +592,78 @@ undeclared runtime deps (numpy, polars, dask, geff) now declared; ruff in the de
 group. `.gitignore` / `.gitattributes` in place.
 
 Kaggle auth works and `scripts/fetch_data.py` has cached the full 24,886-file manifest to
-`C:\data\biohub\manifest.csv`. A 7-sample dev subset (`6bba_c328f2fd` for the fixture plus
+`C:\data\biohub\manifest.csv` (the `zip` path no longer needs that step — the archive
+carries its own manifest). A 7-sample dev subset (`6bba_c328f2fd` for the fixture plus
 3 per embryo) is on the dev box. **`pytest -m "not slow"` is fully green: 122 passed** —
 the scorer is verified against real data, which closes the "do we trust the scorer"
 question. The whole inherited pipeline has been read end to end (see "The pipeline as it
 stands" and "Known defects").
 
-Not done: full 88 GB set on the Linux server, `inspect_data.py` across all 199 samples,
+**Linux server provisioned and loaded 2026-09-02** (see Environments for the measured
+facts). `uv sync` clean, `torch 2.13.0+cu130` sees all 8 GPUs, every script imports, and
+`TemporalUNet3D` trains: 1.5 M params, **3.4 GiB peak for a `(1, 5, 1, 64³)` step**, so a
+48 GB card is nowhere near the constraint and neither is Kaggle's 16 GB.
+
+**The full dataset is on the server: 203/203 samples, 81.59 GiB, 24,885 files, verified
+complete against the archive manifest.** Downloaded via the new `fetch_data.py zip` path
+(the per-file endpoint was rate-limiting even on subsets, so the downloader was reworked
+around one bulk request — see Data placement). `pytest -m "not slow"` is **131 passed, 0
+failed** there, which closes "do we trust the scorer" on this machine too. The 9 new
+`tests/test_fetch_data.py` cases cover archive selection, root-file handling, ZIP64 size
+resolution and idempotent extraction against a synthetic zip — no network, no competition
+data.
+
+**The data has been swept end to end and it moved several numbers in Data**, so re-read
+that section rather than trusting older recollections. Headlines: all 203 samples are
+dimensionally identical and all carry quantiles; GT is ~3.5 % annotated at the median
+rather than 0.2–1.6 %; `44b6` carries only 15 % of the metric weight so the two LOEO
+folds are not comparable; a 5 µm linking gate would forfeit 6.3 % of real edges; cell
+pitch is a 11–31 µm distribution rather than ~15 µm; and **`estimated_number_of_nodes`
+does not exist at inference**, which bounds how the node-count knob can ever be tuned.
+GT integrity is clean across all 199 files (one suspect 60 µm z-jump in `6bba_f20478e9`).
+
+`pytest -m "slow"` — **run to completion for the first time (47 min, one pinned card)
+and it FAILS, on real behaviour rather than environment.** Two separate issues came out
+of it. First the environment one: it DataParallels across all 8 visible GPUs and OOMs on
+cards other tenants have filled, which is why pinning is mandatory (Known defects).
+Pinned, it then trains to a genuine overfit — `acc=1.0000, det=0.0001, edge=0.0000` —
+and passes `edge Jaccard >= 0.95` (it gets **1.0000**) and `node_recall == 1.0`, but
+**fails `division_jaccard == 1.0` with 0.5**, having predicted 28 nodes against 22 GT.
+That is a spurious fork on an over-detection, and it is the evidence behind the
+over-detection/division trade-off now recorded under metric fact 2. Note the documented
+command is `pytest -m "not slow"`, which deselects this test — so its status had simply
+never been established, and this is a pre-existing failure rather than a regression.
+**The baseline cannot reliably get divisions right even while memorising a single clip
+that contains one**, which is a sharper argument for fixing detection first than any of
+the code review.
+
+`uv run ruff check .` reports **69 pre-existing errors** (mostly `visualize/` and
+`train_unet_transformer.py`: unsorted imports, `zip` without `strict=`, trailing
+whitespace). Inherited, not ours, and concentrated in code slated for rework — but the
+lint gate is not green today, so don't read a clean run as a regression signal yet.
+
+Not done: `scripts/inspect_data.py` as a committed script (the sweep above was done
+ad hoc and its findings are recorded here, but it is not reproducible from the repo yet),
 embryo-grouped splits, any modelling, Kaggle team.
 
 ## Plan
 
-**Gate 0 — done except the server and the team.** Dev subset downloaded, `pytest -m "not
-slow"` green at 122 passed. Remaining: `fetch_data.py get --all` on the Linux server, and
-**form the Kaggle team before Sept 22**.
+**Gate 0 — the team is the only thing left that needs a human.** Dev subset downloaded,
+`pytest -m "not slow"` green at 122 passed on the dev box; the Linux server is
+provisioned, its environment questions are all answered, and the full dataset is
+downloading. Remaining: **form the Kaggle team before Sept 22** — 20 days out, and
+nothing recovers a miss.
 
-1. **Measure before designing** — `scripts/inspect_data.py` over all 199 samples, to turn
-   the two-sample spot checks in Data into distributions: GT nodes/edges/divisions vs
-   `estimated_number_of_nodes` per sample, displacement percentiles, how many samples are
-   single-lineage like `44b6_0113de3b`, and how sparsity correlates with embryo. The
-   per-sample metric weight `w_i` is set by these counts, so knowing which samples
-   dominate the score is knowing where to spend effort.
+1. **Measure before designing — substantially done, needs committing.** The sweep over
+   all 199 samples is complete and its findings are folded into Data (counts vs
+   `estimated_number_of_nodes`, pooled displacement percentiles, single-lineage count,
+   sparsity by embryo, per-sample metric weight). What remains is turning it into
+   `scripts/inspect_data.py` so it is reproducible and re-runnable, emitting a per-sample
+   CSV — that table is the input to the split design in step 2 and to the node-budget
+   sweep in step 7, and it is also a portfolio artifact. Still genuinely open from this
+   step: **residual displacement after global registration** (the number that decides
+   whether step 6a is worth anything), and the nucleus radius σ that step 5's Gaussian
+   heatmap targets need.
 2. **CV harness** — `scripts/make_splits.py` emitting **both** splits described in Data:
    the 2-fold leave-one-embryo-out (the honest number) and a within-embryo FOV split (the
    fast one). Every experiment scored through it, one row per run in `experiments.csv`,
