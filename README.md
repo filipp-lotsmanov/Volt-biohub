@@ -1,6 +1,6 @@
-# tracking-cellmot
+# Volt-biohub
 
-A baseline for the [**Biohub – Cell Tracking During Development**](https://kaggle.com/competitions/biohub-cell-tracking-during-development) Kaggle competition: cell tracking in 3D+time microscopy with **sparse ground truth**.
+Our entry for the [**Biohub – Cell Tracking During Development**](https://kaggle.com/competitions/biohub-cell-tracking-during-development) Kaggle competition: cell tracking in 3D+time microscopy with **sparse ground truth**.
 
 <p align="center">
   <img src="assets/demo.gif" alt="Cell tracking demo" width="480">
@@ -106,7 +106,7 @@ uv run python visualize/visualize_predictions.py --method baseline --split 0
 ### Loading a dataset
 
 ```python
-from tracking_cellmot.io import open_dataset
+from volt_biohub.io import open_dataset
 from scripts.dataspec import DATASET_PATH
 
 ds = open_dataset(
@@ -145,8 +145,8 @@ A division is encoded as one source node with two outgoing edges
 For a more detailed description of the metrics, refer to [`metrics.md`](metrics.md).
 
 ```python
-from tracking_cellmot.metrics import evaluate
-from tracking_cellmot.io import open_dataset, save_graph
+from volt_biohub.metrics import evaluate
+from volt_biohub.io import open_dataset, save_graph
 
 result = evaluate(
     graph=predicted_graph,
@@ -162,7 +162,7 @@ print(f"Divisions TP/FP/FN: {result.division_tp}/{result.division_fp}/{result.di
 ### Evaluating across multiple datasets
 
 ```python
-from tracking_cellmot.metrics import evaluate_datasets
+from volt_biohub.metrics import evaluate_datasets
 
 result = evaluate_datasets(
     graph_pairs=[(pred_graph_1, gt_graph_1), (pred_graph_2, gt_graph_2), ...],
@@ -190,7 +190,7 @@ Each dataset is a `{name}.zarr` image with a paired `{name}.geff` track graph in
 └── test/    {name}.zarr                  (no ground truth — for submission)
 ```
 
-`scripts/dataspec.py` resolves the dataset directory automatically: it uses `$CELLMOT_DATA_DIR` if set, otherwise the Kaggle `train/` mount when running on Kaggle, otherwise local `./data/dense_channel`. Every script also accepts `--data-dir` (and `--splits`) to point at any location per run — e.g. `--data-dir <competition>/test` for prediction.
+`scripts/dataspec.py` resolves the dataset directory automatically: it uses `$VOLT_DATA_DIR` if set, otherwise the Kaggle `train/` mount when running on Kaggle, otherwise local `./data/train`. Every script also accepts `--data-dir` (and `--splits`) to point at any location per run — e.g. `--data-dir <competition>/test` for prediction.
 
 ## Dependencies
 
@@ -201,3 +201,11 @@ Each dataset is a `{name}.zarr` image with a paired `{name}.geff` track graph in
 For visualization (optional):
 
 - Napari
+
+## Provenance
+
+Seeded from the organizers' baseline
+[`royerlab/kaggle-cell-tracking-competition`](https://github.com/royerlab/kaggle-cell-tracking-competition)
+(BSD-3-Clause, see [`LICENSE`](LICENSE)) and developed from there. The scoring
+code in `src/volt_biohub/metrics.py` and `division_metrics.py` is kept
+semantically identical to the official scorer.

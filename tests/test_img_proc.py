@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from tracking_cellmot.img_proc import (
+from volt_biohub.img_proc import (
     nms_3d,
     quantile_normalize,
     rescale_coords_from_isotropic,

@@ -4,10 +4,10 @@
 Evaluates every dataset whose name appears in **both** ``--pred-dir`` and
 ``--gt-dir`` (others are skipped). No images are loaded: ground-truth tracks
 come from the ``.geff`` and the voxel scale from the dataset's ``.zarr``
-metadata (falling back to :data:`~tracking_cellmot.io.DEFAULT_SCALE`).
+metadata (falling back to :data:`~volt_biohub.io.DEFAULT_SCALE`).
 
 Reports the run-level score — sample-size-weighted adjusted edge Jaccard plus
-``0.1 x`` division Jaccard — via :func:`tracking_cellmot.metrics.summarise`.
+``0.1 x`` division Jaccard — via :func:`volt_biohub.metrics.summarise`.
 
 Usage:
     python scripts/evaluate.py --pred-dir out_geffs --gt-dir data/train
@@ -21,8 +21,8 @@ from pathlib import Path
 import tracksdata as td
 from geff import GeffMetadata
 
-from tracking_cellmot.io import DEFAULT_SCALE, open_dataset
-from tracking_cellmot.metrics import (
+from volt_biohub.io import DEFAULT_SCALE, open_dataset
+from volt_biohub.metrics import (
     evaluate as compute_metric,
     node_recall,
     per_sample_metrics,
@@ -65,8 +65,8 @@ def evaluate_pairs(
 ) -> tuple[list[dict], list[str]]:
     """Score every dataset present in both dirs; return (per-sample rows, skipped).
 
-    Rows are :func:`tracking_cellmot.metrics.per_sample_metrics` dicts, ready for
-    :func:`tracking_cellmot.metrics.summarise`. No images are loaded.
+    Rows are :func:`volt_biohub.metrics.per_sample_metrics` dicts, ready for
+    :func:`volt_biohub.metrics.summarise`. No images are loaded.
     """
     pred_dir = Path(pred_dir)
     gt_dir = Path(gt_dir)

@@ -1,25 +1,52 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
 build/
 .venv/
-*.geff
+venv/
 
-# Data and outputs
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.uv-cache/
+
+# --- Data (never in git; see VOLT_DATA_DIR) ---
 data/
 tests/data/
+*.zarr/
+*.geff/
+*.geff
+
+# --- Run outputs ---
 weights/
+checkpoints/
 predictions/
 results/
+runs/
+logs/
 videos/
+wheels/
+*.pt
+*.pth
+*.ckpt
 submission.csv
+submission*.csv
+dataset_splits.json
+/kaggle_csvs
 
-# IDE
+# --- Local config / secrets ---
+.env
+*.local.toml
+kaggle.json
+.claude/settings.local.json
+
+# --- Editors / OS ---
 .vscode/
 .idea/
-
-# Local config
-.env
-/kaggle_csvs
+*.iml
+.DS_Store
+Thumbs.db

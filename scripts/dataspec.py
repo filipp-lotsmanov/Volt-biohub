@@ -1,4 +1,4 @@
-"""Central path configuration for CellMot datasets."""
+"""Central path configuration for the Biohub cell-tracking datasets."""
 
 import os
 import sys
@@ -20,14 +20,14 @@ def _default_dataset_path() -> Path:
     """Resolve the dataset directory.
 
     Priority:
-      1. ``$CELLMOT_DATA_DIR`` — explicit override (any environment).
+      1. ``$VOLT_DATA_DIR`` — explicit override (any environment).
       2. the Kaggle competition ``train`` mount, when running on Kaggle.
       3. local ``./data/dense_channel`` — default for local development.
 
     Scripts also accept ``--data-dir`` to override this per run (e.g. to point
     at the competition ``test`` directory for prediction).
     """
-    env = os.environ.get("CELLMOT_DATA_DIR")
+    env = os.environ.get("VOLT_DATA_DIR")
     if env:
         return Path(env)
     if _KAGGLE_TRAIN.exists():

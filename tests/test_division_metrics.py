@@ -3,7 +3,7 @@ import copy
 import polars as pl
 import tracksdata as td
 
-from tracking_cellmot.division_metrics import (
+from volt_biohub.division_metrics import (
     DivisionCounts,
     _is_strongly_connected_division,
     count_matched_pred_divisions,

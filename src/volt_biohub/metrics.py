@@ -280,7 +280,7 @@ def evaluate(
     centroid-distance node matching.
 
     Computes edge TP/FP/FN, division TP/FP/FN (via
-    :func:`tracking_cellmot.division_metrics.evaluate_divisions`), and the
+    :func:`volt_biohub.division_metrics.evaluate_divisions`), and the
     total number of predicted nodes (irrespective of matching).
 
     Parameters

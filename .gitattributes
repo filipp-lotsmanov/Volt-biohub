@@ -1,0 +1,16 @@
+# One canonical line ending in the repo; the working tree gets native endings.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+
+# Never touched by diff/merge tooling.
+uv.lock -diff linguist-generated=true
+*.gif binary
+*.png binary
+*.zarr binary
+*.geff binary
+*.pt binary
+*.pth binary
+*.ckpt binary

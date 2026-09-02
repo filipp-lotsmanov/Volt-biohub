@@ -13,8 +13,8 @@ import polars as pl
 import pytest
 import tracksdata as td
 
-from tracking_cellmot.division_metrics import evaluate_divisions, score_divisions
-from tracking_cellmot.metrics import _evaluate, _evaluate_matched_graph, _jaccard, evaluate
+from volt_biohub.division_metrics import evaluate_divisions, score_divisions
+from volt_biohub.metrics import _evaluate, _evaluate_matched_graph, _jaccard, evaluate
 
 
 class GraphSpec(NamedTuple):

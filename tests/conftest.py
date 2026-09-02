@@ -83,7 +83,7 @@ def division_clip_fixture() -> None:
                 f"Cannot build the division_clip fixture: source dataset '{_SRC_NAME}' "
                 f"not found under DATASET_PATH={DATASET_PATH}.\n"
                 f"This test uses the competition TRAINING data — download it from Kaggle "
-                f"and point CELLMOT_DATA_DIR at the folder containing "
+                f"and point VOLT_DATA_DIR at the folder containing "
                 f"'{_SRC_NAME}.zarr' and '{_SRC_NAME}.geff' (auto-detected on the Kaggle mount).",
                 pytrace=False,
             )
