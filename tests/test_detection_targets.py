@@ -1,0 +1,250 @@
+"""Tests for Gaussian detection targets and positive-unlabeled masking.
+
+These pin the *numeric* properties the design argument rests on -- separability at
+the minimum observed cell pitch, correct handling of z anisotropy, and that the
+negative term actually stops covering unlabeled cells -- not merely that the
+functions run.
+"""
+
+import numpy as np
+import pytest
+import torch
+
+from volt_biohub.detection_targets import (
+    DEFAULT_BRIGHT_THRESHOLD,
+    DEFAULT_IGNORE_RADIUS_UM,
+    DEFAULT_SIGMA_UM,
+    NUCLEUS_FWHM_UM,
+    detection_loss,
+    gaussian_targets,
+    ignore_mask,
+)
+
+ISO = (1.625, 1.625, 1.625)      # the --downsample 1,4,4 training grid
+ANISO = (6.5, 1.625, 1.625)      # what --downsample 4,4,4 gives (as in the slow test)
+SHAPE = (16, 32, 32)
+
+
+def _one_node(zyx=(8, 16, 16), b=1):
+    coords = torch.tensor([[list(zyx)]] * b, dtype=torch.float32)
+    mask = torch.ones((b, 1), dtype=torch.bool)
+    return coords, mask
+
+
+def test_sigma_matches_measured_nucleus_size():
+    """DEFAULT_SIGMA_UM must be the sigma of a Gaussian with the measured FWHM."""
+    assert DEFAULT_SIGMA_UM == pytest.approx(NUCLEUS_FWHM_UM / 2.3548)
+    assert DEFAULT_SIGMA_UM == pytest.approx(2.93, abs=0.02)
+
+
+def test_target_peaks_at_one_on_the_centroid():
+    coords, mask = _one_node()
+    tgt = gaussian_targets(coords, mask, SHAPE, ISO)
+    assert tgt.shape == (1, *SHAPE)
+    assert tgt[0, 8, 16, 16] == pytest.approx(1.0)
+    assert tgt.max() == pytest.approx(1.0)
+
+
+def test_target_is_a_neighbourhood_not_a_single_voxel():
+    """The whole point of the change: a spike gives no gradient nearby."""
+    coords, mask = _one_node()
+    tgt = gaussian_targets(coords, mask, SHAPE, ISO)
+    assert (tgt > 0.5).sum() > 1
+    # 1.81 voxels of sigma should light up a few voxels, not hundreds.
+    assert 5 <= int((tgt > 0.5).sum()) <= 200
+
+
+def test_falls_to_half_at_the_measured_hwhm():
+    coords, mask = _one_node()
+    tgt = gaussian_targets(coords, mask, SHAPE, ISO)
+    hwhm_vox = (NUCLEUS_FWHM_UM / 2) / ISO[1]
+    lo = tgt[0, 8, 16, 16 + int(np.floor(hwhm_vox))].item()
+    hi = tgt[0, 8, 16, 16 + int(np.ceil(hwhm_vox))].item()
+    assert hi <= 0.5 <= lo
+
+
+def test_anisotropy_is_handled_in_micrometres_not_voxels():
+    """z voxels are 4x taller; a target spherical in voxels would be wrong 4x."""
+    coords, mask = _one_node()
+    tgt = gaussian_targets(coords, mask, SHAPE, ANISO)[0]
+    # One voxel along z is 6.5 um; along x only 1.625 um. So z must decay faster.
+    assert tgt[9, 16, 16] < tgt[8, 16, 17]
+    # And a step of 4 x-voxels (6.5 um) should match one z-voxel (6.5 um).
+    assert tgt[9, 16, 16].item() == pytest.approx(tgt[8, 16, 20].item(), rel=1e-5)
+
+
+def test_overlapping_cells_combine_by_max_not_sum():
+    """Summing would push the target above 1 and make BCE unsatisfiable."""
+    coords = torch.tensor([[[8, 16, 16], [8, 16, 17]]], dtype=torch.float32)
+    mask = torch.ones((1, 2), dtype=torch.bool)
+    tgt = gaussian_targets(coords, mask, SHAPE, ISO)
+    assert tgt.max().item() <= 1.0 + 1e-6
+    assert tgt[0, 8, 16, 16] == pytest.approx(1.0)
+    assert tgt[0, 8, 16, 17] == pytest.approx(1.0)
+
+
+def test_two_cells_at_minimum_observed_pitch_stay_separable():
+    """Measured minimum cell pitch is 11.3 um; targets must stay bimodal there.
+
+    Separability means a genuine dip between two peaks -- that is what lets a
+    local-max peak finder recover two cells -- not a particular saddle value. At
+    this pitch and sigma the saddle is ~0.25 against peaks of 1.0.
+    """
+    sep_vox = round(11.3 / ISO[1])
+    x0, x1 = 10, 10 + sep_vox
+    coords = torch.tensor([[[8, 16, x0], [8, 16, x1]]], dtype=torch.float32)
+    mask = torch.ones((1, 2), dtype=torch.bool)
+    row = gaussian_targets(coords, mask, SHAPE, ISO)[0, 8, 16]
+
+    assert row[x0] == pytest.approx(1.0) and row[x1] == pytest.approx(1.0)
+    saddle = row[x0:x1 + 1].min().item()
+    assert saddle < 0.5, f"no dip between the two cells (saddle={saddle:.3f})"
+    # Bimodal: falling away from the first peak, rising into the second. An odd
+    # separation puts two voxels equidistant from both cells, so the saddle can be
+    # a flat pair -- monotonicity is therefore non-strict across it.
+    seg = row[x0:x1 + 1]
+    lo = int(seg.argmin())
+    assert 0 < lo < len(seg) - 1
+    assert torch.all(seg[: lo + 1].diff() <= 0) and torch.all(seg[lo:].diff() >= 0)
+    assert seg[0] - seg[lo] > 0.4 and seg[-1] - seg[lo] > 0.4
+
+
+def test_padded_nodes_are_ignored():
+    coords = torch.tensor([[[8, 16, 16], [0, 0, 0]]], dtype=torch.float32)
+    mask = torch.tensor([[True, False]])
+    tgt = gaussian_targets(coords, mask, SHAPE, ISO)
+    assert tgt[0, 0, 0, 0] == pytest.approx(0.0)
+
+
+def test_out_of_bounds_centroid_does_not_wrap_or_crash():
+    coords = torch.tensor([[[0, 0, 0]]], dtype=torch.float32)
+    mask = torch.ones((1, 1), dtype=torch.bool)
+    tgt = gaussian_targets(coords, mask, SHAPE, ISO)
+    assert tgt[0, 0, 0, 0] == pytest.approx(1.0)
+    assert tgt[0, -1, -1, -1] == pytest.approx(0.0)   # no wraparound
+
+
+def test_collapsed_centroids_warn():
+    """Two cells on one voxel are individually undetectable -- must not be silent."""
+    coords = torch.tensor([[[8, 16, 16], [8, 16, 16]]], dtype=torch.float32)
+    mask = torch.ones((1, 2), dtype=torch.bool)
+    with pytest.warns(UserWarning, match="collapsed"):
+        gaussian_targets(coords, mask, SHAPE, ISO)
+
+
+# --- positive-unlabeled masking ----------------------------------------------
+
+
+def test_ignores_bright_voxels_far_from_annotation():
+    coords, mask = _one_node()
+    images = torch.zeros((1, *SHAPE))
+    images[0, 2, 4, 4] = 0.9        # bright, far from the GT node -> unlabeled cell
+    ign = ignore_mask(images, coords, mask, ISO)
+    assert ign[0, 2, 4, 4]
+
+
+def test_keeps_dark_voxels_as_negatives():
+    coords, mask = _one_node()
+    images = torch.zeros((1, *SHAPE))
+    images[0, 2, 4, 4] = 0.05       # genuine background
+    assert not ignore_mask(images, coords, mask, ISO)[0, 2, 4, 4]
+
+
+def test_never_ignores_near_an_annotated_cell():
+    """Voxels around a GT cell are real negatives -- they teach localisation."""
+    coords, mask = _one_node()
+    images = torch.ones((1, *SHAPE))          # everything bright
+    ign = ignore_mask(images, coords, mask, ISO)
+    inside = round(DEFAULT_IGNORE_RADIUS_UM / ISO[1]) - 1
+    assert not ign[0, 8, 16, 16 + inside]
+    outside = round(DEFAULT_IGNORE_RADIUS_UM / ISO[1]) + 3
+    assert ign[0, 8, 16, 16 + outside]
+
+
+def test_bright_threshold_is_the_documented_value():
+    assert DEFAULT_BRIGHT_THRESHOLD == 0.3
+
+
+# --- the loss -----------------------------------------------------------------
+
+
+def test_loss_is_lower_for_a_correct_prediction():
+    coords, mask = _one_node()
+    good = torch.full((1, 1, *SHAPE), -8.0)
+    good[0, 0, 8, 16, 16] = 8.0
+    bad = torch.full((1, 1, *SHAPE), -8.0)
+    bad[0, 0, 2, 4, 4] = 8.0
+    assert detection_loss(good, coords, mask, ISO) < detection_loss(bad, coords, mask, ISO)
+
+
+def test_pu_mask_removes_the_penalty_on_unlabeled_cells():
+    """The core fix: predicting a cell where one really is must stop being punished."""
+    coords, mask = _one_node()
+    logits = torch.full((1, 1, *SHAPE), -8.0)
+    logits[0, 0, 8, 16, 16] = 8.0
+    logits[0, 0, 2, 4, 4] = 8.0            # confident detection of an *unannotated* cell
+
+    images = torch.zeros((1, *SHAPE))
+    images[0, 2, 4, 4] = 0.9               # ...and it is genuinely bright there
+
+    without = detection_loss(logits, coords, mask, ISO, images=None)
+    with_pu = detection_loss(logits, coords, mask, ISO, images=images)
+    assert with_pu < without, "PU masking did not reduce the penalty"
+
+
+def test_images_none_reproduces_full_negative_coverage():
+    """The --no-det-pu-mask ablation must genuinely differ from the masked path."""
+    coords, mask = _one_node()
+    logits = torch.zeros((1, 1, *SHAPE))
+    images = torch.ones((1, *SHAPE))       # everything bright => lots ignored
+    assert detection_loss(logits, coords, mask, ISO, images=images) != pytest.approx(
+        detection_loss(logits, coords, mask, ISO, images=None).item()
+    )
+
+
+def test_positive_weight_is_per_object_not_per_blob_voxel():
+    """Regression: the peak gradient must not be diluted by the Gaussian's volume.
+
+    An earlier version regressed the soft target and normalised by the count of
+    non-zero voxels, spreading 1/n_pos over ~2400 voxels instead of ~1 per cell.
+    The peak gradient collapsed, no logit reached the peak-finder's threshold, and
+    training produced zero detections while the loss still went down.
+    """
+    coords, mask = _one_node()
+    logits = torch.zeros((1, 1, *SHAPE), requires_grad=True)
+    detection_loss(logits, coords, mask, ISO, neg_weight=0.0).backward()
+
+    grad = logits.grad[0, 0]
+    peak = grad[8, 16, 16].abs().item()
+    # With one object the centroid carries the entire positive term.
+    assert peak == pytest.approx(0.5, rel=1e-3), f"peak weight diluted: {peak}"
+    # And with neg_weight=0 nothing else contributes at all.
+    others = grad.abs().sum().item() - peak
+    assert others == pytest.approx(0.0, abs=1e-6)
+
+
+def test_near_centroid_negatives_are_penalty_reduced():
+    """A broad blob around the true centre must be barely punished."""
+    coords, mask = _one_node()
+    logits = torch.zeros((1, 1, *SHAPE), requires_grad=True)
+    detection_loss(logits, coords, mask, ISO, neg_weight=1.0).backward()
+    grad = logits.grad[0, 0].abs()
+    near = grad[8, 16, 17].item()      # one voxel off the centroid
+    far = grad[2, 4, 4].item()         # genuine background
+    assert near < far, "near-centroid negative is not suppressed"
+
+
+def test_loss_is_finite_with_no_annotated_nodes():
+    """Frames with no GT happen; the loss must not divide by zero."""
+    coords = torch.zeros((1, 1, 3))
+    mask = torch.zeros((1, 1), dtype=torch.bool)
+    loss = detection_loss(torch.zeros((1, 1, *SHAPE)), coords, mask, ISO)
+    assert torch.isfinite(loss)
+
+
+def test_loss_backpropagates_to_the_logits():
+    coords, mask = _one_node()
+    logits = torch.zeros((1, 1, *SHAPE), requires_grad=True)
+    detection_loss(logits, coords, mask, ISO).backward()
+    assert logits.grad is not None and torch.isfinite(logits.grad).all()
+    assert logits.grad.abs().sum() > 0

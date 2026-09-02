@@ -356,6 +356,22 @@ of the total GT edges** despite being 36 % of the samples. The two LOEO folds ar
 therefore *not* two comparable estimates: the fold scored on `44b6` rests on a sixth of
 the evidence. Weight them accordingly and expect the `44b6` fold to be the noisier one.
 
+**Nucleus size, measured — this is what sets the detection target width.** Radial
+intensity profiles around 208 GT centroids (12 samples spanning both embryos), computed
+in µm so the 4× z anisotropy cannot distort them: intensity peaks at 0.571 normalised on
+the centroid and falls to a flat 0.304 floor by ~7 µm, giving **nucleus FWHM = 6.9 µm**
+and hence a Gaussian sigma of **2.93 µm (1.81 voxels** on the isotropic 1.625 µm grid).
+Two cells at the *minimum* observed pitch of 11.3 µm still produce a clearly bimodal
+target, so peaks stay separable.
+
+**The unannotated cells are brighter than the annotated ones** — the sparse-negative
+problem in one line. Normalised intensity, p5/p50: GT centroids 0.239/0.479; random
+voxels 0.008/0.110; **local maxima carrying no GT annotation 0.406/1.000**. The old loss
+was therefore teaching the network that the brightest blobs in the image are background.
+A bright-voxel threshold of **0.3** sits below 90.9 % of GT centroids and above ~95 % of
+non-GT peaks while masking 17.5 % of voxels — comfortably more than the 3–12 % that
+cells actually occupy at the observed densities.
+
 **Measured motion — pooled over all 128,883 GT edges**, which is the distribution a
 linking gate must actually cover:
 
@@ -470,6 +486,7 @@ than silently extracting nothing.
 | `src/volt_biohub/io.py` | 396 | zarr/geff I/O, resample, normalize | heavy rework |
 | `src/volt_biohub/img_proc.py` | 187 | normalization, coord rescaling, `nms_3d` | keep, extend |
 | `src/volt_biohub/gpu.py` | 218 | shared-box GPU scan/rank, device resolver | ours; keep |
+| `src/volt_biohub/detection_targets.py` | 268 | Gaussian targets, PU mask, detection loss | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
 | `scripts/dataspec.py` | 40 | path resolution | keep |
@@ -515,13 +532,18 @@ explicit division objective, submission validation, offline Kaggle packaging.
 
 Modelling and scoring:
 
-- `compute_detection_loss` marks a **single voxel** per GT cell positive and penalizes
-  every other voxel at `neg_weight`. With sparse GT, real unannotated cells are trained
-  as negatives. **The biggest modelling weakness in the baseline** and the first thing
-  worth fixing. It is also why the inference default is `--det-threshold 0.99`: the help
-  text admits the detector is badly calibrated and leans on an extreme threshold.
+- ~~`compute_detection_loss` marks a single voxel per GT cell positive and penalizes
+  every other voxel at `neg_weight`.~~ **Addressed** by
+  `src/volt_biohub/detection_targets.py`, now the default (`--det-target gaussian`
+  with `--det-pu-mask`). The legacy behaviour is kept as `--det-target voxel` /
+  `--no-det-pu-mask` purely so the change can be ablated on CV rather than believed.
+  **Still open, and newly suspicious:** `--det-threshold 0.99` at inference was a
+  workaround for the miscalibration this fixes, so it must be re-swept once a CV
+  harness exists — and note `detect_and_match` thresholds raw **logits** at 0.3 during
+  training while `predict` thresholds a **sigmoid** at 0.99. Those are not the same
+  quantity and the mismatch has never been checked.
 - **Checkpoint selection does not use the competition metric.** `train()` keeps the best
-  epoch by `test_acc × test_recall` (`train_unet_transformer.py:1180`), where accuracy is
+  epoch by `test_acc × test_recall` (`train_unet_transformer.py:1237`), where accuracy is
   per-cell agreement on the edge matrix. The real scorer is in-repo and unused here.
 - **The two knobs the metric says matter most are unreachable from the CLI.**
   `PredictConfig` holds `pool_kernel_um` (suppression radius), `threshold` (edge
@@ -677,13 +699,18 @@ nothing recovers a miss.
    disagreement here is the most important bug in the project;** chase it down before any
    modelling. Also time one video end to end and extrapolate to a train-sized hidden test
    set against the 12 h cap.
-5. **Detection (week 2)** — fix the sparse-negative problem: Gaussian heatmap targets
-   (σ ≈ nucleus radius from step 1) and mask the negative term on high-intensity
-   unannotated voxels; or bootstrap classical peaks ∪ GT as pseudo-labels. The right
-   framing is positive-unlabeled learning — unannotated cells are unlabeled, not
-   negative. Switch checkpoint selection to the real scorer at the same time. Fallback
-   if the UNet won't converge in budget: Spotiflow 3D, which trains natively from point
-   labels and is legal here (pre-trained models are explicitly allowed).
+5. **Detection (week 2) — the loss is written, the evidence is not.**
+   `src/volt_biohub/detection_targets.py` implements Gaussian targets at the measured
+   sigma plus positive-unlabeled masking, defaulted on, with `--det-target voxel` /
+   `--no-det-pu-mask` retained so each half can be ablated. All three paths train and
+   detect on the fixture. **What is missing is the only thing that matters: a CV number.**
+   The fixture is a 5-frame overfit and proves nothing about generalisation, so this
+   stays open until step 2 exists and the ablation runs through it. Still to do here:
+   switch checkpoint selection to the real scorer (currently `test_acc × test_recall`),
+   re-sweep `--det-threshold` now that calibration has changed, and reconcile the
+   logit-vs-sigmoid threshold mismatch noted under Known defects. Fallback if the UNet
+   will not converge in budget: Spotiflow 3D, which trains natively from point labels
+   and is legal here (pre-trained models are explicitly allowed).
 6. **Linking (week 3)**, in priority order: (a) **global frame-to-frame registration
    before association** — bulk motion removed makes a dense assignment easy, and most
    teams skip it; temper the expectation, though, since these are ~104 µm crops rather

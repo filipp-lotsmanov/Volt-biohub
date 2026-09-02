@@ -29,6 +29,7 @@ from tqdm import tqdm
 
 import tracksdata as td
 
+from volt_biohub.detection_targets import DEFAULT_SIGMA_UM, detection_loss
 from volt_biohub.io import invert_time_graph, open_dataset
 from volt_biohub.models import SimpleNodeTransformer, TemporalUNet3D
 
@@ -586,6 +587,40 @@ def compute_detection_loss(
     ) / B
 
 
+DET_TARGET_CHOICES = ("gaussian", "voxel")
+
+
+def build_detection_loss(
+    det_logits: torch.Tensor,
+    coords: torch.Tensor,
+    mask: torch.Tensor,
+    neg_weight: float,
+    *,
+    target: str = "gaussian",
+    voxel_size: tuple[float, ...] | None = None,
+    images: torch.Tensor | None = None,
+    sigma_um: float = DEFAULT_SIGMA_UM,
+) -> torch.Tensor:
+    """Detection loss, dispatching between the Gaussian and legacy single-voxel forms.
+
+    ``voxel`` reproduces the inherited behaviour exactly and exists so the change
+    can be ablated on CV rather than taken on faith — see
+    :mod:`volt_biohub.detection_targets` for why the default moved off it.
+    *images* enables positive-unlabeled masking; pass None to disable it while
+    keeping Gaussian targets, which separates the two effects.
+    """
+    if target == "voxel":
+        return compute_detection_loss(det_logits, coords, mask, neg_weight)
+    if target != "gaussian":
+        raise ValueError(f"unknown det target {target!r}; choose from {DET_TARGET_CHOICES}")
+    if voxel_size is None:
+        raise ValueError("gaussian detection targets need voxel_size (microns per voxel)")
+    return detection_loss(
+        det_logits, coords, mask, tuple(voxel_size[:3]),
+        images=images, neg_weight=neg_weight, sigma_um=sigma_um,
+    )
+
+
 # =============================================================================
 # Detection → matching → edge targets (used during training, GPU-vectorised)
 # =============================================================================
@@ -788,6 +823,9 @@ def train_epoch(
     det_neg_weight: float = 0.1,
     max_iters: int | None = None,
     pool_kernel_um: float = 5.0,
+    det_target: str = "gaussian",
+    det_pu_mask: bool = True,
+    det_sigma_um: float = DEFAULT_SIGMA_UM,
 ) -> tuple[float, float]:
     """Train for one epoch, return (avg edge loss, avg detection loss).
 
@@ -833,9 +871,15 @@ def train_epoch(
 
         # --- 2. Detection loss over all W frames ---------------------------
         det_losses = [
-            compute_detection_loss(
+            build_detection_loss(
                 det_logits[i], coords[:, i], masks[:, i],
                 det_neg_weight,
+                target=det_target,
+                voxel_size=voxel_size,
+                # imgs is already quantile-normalised, which is what the bright-voxel
+                # threshold is calibrated against.
+                images=imgs[:, i] if det_pu_mask else None,
+                sigma_um=det_sigma_um,
             )
             for i in range(W)
         ]
@@ -1013,6 +1057,9 @@ def train(
     downsample: tuple[int, ...] = (1, 4, 4),
     det_loss_weight: float = 1e1,
     det_neg_weight: float = 1e-2,
+    det_target: str = "gaussian",
+    det_pu_mask: bool = True,
+    det_sigma_um: float = DEFAULT_SIGMA_UM,
     max_iters: int | None = None,
     debug_video: Path | None = None,
     seed: int | None = None,
@@ -1065,6 +1112,9 @@ def train(
         "downsample": list(downsample),
         "window_size": window_size,
         "pool_kernel_um": pool_kernel_um,
+        "det_target": det_target,
+        "det_pu_mask": det_pu_mask,
+        "det_sigma_um": det_sigma_um,
     }
     (output_dir / "config.json").write_text(json.dumps(model_config, indent=2))
 
@@ -1163,13 +1213,20 @@ def train(
     best_score = 0.0
     save_path = output_dir / "edge_predictor_best.pth"
     pbar = tqdm(range(n_epochs), desc="Training", disable=False)
-    print(f"Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}", flush=True)
+    print(
+        f"Detection loss: weight={det_loss_weight}, neg_weight={det_neg_weight}, "
+        f"target={det_target}"
+        + (f" (sigma={det_sigma_um:.2f} um)" if det_target == "gaussian" else "")
+        + f", pu_mask={det_pu_mask}",
+        flush=True,
+    )
 
     for epoch in pbar:
         t0 = time.monotonic()
         edge_loss, det_loss = train_epoch(
             model, train_loader, optimizer, device, det_loss_weight, det_neg_weight,
             max_iters=max_iters, pool_kernel_um=pool_kernel_um,
+            det_target=det_target, det_pu_mask=det_pu_mask, det_sigma_um=det_sigma_um,
         )
         train_time = time.monotonic() - t0
 
@@ -1238,6 +1295,20 @@ def main() -> None:
                         help="Weight for detection loss relative to edge loss (default: 1e1).")
     parser.add_argument("--det-neg-weight", type=float, default=1e-2,
                         help="Per-voxel weight for non-GT (negative) voxels in detection loss (default: 1e-2).")
+    parser.add_argument("--det-target", choices=DET_TARGET_CHOICES, default="gaussian",
+                        help="Detection target: 'gaussian' blobs of --det-sigma-um "
+                             "(default), or 'voxel' for the legacy single-voxel target. "
+                             "'voxel' exists for ablation; it trains a spike in 262k "
+                             "voxels and is why inference needed --det-threshold 0.99.")
+    parser.add_argument("--det-sigma-um", type=float, default=DEFAULT_SIGMA_UM,
+                        help=f"Gaussian target sigma in microns (default {DEFAULT_SIGMA_UM:.2f}, "
+                             f"from the measured 6.9 um nucleus FWHM).")
+    parser.add_argument("--no-det-pu-mask", dest="det_pu_mask", action="store_false",
+                        help="Disable positive-unlabeled masking, i.e. let bright voxels "
+                             "far from any annotation count as negatives. GT is ~3.5%% "
+                             "annotated, so this trains most real cells as background; "
+                             "the flag is for ablation only.")
+    parser.set_defaults(det_pu_mask=True)
     parser.add_argument("--max-iters", type=int, default=None,
                         help="Max training iterations per epoch. None = full epoch.")
     parser.add_argument("--debug-video", type=str, default=None,
@@ -1282,6 +1353,9 @@ def main() -> None:
             downsample=downsample,
             det_loss_weight=args.det_loss_weight,
             det_neg_weight=args.det_neg_weight,
+            det_target=args.det_target,
+            det_pu_mask=args.det_pu_mask,
+            det_sigma_um=args.det_sigma_um,
             max_iters=args.max_iters,
             debug_video=debug_video,
             window_size=args.window_size,
