@@ -521,6 +521,65 @@ def download_archive(dest: Path, *, force: bool = False) -> Path:
     return zip_path
 
 
+def _archive_is_readable(zip_path: Path) -> bool:
+    """Whether the archive's central directory can be read.
+
+    This is the invariant the bulk path actually depends on: ``manifest_from_archive``
+    and every extraction worker open the central directory, which lives at the *tail*
+    of the file, so an interrupted transfer has none. Checking it costs a seek to the
+    end plus a few MiB — not a scan of 88 GB.
+
+    Presence on disk is a different property, and the client's ``.kaggle-partial``
+    marker is not a reliable substitute either: it is skipped entirely when the server
+    sends neither ETag nor Last-Modified, so an interrupted transfer can leave the file
+    present and the marker absent. Reading the directory has no such hole, and catches
+    a zero-byte file (disk full on the first chunk) for free.
+    """
+    try:
+        with zipfile.ZipFile(zip_path):
+            return True
+    except zipfile.BadZipFile:
+        # Deliberately narrow: a PermissionError or ENOSPC must not be read as
+        # "incomplete" and trigger an 88 GB re-transfer.
+        return False
+
+
+def obtain_archive(dest: Path, *, force: bool = False) -> Path:
+    """Return a path to a complete, readable archive, transferring only what is missing.
+
+    Four states, not two. A local file that exists is not necessarily complete, and
+    treating it as complete is what turns an interrupted 88 GB transfer into a
+    ``BadZipFile`` traceback whose only documented remedy is re-transferring from
+    byte 0 — the opposite of the resume the client already implements.
+    """
+    zip_path = dest / ZIP_NAME
+    if force or not zip_path.exists():
+        return download_archive(dest, force=force)
+
+    if _archive_is_readable(zip_path):
+        # Complete: re-extraction is local-only, so this is worth reusing.
+        print(f"Reusing {zip_path} ({zip_path.stat().st_size / 2**30:.2f} GiB); "
+              f"--force re-downloads.")
+        return zip_path
+
+    # Interrupted: the bytes on disk are a prefix of the archive, so the client can
+    # resume onto them over HTTP Range. Exactly one attempt — a server that rejects
+    # the Range outright must not spin.
+    print(
+        f"{zip_path} is incomplete ({zip_path.stat().st_size / 2**30:.2f} GiB on disk, "
+        f"central directory unreadable) — resuming."
+    )
+    zip_path = download_archive(dest, force=False)
+    if not _archive_is_readable(zip_path):
+        sys.exit(
+            f"{zip_path} is still unreadable after resuming "
+            f"({zip_path.stat().st_size / 2**30:.2f} GiB on disk).\n"
+            f"Delete it, or re-transfer from byte 0:\n"
+            f"    python scripts/fetch_data.py zip --dest {dest} --force"
+        )
+    return zip_path
+
+
 def manifest_from_archive(zip_path: Path) -> list[Entry]:
     """Read the archive's central directory as the file manifest.
 
@@ -615,12 +674,12 @@ def extract(
 
 def _default_dest() -> Path:
     sys.path.insert(0, str(Path(__file__).parent))
-    from dataspec import DATASET_PATH
+    from dataspec import DATA_ROOT
 
-    return Path(DATASET_PATH).parent
+    return Path(DATA_ROOT)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument(
         "command", choices=["zip", "manifest", "samples", "get", "status"],
@@ -632,7 +691,7 @@ def main() -> None:
     parser.add_argument(
         "--dest", type=Path, default=None,
         help="Data root; train/ and test/ are created inside it. "
-             "Default: parent of dataspec.DATASET_PATH.",
+             "Default: dataspec.DATA_ROOT, which honours $VOLT_DATA_DIR.",
     )
     parser.add_argument("--split", choices=["train", "test", "both"], default="train")
     parser.add_argument("--samples", type=str, default=None,
@@ -658,7 +717,7 @@ def main() -> None:
                         help="Seconds between manifest pages (default: 1.0).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would be fetched, then stop.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     dest = args.dest or _default_dest()
 
@@ -667,13 +726,7 @@ def main() -> None:
         return
 
     if args.command == "zip":
-        zip_path = dest / ZIP_NAME
-        if args.force or not zip_path.exists():
-            zip_path = download_archive(dest, force=args.force)
-        else:
-            # A complete archive is worth reusing: re-extraction is local-only.
-            print(f"Reusing {zip_path} ({zip_path.stat().st_size / 2**30:.2f} GiB); "
-                  f"--force re-downloads.")
+        zip_path = obtain_archive(dest, force=args.force)
         entries = manifest_from_archive(zip_path)
         write_manifest(entries, dest)
 
