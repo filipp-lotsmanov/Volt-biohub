@@ -32,6 +32,11 @@ from pathlib import Path
 import numpy as np
 import zarr
 
+# scripts/ is not a package; import the shared path config the same way the
+# other scripts do.
+sys.path.insert(0, str(Path(__file__).parent))
+from dataspec import DATA_ROOT
+
 # Values the competition description asserts. Checked rather than assumed.
 EXPECTED_SCALE_ZYX = (1.625, 0.40625, 0.40625)
 EXPECTED_NDIM = 4
@@ -482,7 +487,9 @@ def check_volume(name: str, zarr_path: Path, geff_path: Path | None,
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data-root", default="data/raw", type=Path)
+    ap.add_argument("--data-root", type=Path, default=None,
+                    help="Directory containing train/ and test/. Default: "
+                         "dataspec.DATA_ROOT, which honours $VOLT_DATA_DIR.")
     ap.add_argument("--out", default="reports/integrity", type=Path)
     ap.add_argument("--deep", type=int, default=0, metavar="N",
                     help="run voxel-level checks on N datasets (~4s each)")
@@ -491,9 +498,10 @@ def main(argv=None) -> int:
     ap.add_argument("--strict", action="store_true",
                     help="exit non-zero on WARN as well as FAIL")
     args = ap.parse_args(argv)
+    data_root: Path = args.data_root or DATA_ROOT
 
-    if not args.data_root.is_dir():
-        print(f"data root not found: {args.data_root.resolve()}", file=sys.stderr)
+    if not data_root.is_dir():
+        print(f"data root not found: {data_root.resolve()}", file=sys.stderr)
         return 2
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -502,7 +510,7 @@ def main(argv=None) -> int:
 
     records = []
     for split in ("train", "test"):
-        sdir = args.data_root / split
+        sdir = data_root / split
         if not sdir.is_dir():
             rep.add("WARN", "split_present", None, f"no '{split}' directory")
             continue
@@ -512,7 +520,7 @@ def main(argv=None) -> int:
                             "geff": gp if gp.exists() else None})
 
     if not records:
-        print(f"no .zarr datasets under {args.data_root.resolve()}", file=sys.stderr)
+        print(f"no .zarr datasets under {data_root.resolve()}", file=sys.stderr)
         return 2
     print(f"checking {len(records)} datasets\n")
 

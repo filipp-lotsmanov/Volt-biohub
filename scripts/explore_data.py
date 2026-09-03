@@ -11,7 +11,7 @@ Outputs (written to --out):
 
 Usage:
     uv run python scripts/explore_data.py
-    uv run python scripts/explore_data.py --data-root data/raw --out reports/eda
+    uv run python scripts/explore_data.py --out reports/eda
     uv run python scripts/explore_data.py --content-probe 40
 """
 
@@ -31,6 +31,11 @@ import numpy as np
 import pandas as pd
 import zarr
 from scipy.spatial import cKDTree
+
+# scripts/ is not a package; import the shared path config the same way the
+# other scripts do.
+sys.path.insert(0, str(Path(__file__).parent))
+from dataspec import DATA_ROOT
 
 # Physical voxel size asserted by the competition description, used only as a
 # fallback and as the value to compare against what the files actually declare.
@@ -914,7 +919,9 @@ def pooled_percentiles(df: pd.DataFrame, prefix: str) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data-root", default="data/raw", type=Path)
+    ap.add_argument("--data-root", type=Path, default=None,
+                    help="Directory containing train/ and test/. Default: "
+                         "dataspec.DATA_ROOT, which honours $VOLT_DATA_DIR.")
     ap.add_argument("--out", default="reports/eda", type=Path)
     ap.add_argument("--limit", type=int, default=None, help="process only the first N datasets per split")
     ap.add_argument("--skip-duplicate-check", action="store_true")
@@ -923,7 +930,7 @@ def main(argv=None) -> int:
     ap.add_argument("--attrs-samples", type=int, default=4)
     args = ap.parse_args(argv)
 
-    root: Path = args.data_root
+    root: Path = args.data_root or DATA_ROOT
     if not root.is_dir():
         print(f"data root not found: {root.resolve()}", file=sys.stderr)
         return 1

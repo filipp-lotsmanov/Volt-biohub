@@ -7,7 +7,7 @@ inferred from the competition description. Reproduce with
 ## Layout on disk
 
 ```
-data/raw/
+data/            # $VOLT_DATA_DIR, or <repo>/data — see dataspec.DATA_ROOT
 ├── train/
 │   ├── {name}.zarr          image volume, OME-Zarr v3
 │   └── {name}.geff          ground-truth lineage graph
@@ -418,7 +418,8 @@ not shield them.
 
 ## The EDA scripts
 
-All read-only over `data/raw/`. None of them modify the dataset.
+All read-only over the data root (`dataspec.DATA_ROOT`, overridable with
+`--data-root`). None of them modify the dataset.
 
 | Script | Purpose | Writes | Cost |
 |---|---|---|---|

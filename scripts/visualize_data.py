@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -33,6 +34,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import zarr
 from matplotlib.lines import Line2D
+
+# scripts/ is not a package; import the shared path config the same way the
+# other scripts do.
+sys.path.insert(0, str(Path(__file__).parent))
+from dataspec import DATA_ROOT
 
 SCALE_ZYX = (1.625, 0.40625, 0.40625)
 # Anisotropy factor: one z voxel spans this many y or x voxels physically.
@@ -634,7 +640,9 @@ def pick_with_divisions(records) -> dict | None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data-root", default="data/raw", type=Path)
+    ap.add_argument("--data-root", type=Path, default=None,
+                    help="Directory containing train/ and test/. Default: "
+                         "dataspec.DATA_ROOT, which honours $VOLT_DATA_DIR.")
     ap.add_argument("--out", default="reports/figures", type=Path)
     ap.add_argument("--mode", default="all",
                     choices=["overview", "timeline", "norm", "tracks", "zoom", "all"])
@@ -655,7 +663,7 @@ def main(argv=None) -> int:
     ap.add_argument("--half", type=int, default=48, help="zoom crop half-width in voxels")
     args = ap.parse_args(argv)
 
-    train = args.data_root / "train"
+    train = (args.data_root or DATA_ROOT) / "train"
     if not train.is_dir():
         print(f"not found: {train.resolve()}")
         return 1

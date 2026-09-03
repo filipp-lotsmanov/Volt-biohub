@@ -36,6 +36,15 @@ def _default_dataset_path() -> Path:
 
 
 DATASET_PATH = _default_dataset_path()
+
+# Directory that *contains* train/ and test/, i.e. one level above the train
+# split. The downloader writes both splits under here and the EDA scripts read
+# both from here, so it has to be one value rather than a constant repeated in
+# each script. Correct in all three environments because DATASET_PATH always
+# ends in the train split: <repo>/data/train, $VOLT_DATA_DIR (set to
+# .../biohub/train), or the Kaggle competition mount's train/.
+DATA_ROOT = DATASET_PATH.parent
+
 PREDICTIONS_PATH = _BASE / "predictions"
 RESULTS_PATH = _BASE / "results"
 WEIGHTS_PATH = _BASE / "weights"
