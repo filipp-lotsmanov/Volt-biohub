@@ -143,6 +143,75 @@ def test_zip64_archive_reports_real_sizes(tmp_path):
     assert [e for e in entries if fd._needs_fetch(e, out)] == []
 
 
+def _truncate(path: Path, fraction: float) -> int:
+    """Cut *path* down to *fraction* of its length, as an interrupted transfer would.
+
+    A zip's central directory sits at the tail, so this removes it — which is exactly
+    why `exists()` cannot stand in for `complete`.
+    """
+    full = path.stat().st_size
+    with path.open("r+b") as fh:
+        fh.truncate(int(full * fraction))
+    return full
+
+
+def test_incomplete_archive_is_resumed_not_reused(archive, tmp_path, monkeypatch, capsys):
+    """An interrupted transfer must resume; before this, `zip` raised BadZipFile.
+
+    The old code branched on `zip_path.exists()`, so a partial archive was announced
+    as "Reusing" and handed straight to `manifest_from_archive`. The only documented
+    escape was `--force`, i.e. re-transferring 88 GB from byte 0.
+    """
+    pristine = tmp_path / "pristine.zip"
+    pristine.write_bytes(archive.read_bytes())
+    _truncate(archive, 0.45)
+    assert not fd._archive_is_readable(archive)
+
+    calls = []
+
+    def fake_download(dest: Path, *, force: bool = False) -> Path:
+        # Stands in for the client's Range request completing the transfer.
+        calls.append(force)
+        (dest / fd.ZIP_NAME).write_bytes(pristine.read_bytes())
+        return dest / fd.ZIP_NAME
+
+    monkeypatch.setattr(fd, "download_archive", fake_download)
+    fd.main(["zip", "--dest", str(tmp_path), "--samples", "6bba_c328f2fd"])
+
+    assert calls == [False], "must resume (force=False), not re-transfer from byte 0"
+    assert "incomplete" in capsys.readouterr().out
+    entries = fd.manifest_from_archive(tmp_path / fd.ZIP_NAME)
+    wanted = [e for e in entries if e.sample == "6bba_c328f2fd"]
+    assert wanted and not [e for e in wanted if fd._needs_fetch(e, tmp_path)]
+
+
+def test_complete_archive_is_still_reused(archive, tmp_path, monkeypatch, capsys):
+    """The reuse path must survive the fix: no transfer when the archive is readable."""
+    calls = []
+    monkeypatch.setattr(
+        fd, "download_archive",
+        lambda dest, *, force=False: calls.append(force) or (dest / fd.ZIP_NAME),
+    )
+    fd.main(["zip", "--dest", str(tmp_path), "--samples", "6bba_c328f2fd"])
+
+    assert calls == [], "a readable archive must not trigger a transfer"
+    assert "Reusing" in capsys.readouterr().out
+
+
+def test_zero_byte_archive_counts_as_incomplete(tmp_path):
+    """Disk full on the first chunk leaves an empty file, not a missing one."""
+    (tmp_path / fd.ZIP_NAME).write_bytes(b"")
+    assert not fd._archive_is_readable(tmp_path / fd.ZIP_NAME)
+
+
+def test_unreadable_after_resume_exits_instead_of_looping(archive, tmp_path, monkeypatch):
+    """One resume attempt, then a clear exit — a server rejecting Range must not spin."""
+    _truncate(archive, 0.45)
+    monkeypatch.setattr(fd, "download_archive", lambda dest, *, force=False: dest / fd.ZIP_NAME)
+    with pytest.raises(SystemExit, match="still unreadable after resuming"):
+        fd.main(["zip", "--dest", str(tmp_path), "--samples", "6bba_c328f2fd"])
+
+
 def test_write_manifest_round_trips(archive, tmp_path):
     entries = fd.manifest_from_archive(archive)
     fd.write_manifest(entries, tmp_path)
