@@ -1,36 +1,47 @@
 #!/usr/bin/env python
-"""Download Biohub competition samples from Kaggle, file by file.
+"""Download the Biohub competition data from Kaggle.
 
 Each sample is a ``.zarr`` / ``.geff`` **directory** (Zarr v3, one chunk per
-timepoint) while the Kaggle API serves individual files, so fetching a subset means
-enumerating the competition file table and downloading each member separately.
-Enumerating ~25k files takes a few minutes, so the manifest is cached on disk and
-reused.
+timepoint), so the 88 GB dataset is ~25k small files. Two ways to get them, and the
+choice is not a preference:
+
+**``zip`` — one bulk request, the default for any real download.** Kaggle serves the
+whole competition as a single archive. One connection, no rate limiting, and the
+archive's own central directory doubles as the manifest, so this needs no file
+listing at all. The transfer is resumable across runs (HTTP Range, validated against
+the remote ETag), and extraction is filtered by the same selection flags as ``get``.
+Note the archive is all-or-nothing: ``--samples`` narrows what gets *extracted*, not
+what gets *transferred*.
+
+**``get`` — per-file, for surgical top-ups only.** Kaggle rate-limits the per-file
+endpoint hard, and rejected requests still count against the bucket, so a few hundred
+files is the practical ceiling; it is not a way to fetch the dataset. ``--all`` is
+refused here and points at ``zip``.
 
 Usage
 -----
-    # once: cache the file table (needed by every other command)
-    python scripts/fetch_data.py manifest --dest D:/data/biohub
+    # the whole dataset, one request (server: 88 GB archive + 88 GB extracted)
+    python scripts/fetch_data.py zip --dest /data/biohub --split both --all
 
-    # what is in there
+    # a subset: still transfers the whole archive, extracts only these samples
+    python scripts/fetch_data.py zip --dest D:/data/biohub --samples 6bba_c328f2fd
+    python scripts/fetch_data.py zip --dest /data/biohub --all --rm-zip
+
+    # what is in there (offline once `zip` or `manifest` has cached manifest.csv)
     python scripts/fetch_data.py samples --dest D:/data/biohub
 
-    # dev box: a couple of samples, enough for the test fixture + inspection
-    python scripts/fetch_data.py get --dest D:/data/biohub --samples 6bba_c328f2fd
-    python scripts/fetch_data.py get --dest D:/data/biohub --per-embryo 2 --dry-run
-
-    # progress, from any terminal, for a download started by any shell
+    # progress, from any terminal, for a run started by any shell
     python scripts/fetch_data.py status --dest D:/data/biohub
     python scripts/fetch_data.py status --dest D:/data/biohub --per-embryo 2
 
-    # server: everything — prefer ONE bulk request over 25k per-file ones, which the
-    # API rate-limits into the ground:
-    #     kaggle competitions download -c biohub-cell-tracking-during-development
-    # then unzip into the data root. `get --all` exists but expect 429 throttling.
-    python scripts/fetch_data.py get --dest /scratch/biohub --all
+    # surgical per-file top-up of one sample (throttled endpoint; keep it small)
+    python scripts/fetch_data.py get --dest D:/data/biohub --samples 6bba_c328f2fd
 
-Downloads are resumable: a file whose local size already matches the manifest is
-skipped, so re-running after an interruption costs only the manifest read.
+    # cache the file table over the API — only needed without a local archive
+    python scripts/fetch_data.py manifest --dest D:/data/biohub
+
+Both paths are resumable and idempotent: a file whose local size already matches is
+skipped, so re-running after an interruption is cheap.
 """
 
 from __future__ import annotations
@@ -41,6 +52,7 @@ import random
 import sys
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +60,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 COMPETITION = "biohub-cell-tracking-during-development"
+ZIP_NAME = f"{COMPETITION}.zip"  # what competition_download_files writes
 MANIFEST_NAME = "manifest.csv"
 PARTIAL_NAME = "manifest.partial.csv"
 TOKEN_NAME = "manifest.token"
@@ -56,6 +69,7 @@ TOKEN_NAME = "manifest.token"
 # Off a TTY, emit periodic plain lines instead so a backgrounded run can be tailed.
 _TTY = sys.stderr.isatty()
 _LOG_EVERY = 25
+_EXTRACT_LOG_EVERY = 1000  # ~25k members, so 25 lines for a full extraction
 
 # Kaggle rate-limits the per-file endpoint hard. Rejected requests still count against
 # the bucket, so retrying through a 429 storm sustains the throttle instead of riding it
@@ -229,17 +243,24 @@ def build_manifest(
                     break
                 time.sleep(sleep)
 
+    path = write_manifest(entries, dest)
+    partial.unlink(missing_ok=True)
+    token_path.unlink(missing_ok=True)
+
+    print(f"Wrote {len(entries)} entries to {path}")
+    return entries
+
+
+def write_manifest(entries: list[Entry], dest: Path) -> Path:
+    """Cache *entries* as ``manifest.csv`` so ``samples``/``status`` work offline."""
+    dest.mkdir(parents=True, exist_ok=True)
     path = dest / MANIFEST_NAME
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["name", "size"])
         for e in sorted(entries, key=lambda e: e.name):
             writer.writerow([e.name, e.size])
-    partial.unlink(missing_ok=True)
-    token_path.unlink(missing_ok=True)
-
-    print(f"Wrote {len(entries)} entries to {path}")
-    return entries
+    return path
 
 
 def load_manifest(dest: Path) -> list[Entry]:
@@ -376,7 +397,12 @@ def select(
 # =============================================================================
 
 
-def _needs_download(entry: Entry, dest: Path) -> bool:
+def _needs_fetch(entry: Entry, dest: Path) -> bool:
+    """True unless the file is already on disk at exactly the expected size.
+
+    The size check is what makes both the per-file downloader and the archive
+    extractor idempotent, so an interrupted run resumes for free.
+    """
     local = dest / entry.name
     return not (local.exists() and local.stat().st_size == entry.size)
 
@@ -387,7 +413,7 @@ def download(entries: list[Entry], dest: Path, workers: int = 6) -> None:
     ``competition_download_file`` writes ``<path>/<basename>``, and every timepoint
     chunk is named ``0``, so each file must be given its own parent directory.
     """
-    todo = [e for e in entries if _needs_download(e, dest)]
+    todo = [e for e in entries if _needs_fetch(e, dest)]
     skipped = len(entries) - len(todo)
     total = sum(e.size for e in todo)
     print(
@@ -433,8 +459,9 @@ def download(entries: list[Entry], dest: Path, workers: int = 6) -> None:
                             f"bucket empty. Wait (limits are typically hourly), then re-run "
                             f"the same command — {done_files} file(s) fetched this run are "
                             f"already on disk and will be skipped.\n"
-                            f"For the full dataset use one bulk request instead: "
-                            f"`kaggle competitions download -c {COMPETITION}`."
+                            f"For anything larger than a handful of samples use the "
+                            f"bulk archive instead — one connection, no throttling:\n"
+                            f"    python scripts/fetch_data.py zip --dest {dest} --all"
                         ) from exc
                 pbar.update(entry.size)
                 done_files += 1
@@ -455,28 +482,216 @@ def download(entries: list[Entry], dest: Path, workers: int = 6) -> None:
 
 
 # =============================================================================
+# Bulk archive — the path that actually scales
+# =============================================================================
+
+
+def download_archive(dest: Path, *, force: bool = False) -> Path:
+    """Fetch the whole competition as one archive and return its path.
+
+    ``competition_download_files`` streams to ``<dest>/<competition>.zip`` in 1 MiB
+    chunks and, with ``force=False``, resumes an interrupted transfer with an HTTP
+    Range request — validated against the remote ETag via a ``.kaggle-partial``
+    marker, so a stale partial is re-fetched rather than silently concatenated.
+    That is the whole reason to prefer this over 25k per-file requests: one
+    connection the API does not throttle, and interruption costs nothing.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    zip_path = dest / ZIP_NAME
+    have = zip_path.stat().st_size / 2**30 if zip_path.exists() else 0.0
+    print(
+        f"Requesting the competition archive into {zip_path}"
+        + (f" (resuming from {have:.2f} GiB)" if have else "")
+    )
+    # Not wrapped in _retry: download_file already retries chunk reads internally,
+    # and a bulk request is not the endpoint that 429s.
+    # Off a TTY the client's \r progress bar would write ~90k lines into a log for an
+    # 88 GB transfer, so stay quiet there and let `status` report progress instead.
+    _api().competition_download_files(
+        COMPETITION, path=str(dest), force=force, quiet=not _TTY
+    )
+
+    if not zip_path.exists():
+        sys.exit(
+            f"Kaggle reported success but {zip_path} is missing.\n"
+            f"If the competition rules have not been accepted in the browser the API "
+            f"returns 403 here."
+        )
+    print(f"Archive on disk: {zip_path.stat().st_size / 2**30:.2f} GiB")
+    return zip_path
+
+
+def _archive_is_readable(zip_path: Path) -> bool:
+    """Whether the archive's central directory can be read.
+
+    This is the invariant the bulk path actually depends on: ``manifest_from_archive``
+    and every extraction worker open the central directory, which lives at the *tail*
+    of the file, so an interrupted transfer has none. Checking it costs a seek to the
+    end plus a few MiB — not a scan of 88 GB.
+
+    Presence on disk is a different property, and the client's ``.kaggle-partial``
+    marker is not a reliable substitute either: it is skipped entirely when the server
+    sends neither ETag nor Last-Modified, so an interrupted transfer can leave the file
+    present and the marker absent. Reading the directory has no such hole, and catches
+    a zero-byte file (disk full on the first chunk) for free.
+    """
+    try:
+        with zipfile.ZipFile(zip_path):
+            return True
+    except zipfile.BadZipFile:
+        # Deliberately narrow: a PermissionError or ENOSPC must not be read as
+        # "incomplete" and trigger an 88 GB re-transfer.
+        return False
+
+
+def obtain_archive(dest: Path, *, force: bool = False) -> Path:
+    """Return a path to a complete, readable archive, transferring only what is missing.
+
+    Four states, not two. A local file that exists is not necessarily complete, and
+    treating it as complete is what turns an interrupted 88 GB transfer into a
+    ``BadZipFile`` traceback whose only documented remedy is re-transferring from
+    byte 0 — the opposite of the resume the client already implements.
+    """
+    zip_path = dest / ZIP_NAME
+    if force or not zip_path.exists():
+        return download_archive(dest, force=force)
+
+    if _archive_is_readable(zip_path):
+        # Complete: re-extraction is local-only, so this is worth reusing.
+        print(f"Reusing {zip_path} ({zip_path.stat().st_size / 2**30:.2f} GiB); "
+              f"--force re-downloads.")
+        return zip_path
+
+    # Interrupted: the bytes on disk are a prefix of the archive, so the client can
+    # resume onto them over HTTP Range. Exactly one attempt — a server that rejects
+    # the Range outright must not spin.
+    print(
+        f"{zip_path} is incomplete ({zip_path.stat().st_size / 2**30:.2f} GiB on disk, "
+        f"central directory unreadable) — resuming."
+    )
+    zip_path = download_archive(dest, force=False)
+    if not _archive_is_readable(zip_path):
+        sys.exit(
+            f"{zip_path} is still unreadable after resuming "
+            f"({zip_path.stat().st_size / 2**30:.2f} GiB on disk).\n"
+            f"Delete it, or re-transfer from byte 0:\n"
+            f"    python scripts/fetch_data.py zip --dest {dest} --force"
+        )
+    return zip_path
+
+
+def manifest_from_archive(zip_path: Path) -> list[Entry]:
+    """Read the archive's central directory as the file manifest.
+
+    The archive already lists every member with its uncompressed size, so the bulk
+    path needs no ``competition_list_files`` paging at all — which is the throttled
+    call that made building a manifest slow in the first place.
+    """
+    with zipfile.ZipFile(zip_path) as zf:
+        entries = [
+            Entry(name=info.filename.replace("\\", "/"), size=info.file_size)
+            for info in zf.infolist()
+            if not info.is_dir()
+        ]
+
+    if not any(e.sample for e in entries):
+        # Guard against Kaggle wrapping everything in a top-level folder: selection
+        # keys off `train/{sample}.zarr/...`, and a silent layout change would
+        # otherwise extract nothing and look like an empty download.
+        tops = sorted({e.name.split("/", 1)[0] for e in entries})[:10]
+        sys.exit(
+            f"No `train/`- or `test/`-style samples found in {zip_path.name}.\n"
+            f"Top-level entries: {tops}\n"
+            f"The archive layout has changed; Entry.split/Entry.sample need updating."
+        )
+    return entries
+
+
+def extract(
+    zip_path: Path, entries: list[Entry], dest: Path, workers: int = 8, batch: int = 200
+) -> None:
+    """Extract *entries* from the archive into ``dest``, skipping what is present.
+
+    ``ZipFile`` is not thread-safe, so each worker opens its own handle — the same
+    reason the per-file downloader keeps one API client per thread. Members are zarr
+    chunks that arrive already blosc/zstd-compressed, so the zip's own deflate pass
+    is close to a passthrough and the cost is dominated by filesystem writes; a
+    handle is amortised over a batch of members to keep open/close off the hot path.
+    """
+    todo = [e for e in entries if _needs_fetch(e, dest)]
+    total = sum(e.size for e in todo)
+    print(
+        f"{len(todo)} member(s) to extract ({total / 2**30:.2f} GiB); "
+        f"{len(entries) - len(todo)} already present"
+    )
+    if not todo:
+        return
+
+    batches = [todo[i : i + batch] for i in range(0, len(todo), batch)]
+
+    def _one(group: list[Entry]) -> int:
+        with zipfile.ZipFile(zip_path) as zf:
+            for e in group:
+                zf.extract(e.name, dest)
+        return sum(e.size for e in group)
+
+    failures: list[tuple[str, str]] = []
+    done_files = done_bytes = 0
+    next_log = _EXTRACT_LOG_EVERY
+    with tqdm(
+        total=total, unit="B", unit_scale=True, desc="extracting", disable=not _TTY
+    ) as pbar:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_one, g): g for g in batches}
+            for fut in as_completed(futures):
+                group = futures[fut]
+                try:
+                    pbar.update(fut.result())
+                except Exception as exc:
+                    failures.append((group[0].name, f"{type(exc).__name__}: {exc}"))
+                done_files += len(group)
+                done_bytes += sum(e.size for e in group)
+                if not _TTY and done_files >= next_log:
+                    print(
+                        f"  {done_files}/{len(todo)} members, "
+                        f"{done_bytes / 2**30:.2f}/{total / 2**30:.2f} GiB",
+                        flush=True,
+                    )
+                    next_log = done_files + _EXTRACT_LOG_EVERY
+
+    if failures:
+        print(f"\n{len(failures)} batch(es) failed; re-run to retry:")
+        for name, err in failures[:10]:
+            print(f"  near {name}: {err}")
+    else:
+        print("Extraction complete.")
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
 
 def _default_dest() -> Path:
     sys.path.insert(0, str(Path(__file__).parent))
-    from dataspec import DATASET_PATH
+    from dataspec import DATA_ROOT
 
-    return Path(DATASET_PATH).parent
+    return Path(DATA_ROOT)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument(
-        "command", choices=["manifest", "samples", "get", "status"],
-        help="manifest: cache the file table. samples: summarise it. "
-             "get: download. status: compare disk against the manifest.",
+        "command", choices=["zip", "manifest", "samples", "get", "status"],
+        help="zip: one bulk archive request, then extract (use this to download). "
+             "manifest: cache the file table over the API. samples: summarise it. "
+             "get: per-file top-up, rate-limited. "
+             "status: compare disk against the manifest.",
     )
     parser.add_argument(
         "--dest", type=Path, default=None,
         help="Data root; train/ and test/ are created inside it. "
-             "Default: parent of dataspec.DATASET_PATH.",
+             "Default: dataspec.DATA_ROOT, which honours $VOLT_DATA_DIR.",
     )
     parser.add_argument("--split", choices=["train", "test", "both"], default="train")
     parser.add_argument("--samples", type=str, default=None,
@@ -487,18 +702,62 @@ def main() -> None:
                         help="Take at most N samples from each embryo.")
     parser.add_argument("--all", action="store_true", help="Take every sample in --split.")
     parser.add_argument("--workers", type=int, default=4,
-                        help="Concurrent downloads (default: 4). The API throttles; "
-                             "raising this trades speed for 429 backoff.")
+                        help="Concurrent per-file downloads for `get` (default: 4). The "
+                             "API throttles; raising this trades speed for 429 backoff. "
+                             "Also the `zip` extraction thread count, where it is a "
+                             "local-CPU knob and 8-16 is reasonable.")
+    parser.add_argument("--rm-zip", action="store_true",
+                        help="`zip`: delete the archive once extraction reports no "
+                             "failures. Halves peak disk (88 GB rather than 176 GB) at "
+                             "the cost of a re-download if you later want other samples.")
+    parser.add_argument("--force", action="store_true",
+                        help="`zip`: re-transfer the archive from byte 0 instead of "
+                             "resuming or reusing a complete local copy.")
     parser.add_argument("--page-sleep", type=float, default=1.0,
                         help="Seconds between manifest pages (default: 1.0).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would be fetched, then stop.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     dest = args.dest or _default_dest()
 
     if args.command == "manifest":
         build_manifest(dest, sleep=args.page_sleep)
+        return
+
+    if args.command == "zip":
+        zip_path = obtain_archive(dest, force=args.force)
+        entries = manifest_from_archive(zip_path)
+        write_manifest(entries, dest)
+
+        chosen = select(
+            entries,
+            split=args.split,
+            samples=args.samples.split(",") if args.samples else None,
+            embryos=args.embryos.split(",") if args.embryos else None,
+            per_embryo=args.per_embryo,
+            take_all=args.all,
+        )
+        # select() keys off the sample stem, so top-level files fall out of it.
+        # sample_submission.csv is the submission-format oracle (CLAUDE.md) and the
+        # root files are tiny, so always take them.
+        chosen = chosen + [e for e in entries if e.sample is None]
+
+        names = sorted({e.sample for e in chosen if e.sample})
+        print(f"{len(names)} sample(s) selected for extraction: {', '.join(names)}")
+        if args.dry_run:
+            print(f"{len(chosen)} members, {sum(e.size for e in chosen) / 2**30:.2f} GiB")
+            return
+
+        extract(zip_path, chosen, dest, workers=args.workers)
+        status(entries, dest, chosen)
+        if args.rm_zip:
+            incomplete = [e for e in chosen if _needs_fetch(e, dest)]
+            if incomplete:
+                print(f"Keeping the archive: {len(incomplete)} member(s) still missing.")
+            else:
+                zip_path.unlink()
+                print(f"Removed {zip_path}")
         return
 
     entries = load_manifest(dest)
@@ -524,6 +783,14 @@ def main() -> None:
         )
         status(entries, dest, expected)
         return
+
+    if args.all:
+        sys.exit(
+            "`get --all` would issue ~25k requests against the per-file endpoint, which "
+            "Kaggle rate-limits into the ground.\n"
+            f"Use one bulk request instead:\n"
+            f"    python scripts/fetch_data.py zip --dest {dest} --split {args.split} --all"
+        )
 
     chosen = select(
         entries,

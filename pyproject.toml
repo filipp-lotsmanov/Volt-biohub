@@ -31,6 +31,12 @@ dependencies = [
     "matplotlib>=3.11.1",
 ]
 
+[project.scripts]
+# CLAUDE.md documents `CUDA_VISIBLE_DEVICES=$(volt_gpu)` for the shared box;
+# without this entry point that command fails and every GPU run silently
+# DataParallels across cards other tenants have filled.
+volt_gpu = "volt_biohub.gpu:main"
+
 [project.optional-dependencies]
 viz = [
     "napari>=0.5",
