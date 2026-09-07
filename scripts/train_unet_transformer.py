@@ -1068,6 +1068,8 @@ def train(
     augmentations: list | None = DEFAULT_AUGMENTATIONS,
     pool_kernel_um: float = 5.0,
     data_parallel: bool = True,
+    select_videos: int = 8,
+    select_budget: float = 1.0,
 ) -> UNetNodeTransformer:
     """Train on one fold from a pre-computed splits file.
 
@@ -1149,6 +1151,15 @@ def train(
     g = None
     worker_init_fn = None
     if seed is not None:
+        # The DataLoader generator alone does NOT make a run reproducible: model
+        # init, dropout and the augmentation draws all come from the global RNGs.
+        # Without these three lines two "identical" runs differ, which is how an
+        # ablation ends up measuring initialisation noise.
+        import random as _random
+        _random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
         g = torch.Generator()
         g.manual_seed(seed)
 
@@ -1210,7 +1221,17 @@ def train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     print(f"Starting training for {n_epochs} epochs (batch_size={batch_size})...", flush=True)
 
-    best_score = 0.0
+    # Videos scored with the real metric each epoch to rank checkpoints. A
+    # subsample, because scoring all 128 videos of the heavy fold would cost
+    # more than the epoch; a *fixed* subsample still ranks consistently.
+    select_names = test_files[:select_videos] if not debug_video else [debug_video]
+    select_dir = select_names[0].parent if select_names else data_dir
+    select_names = [pth.name for pth in select_names]
+    print(f"Checkpoint selection: competition score on {len(select_names)} "
+          f"held-out video(s) via the geometric linker "
+          f"(budget {select_budget}x t_true)", flush=True)
+
+    best_score = -1.0
     save_path = output_dir / "edge_predictor_best.pth"
     pbar = tqdm(range(n_epochs), desc="Training", disable=False)
     print(
@@ -1232,12 +1253,18 @@ def train(
         )
         train_time = time.monotonic() - t0
 
-        t0 = time.monotonic()
-        test_loss, test_acc, test_recall = evaluate(model, test_loader, device, pool_kernel_um=pool_kernel_um)
+        test_acc = evaluate(model, test_loader, device, pool_kernel_um=pool_kernel_um)[1]
         test_time = time.monotonic() - t0
 
-        score = test_acc * test_recall
-        is_best = score >= best_score
+        # NOT test_acc * test_recall. That product saturates at 0.99 within
+        # twenty iterations -- the edge matrix is almost all zeros, so predicting
+        # nothing scores 0.989, and the figure *rises* with detection density.
+        # It froze at epoch 2 of 8 while the detection loss halved.
+        from volt_biohub.scoring import epoch_selection_score
+        score, sel = epoch_selection_score(
+            select_dir, select_names, model, device, budget=select_budget,
+        )
+        is_best = score > best_score
 
         if is_best:
             best_score = score
@@ -1249,15 +1276,18 @@ def train(
             )
 
         marker = "*" if is_best else " "
-        pbar.set_postfix(edge=f"{edge_loss:.4f}", det=f"{det_loss:.4f}", acc=f"{test_acc:.4f}")
+        pbar.set_postfix(edge=f"{edge_loss:.4f}", det=f"{det_loss:.4f}", cv=f"{score:.4f}")
         print(
             f"  Epoch {epoch:3d}/{n_epochs} | edge={edge_loss:.4f} | det={det_loss:.4f} | "
-            f"test_loss={test_loss:.4f} | acc={test_acc:.4f} | recall={test_recall:.4f} | best={best_score:.4f} {marker} | "
+            f"CV={score:.4f} | adjJ={sel['adj_edge_jaccard']:.4f} | "
+            f"divJ={sel['division_jaccard']:.4f} | acc={test_acc:.4f} | "
+            f"best={best_score:.4f} {marker} | "
             f"train={train_time:.1f}s test={test_time:.1f}s",
             flush=True,
         )
 
-    print(f"\nBest score (acc*recall): {best_score:.4f}, saved to {save_path}", flush=True)
+    print(f"\nBest competition score on the selection videos: {best_score:.4f}, "
+          f"saved to {save_path}", flush=True)
     if save_path.exists():
         state = torch.load(save_path, map_location=device, weights_only=True)
         if isinstance(model.unet, nn.DataParallel):
@@ -1320,6 +1350,17 @@ def main() -> None:
                         help="Number of consecutive frames per training window (default: 2).")
     parser.add_argument("--pool-kernel-um", type=float, default=5.0,
                         help="Local-max suppression distance in microns (default: 5.0).")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed torch/numpy/random and the DataLoader. Runs are NOT "
+                             "reproducible without it, so any ablation run without a seed "
+                             "is measuring initialisation noise as well as the change.")
+    parser.add_argument("--select-videos", type=int, default=8,
+                        help="Held-out videos scored with the competition metric each "
+                             "epoch to rank checkpoints (default 8). 0 is not allowed: "
+                             "the legacy acc*recall selector it replaces saturates.")
+    parser.add_argument("--select-budget", type=float, default=1.0,
+                        help="Node budget as a multiple of t_true used during "
+                             "checkpoint scoring (default 1.0).")
     parser.add_argument("--data-parallel", dest="data_parallel", action="store_true", default=True,
                         help="Split the UNet across all visible GPUs via nn.DataParallel "
                              "when more than one is available (default: on).")
@@ -1355,6 +1396,9 @@ def main() -> None:
             downsample=downsample,
             det_loss_weight=args.det_loss_weight,
             det_neg_weight=args.det_neg_weight,
+            seed=args.seed,
+            select_videos=max(1, args.select_videos),
+            select_budget=args.select_budget,
             det_target=args.det_target,
             det_pu_mask=args.det_pu_mask,
             det_sigma_um=args.det_sigma_um,
