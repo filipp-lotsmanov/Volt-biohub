@@ -91,6 +91,11 @@ def main(argv=None) -> int:
                         "is the 2.87 um closest division sister pair.")
     p.add_argument("--gate-um", type=float, default=MOTION_GATE_UM)
     p.add_argument("--division-gate-um", type=float, default=DIVISION_GATE_UM)
+    p.add_argument("--refine", action="store_true",
+                   help="Response-weighted centroid within each peak's neighbourhood. "
+                        "Aimed at temporal jitter, not matching precision: the U-Net's "
+                        "saturated map puts each cell on a plateau whose winning voxel "
+                        "moves between frames, and the linker resolves 1.82um motion.")
     p.add_argument("--no-divisions", action="store_true",
                    help="Forbid a second child. The control arm for the division term.")
     p.add_argument("--run", type=str, default="",
@@ -122,7 +127,8 @@ def main(argv=None) -> int:
 
     print(f"{args.detector} · {len(names)} datasets · budget {args.budget}x t_true · "
           f"sep {args.separation_um} um · gate {args.gate_um} um · "
-          f"div gate {'off' if args.no_divisions else args.division_gate_um}",
+          f"div gate {'off' if args.no_divisions else args.division_gate_um} · "
+          f"refine {args.refine}",
           flush=True)
 
     rows, t0 = [], time.monotonic()
@@ -131,6 +137,7 @@ def main(argv=None) -> int:
             data_dir, name, model=model, device=device, budget=args.budget,
             separation_um=args.separation_um, gate_um=args.gate_um,
             division_gate_um=None if args.no_divisions else args.division_gate_um,
+            refine=args.refine,
         )
         rows.append(r)
         print(f"  [{i:3d}/{len(names)}] {name:16s} adjJ={r['adj_edge_jaccard']:.4f} "

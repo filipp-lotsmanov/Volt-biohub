@@ -74,6 +74,7 @@ def detect_video(
     separation_um: float,
     model=None,
     device=None,
+    refine: bool = False,
 ) -> list[np.ndarray]:
     """Peaks per frame, from the U-Net head when *model* is given, else from DoG.
 
@@ -84,7 +85,8 @@ def detect_video(
     """
     if model is None:
         return [
-            detect_dog(v, n_per_frame, ISO_UM, min_separation_um=separation_um)
+            detect_dog(v, n_per_frame, ISO_UM, min_separation_um=separation_um,
+                       refine=refine)
             for v in volumes
         ]
 
@@ -98,7 +100,8 @@ def detect_video(
             for frame in volumes:
                 logits = model.detect(torch.from_numpy(frame).to(device))
                 out.append(detect_from_map(
-                    logits.float().cpu().numpy(), n_per_frame, ISO_UM, separation_um
+                    logits.float().cpu().numpy(), n_per_frame, ISO_UM, separation_um,
+                    refine=refine,
                 ))
     finally:
         if was_training:
@@ -116,6 +119,7 @@ def score_video(
     separation_um: float = DEFAULT_SEPARATION_UM,
     gate_um: float = MOTION_GATE_UM,
     division_gate_um: float | None = DIVISION_GATE_UM,
+    refine: bool = False,
 ) -> dict:
     """One per-sample metric row, as :func:`metrics.per_sample_metrics` returns.
 
@@ -126,7 +130,7 @@ def score_video(
     t_true = read_t_true(data_dir, name)
     n_per_frame = budget_for(t_true, len(volumes), budget)
 
-    coords = detect_video(volumes, n_per_frame, separation_um, model, device)
+    coords = detect_video(volumes, n_per_frame, separation_um, model, device, refine)
     links = link_sequence(coords, (ISO_UM, ISO_UM, ISO_UM),
                           gate_um=gate_um, division_gate_um=division_gate_um)
     pred = build_graph(coords, links, upsample=DOWNSAMPLE)

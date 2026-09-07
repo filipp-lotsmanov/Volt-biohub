@@ -10,21 +10,17 @@ hold only ~10% of the metric's edge weight. Assignment on micrometre distance is
 therefore close to optimal by geometry, and a learned edge cost has very little
 left to buy.
 
-Two parameters, both read off measurements rather than tuned:
+One caveat on that geometric argument, learned the hard way: it holds for the
+*typical* case, which is not where the score is lost. Edge precision measured
+0.755 for the U-Net against 0.873 for the classical detector, so the atypical
+cases carry the remaining loss -- which is what a learned edge cost is for. The
+geometric linker is the right default, not the last word.
 
-``gate_um``
-    12.0. Pooled displacement over all 128,883 GT edges puts p99.9 at 13.8 um,
-    so 12 um forfeits 0.18% of real edges. The binding constraint is actually
-    divisions, not ordinary motion: the parent-to-far-daughter edge has a
-    **median of 7.13 um**, so a 7 um gate would forfeit **81 of 151** division
-    events while 12 um forfeits 6.
-
-``division_gate_um``
-    Separate, and deliberately tighter by default. A second child is where
-    division true positives come from *and* where division false positives come
-    from -- the slow test showed a spurious fork costing division Jaccard 0.5 on
-    a clip it had otherwise memorised perfectly. Keeping it its own knob means
-    the division term can be swept without touching ordinary linking.
+Both constants below were **swept, not derived**. Deriving them from motion
+percentiles alone produced 12.0 um and an enabled division pass, and both were
+wrong once measured against the metric -- see each docstring. The lesson
+generalises: a parameter read off the data distribution still has to be checked
+against the objective, because the objective only grades part of what you emit.
 """
 
 from __future__ import annotations
@@ -34,11 +30,35 @@ import polars as pl
 import tracksdata as td
 from scipy.optimize import linear_sum_assignment
 
-MOTION_GATE_UM = 12.0
-"""Linking gate. Motion p99.9 is 13.8 um; the far-daughter edge median is 7.13 um."""
+MOTION_GATE_UM = 8.0
+"""Linking gate, swept rather than derived -- 12.0 was wrong for a reason worth knowing.
 
-DIVISION_GATE_UM = 10.0
-"""Gate for a *second* child. Far-daughter p90 is 10.05 um, max 13.53."""
+Ordinary motion says 12 um: p99.9 over all 128,883 GT edges is 13.8 um, so 12 forfeits
+0.18% of real edges. That reasoning ignores the metric. An edge is scored only when an
+endpoint matched a GT node that has GT edges, so a *loose* gate on a detector with high
+node recall manufactures scored false positives. Measured on 30 samples of fold 0, same
+detector and budget: 12 um -> 0.5849, **8 um -> 0.6672**, 5 um -> 0.6143, with node recall
+identical at 0.8601 throughout. The classical detector prefers 8 um too (0.6435 ->
+0.6614), but gains only +0.018 against the U-Net's +0.082 -- the stronger the detector,
+the more a loose gate costs.
+
+So this is a per-detector knob. Sweep it whenever the detector changes; do not carry one
+detector's value to another.
+"""
+
+DIVISION_GATE_UM: float | None = None
+"""Second-child gate. **Off by default: measured as a net loss of ~0.025.**
+
+Turning the second pass off raised edge Jaccard 0.6656 -> 0.6914 while giving up 0.0058
+of division Jaccard -- worth 0.00058 of score at the 0.1 division weight. It pays 0.026
+to buy 0.0006. This is metric fact 2's over-detection/division trade running in reverse:
+forcing a second child manufactures edge false positives far faster than it finds real
+forks.
+
+Set it to a distance (far-daughter p90 is 10.05 um, max 13.53) to turn divisions back on
+-- worth retrying once edge Jaccard plateaus, since 0.1 of the score is unreachable
+without it.
+"""
 
 _BIG = 1.0e9
 

@@ -5,6 +5,10 @@
 *.sh text eol=lf
 *.ps1 text eol=crlf
 
+# The run ledger. csv.writer emits CRLF; normalise so a Windows and a Linux run
+# appending rows do not fight over line endings in every diff.
+experiments.csv text eol=lf
+
 # Never touched by diff/merge tooling.
 uv.lock -diff linguist-generated=true
 *.gif binary

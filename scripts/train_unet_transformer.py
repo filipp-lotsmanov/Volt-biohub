@@ -1276,6 +1276,7 @@ def train(
         # Cosmetic only since selection moved to the competition scorer, and it
         # walks every test window -- 12,392 on the heavy fold, ~13 of every 30
         # minutes per epoch. Capped by default; 0 skips it entirely.
+        t0 = time.monotonic()
         test_acc = (
             evaluate(model, test_loader, device, pool_kernel_um=pool_kernel_um,
                      max_batches=legacy_eval_batches)[1]
