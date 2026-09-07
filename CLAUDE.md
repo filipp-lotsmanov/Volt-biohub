@@ -64,7 +64,28 @@ distance, **max 7.0 µm**, scale `(z, y, x) = (1.625, 0.40625, 0.40625)` µm/vox
    *for the edge term* — but see the caveat below: it is **taxed on the division
    term**, which is the one place over-detection bites.
 3. `edge_FN = gt_num_edges - TP`. With (2): **recall dominates, global precision
-   barely matters.**
+   barely matters** — *for nodes*. **For edges this is wrong, and believing it cost us a
+   day.** Fact (2) says an edge is scored only when an endpoint matched a GT node that
+   itself has GT edges, which makes **node recall a gate on how much of your linking gets
+   graded**. Raise node recall and previously-invisible links become *scored* links.
+   Measured on 20 samples of fold 0, same linker, same budget:
+
+   | | DoG | U-Net |
+   |---|---|---|
+   | node recall | 0.792 | **0.860** |
+   | edge TP | 11,520 | **11,774** |
+   | edge FN | 4,576 | **4,322** |
+   | edge **FP** | **1,674** | 3,830 |
+   | edge precision | **0.873** | 0.755 |
+   | edge Jaccard | **0.648** | 0.591 |
+
+   The U-Net is strictly better on edge *recall* — more TPs, fewer FNs — and loses on a
+   **2.3× FP excess**. It earned 254 extra TPs and paid 2,156 extra FPs for them. DoG's
+   bad links near the 21 % of GT nodes it misses are **free**; the U-Net matches those
+   nodes, so the same bad links now cost. **Detector and linker therefore cannot be swept
+   independently** — a detector improvement changes what the linker is graded on, so
+   sweeping a detector against CV with a fixed linker systematically undervalues the
+   better detector.
 4. **The node-count penalty is soft and non-monotonic:**
    `J * (1 - 0.1 * (N_pred - N_true)/N_true)`, clamped at 0, `N_true =
    estimated_number_of_nodes` from the GEFF metadata `extra`. Doubling node count
@@ -119,6 +140,23 @@ Consequences:
   precision. Sweep the two terms together, never the edge term alone.
 - Aggressive detector + *selective* linker beats conservative detector + permissive
   linker.
+- **Linking is close to solved by geometry, so the learned linker is not where the score
+  is.** At *true* inference density — pitch from `estimated_number_of_nodes`, not from
+  sparse GT spacing — the half-distance to a cell's nearest neighbour beats its own
+  per-frame motion by a wide margin:
+
+  | | p10 | p50 | p90 |
+  |---|---|---|---|
+  | true pitch (µm) | 12.5 | 18.5 | 27.3 |
+  | motion p50 (µm) | 1.22 | 1.82 | 2.96 |
+  | **margin** (half-pitch / motion) | 3.05 | **4.86** | 10.03 |
+
+  The typical case is unambiguous in **199 of 199** samples and the p99 tail in 157; the
+  samples that are genuinely ambiguous carry only **~10 %** of edge weight. Confirmed
+  end to end: Hungarian assignment on µm distance, with no network at all, scores
+  **0.6424 on LOEO fold 0** (`src/volt_biohub/linking.py`). So spend learned capacity on
+  *detection* and keep the geometric linker — which also removes the transformer's
+  zero-edge failure from the critical path.
 
 ### Silent scorer behaviours — these lose points without raising anything
 
@@ -346,6 +384,39 @@ timepoint per chunk), scale `(1.0, 1.625, 0.40625, 0.40625)`, and **all 203 carr
 two-sample check suggested (q0.001 spans 0.0–465, q0.999 spans 615–5398), so per-sample
 normalization is doing more domain-shift work than assumed, not less.
 
+**The underlabelling is SPATIAL, not temporal — and this decides where relabelling
+effort is worth spending.** Two different things get called an annotation "gap" and only
+one of them is large. Measured over all 199 GT files:
+
+*Dataset-level holes — small.* **140 of 199 samples are annotated at every frame
+t=0..99.** Interior holes (a frame with no annotation inside the annotated span) exist in
+only **25** samples and are a **median 1 frame** long, worst case 24. What does happen is
+truncation at the ends: 29 samples start after t=0 (median 12 frames missing) and 25 stop
+before t=99 (median 19). The extreme is `44b6_0b24845f`, annotated only t=11..50.
+
+*Track-level abandonment — common, but cheap to fix.* **41 % of tracklets (1,828 of
+4,435) end mid-movie while their dataset carries on being annotated, and away from the
+volume border** — so not a cell leaving the field of view. Orphaned *starts* number
+1,741, suspiciously close, which suggests one lineage cut in two. Testing that directly —
+for each orphaned end, is there an orphaned start within `gap × 6.84 µm` (the motion p99)
+in the next k frames?
+
+| gap | joinable ends | cumulative | % of orphans |
+|---|---|---|---|
+| 1–3 frames | 233 | 233 | 12.7 % |
+| 4–7 frames | 271 | 504 | 27.6 % |
+| 8–10 frames | 259 | 763 | 41.7 % |
+| unjoinable within 10 | — | 1,065 | **58.3 %** |
+
+**Closing every small and medium gap would add roughly 1,821 edges to a corpus of
+128,883 — about +1.4 %.** So gap-closed labels are worth having but cannot move the
+score much, and 58 % of abandoned tracks have no partner at all within 10 frames.
+
+The reason is arithmetic: gap closing repairs temporal holes *inside the annotated 3.5 %*.
+It does not touch the **96.5 % of cells that were never labelled at all**. Any experiment
+framed as "how much do the labels matter" has to attack the spatial axis to see a real
+effect — which is what `--det-pseudo-weight` does (see Known defects → addressed).
+
 **How sparse "sparse" actually is** — the earlier figures came from two unusually sparse
 samples and understated density by ~3×. Measured over all 199 GT files: **133,318 nodes /
 128,883 edges / 151 divisions**, all 199 readable with plain zarr, **zero integrity
@@ -541,7 +612,10 @@ than silently extracting nothing.
 | `src/volt_biohub/io.py` | 396 | zarr/geff I/O, resample, normalize | heavy rework |
 | `src/volt_biohub/img_proc.py` | 187 | normalization, coord rescaling, `nms_3d` | keep, extend |
 | `src/volt_biohub/gpu.py` | 218 | shared-box GPU scan/rank, device resolver | ours; keep |
-| `src/volt_biohub/detection_targets.py` | 297 | Gaussian targets, PU mask, detection loss | ours; keep |
+| `src/volt_biohub/detection_targets.py` | 452 | Gaussian targets, PU mask, pseudo-labels, detection loss | ours; keep |
+| `src/volt_biohub/linking.py` | 195 | Hungarian linking in µm, ≤2 children, graph build | ours; keep |
+| `src/volt_biohub/detectors.py` | 132 | DoG and score-map front-ends behind one signature | ours; keep |
+| `src/volt_biohub/scoring.py` | 165 | video-level detect→link→score, shared by train and CLI | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
 | `scripts/dataspec.py` | 40 | path resolution | keep |
@@ -550,6 +624,7 @@ than silently extracting nothing.
 | `scripts/predict_unet_transformer.py` | 677 | inference; `--use-ilp`, `--det-threshold` (0.99) | rework |
 | `scripts/geffs_to_csv.py` / `csv_to_geffs.py` | 85 / 89 | submission round-trip | wrap in a validator |
 | `scripts/evaluate.py` | 142 | score pred vs GT geffs | keep, add per-video diagnostics |
+| `scripts/score_pipeline.py` | 172 | score a pipeline end to end, `--detector dog\|unet` | ours; keep |
 | `scripts/augmentations.py` | 63 | brightness shift + axis flips only | extend |
 | `scripts/explore_data.py` | 1319 | full-dataset measurement → `reports/eda/` | B's; keep |
 | `scripts/check_integrity.py` | 603 | asserts pipeline assumptions, non-zero exit | B's; keep |
@@ -602,15 +677,21 @@ Modelling and scoring:
   harness exists — and note `detect_and_match` thresholds raw **logits** at 0.3 during
   training while `predict` thresholds a **sigmoid** at 0.99. Those are not the same
   quantity and the mismatch has never been checked.
-- **Checkpoint selection does not use the competition metric, and the number it does use
-  is worthless — measured.** `train()` keeps the best epoch by `test_acc × test_recall`
-  (`train_unet_transformer.py:1237`), where accuracy is per-cell agreement on the edge
-  matrix. After **20 iterations** on a 4-video fold it already reads
-  `acc=0.9943, recall=0.9408`. The edge matrix is overwhelmingly zeros, so accuracy is
-  near 1 by default and the product saturates before the model has learned anything. It
-  cannot rank epochs and it certainly cannot compare loss variants. **Do not read the
-  training console as evidence about a design choice** — score with `evaluate.py`.
-  The real scorer is in-repo and unused here.
+- ~~**Checkpoint selection does not use the competition metric.**~~ **Fixed 2026-09-07.**
+  Kept here because the failure is instructive. `train()` selected on
+  `test_acc × test_recall`, per-cell agreement on the edge matrix — which is
+  overwhelmingly zeros, so **predicting no edges at all scores 0.989–0.999**, and the
+  figure *rises* with detection density (750×760 detections against 7 GT edges gives
+  0.9993). It read `acc=0.9943, recall=0.9408` after **20 iterations** and froze at
+  epoch 2 of 8 while the detection loss halved, discarding six epochs of real gain.
+  Selection now runs the competition scorer over a subsample of held-out *videos* via
+  `volt_biohub.scoring.epoch_selection_score`; after five iterations that reads **0.1453**,
+  i.e. it has dynamic range. Tunables: `--select-videos` (default 8) and
+  `--select-budget`. The old edge-matrix `evaluate()` survives for display only and is
+  capped by `--legacy-eval-batches` (default 20) because walking the full test split cost
+  ~13 of every 30 minutes per epoch on the heavy fold.
+  **Still true and still important: do not read the training console's `acc` column as
+  evidence about anything.**
 - **The two knobs the metric says matter most are unreachable from the CLI.**
   `PredictConfig` holds `pool_kernel_um` (suppression radius), `threshold` (edge
   probability), `edge_activation` and `det_tta`, but `main()` forwards only
@@ -650,8 +731,11 @@ Hygiene, each capable of wasting a day:
 - **Three disagreeing defaults per knob.** `det_loss_weight`: `train_epoch` signature
   0.1, `train()` signature 1e1, CLI 1e0 with help text claiming 1e1. Same shape for `lr`
   (1e-3 vs 1e-4) and `num_workers` (4 vs 8 vs help saying 4). Always pass explicitly.
-- **No `--seed`.** `train()` takes one; no CLI argument reaches it. Runs are not
-  reproducible today.
+- ~~**No `--seed`.**~~ **Fixed 2026-09-07** — `--seed` now reaches `train()` *and* seeds
+  torch, numpy and `random`, not only the DataLoader generator as before. That omission
+  is why the gaussian-vs-voxel ablation was uncontrolled: model init, dropout and the
+  augmentation draws all came from the global RNGs, so two "identical" runs differed.
+  **Pass it on every run**; a config without a seed is not an experiment.
 - `--method baseline` in the README/commands matches nothing — `DEFAULT_METHOD` is
   `unet_transformer`, so it looks for `weights/baseline/split_0/edge_predictor_best.pth`,
   which nothing writes.
@@ -664,6 +748,17 @@ Hygiene, each capable of wasting a day:
   before committing hours. Still open: it is a throwaway script, not the
   `scripts/make_splits.py` that step 2 of the Plan asks for, so it is not reproducible
   from the repo.
+- **`fetch_data.extract()` swallows batch failures, and there is an intermittent
+  extraction bug behind it.** A batch that throws is appended to `failures`, *printed*,
+  and the function returns normally — so a partial extraction of the 24,886-file dataset
+  looks like a success. Mitigated only by the size-based idempotency check on a re-run
+  and by `fetch_data.py status`. Separately,
+  `test_fetch_data.py::test_zip64_archive_reports_real_sizes` fails intermittently at its
+  last assertion — one member (the 55-byte train chunk) still reports `_needs_fetch`
+  after a 2-worker extract. **Measured rate: 1 of 6 full-suite runs, 0 of 12 runs of that
+  file alone**, so it needs the rest of the suite in the process first. Not disk space
+  (6.6 TB free). Not diagnosed further; `extract` returning success while files are
+  missing is the part worth fixing first, because it is what makes the failure silent.
 - Both `train` and `predict` **raise** if a zarr lacks `image_statistics.quantiles`. The
   real data does carry it on both train and test (see Data), so this is latent rather
   than active — but it is a hard crash, not a fallback, if the hidden test set ever
@@ -786,6 +881,109 @@ the code review.
 whitespace). Inherited, not ours, and concentrated in code slated for rework — but the
 lint gate is not green today, so don't read a clean run as a regression signal yet.
 
+**THE FIRST REAL CV NUMBER IN THE PROJECT, 2026-09-07 — and it comes from no learning at
+all.** `scripts/score_pipeline.py --detector dog`: Difference-of-Gaussians detection at
+the measured σ, Hungarian assignment on µm distance, scored with `summarise`. Untuned —
+every parameter read off a measurement, nothing fitted to the fold.
+
+| LOEO fold | test embryo | n | score | edge J | div J | node recall | node ratio |
+|---|---|---|---|---|---|---|---|
+| 0 | `6bba` | 128 | **0.6424** | 0.6371 | 0.0149 | 0.7775 | −0.096 |
+| 1 | `44b6` | 71 | **0.4030** | 0.3873 | 0.0118 | 0.5927 | **−0.371** |
+
+Edge-weight-weighted: **0.6056**. This is the floor. Any learned component that does not
+beat it is not earning its complexity.
+
+**The fold gap is a detector ceiling, and it says exactly what to fix.** The two embryos
+are opposites: `6bba` is 97 cells/frame with 9.7 % annotated, `44b6` is **327
+cells/frame** with 0.77 % annotated. On the crowded one the classical detector emits
+**37 % fewer nodes than the budget asks for** — it *cannot fill its quota*, because DoG
+maxima at a 5.86 µm separation merge before the budget is reached at a ~15.9 µm true
+pitch. Node recall collapses to 0.59. So:
+
+- the node-budget knob is not even *reachable* on `44b6`, which makes budget sweeping
+  pointless there until detection improves;
+- this is the one place a learned detector has an obvious, measurable job — separating
+  crowded nuclei that a fixed-σ blob filter merges;
+- and it re-reads the 15 %/85 % weight asymmetry as *good* news: the fold we are worst on
+  is the one that counts least.
+
+**Two full-scale learned models, 2026-09-07 — and the classical floor beats both.** Both
+12 epochs × 200 iters on LOEO fold 0, batch 16, lr 1e-3, seed 0, `det_neg_weight 1e-1`
+(the designed value, not the CLI's 1e-2), scored through the *same* harness as the
+classical run. `experiments.csv` carries every row.
+
+| run | score | edge J | div J | node recall | node ratio |
+|---|---|---|---|---|---|
+| **classical DoG** | **0.6424** | 0.6371 | 0.0149 | 0.7775 | −0.096 |
+| model A — Gaussian + PU | 0.5886 | 0.5871 | 0.0069 | **0.8505** | −0.016 |
+| model B — + pseudo-labels | 0.5923 | 0.5910 | 0.0057 | 0.8497 | −0.015 |
+
+Three things came out of this, in ascending order of importance.
+
+**(a) The label-quantity question is answered, and the answer is "not the bottleneck".**
+Model B supervises the unannotated 96.5 % with classical pseudo-labels instead of merely
+ignoring it; it bought **+0.004**. It did stabilise training — A peaks at epoch 0 and
+decays to 0.525, B holds 0.541–0.549 across all 12 epochs — but the achievable level did
+not move. Put beside gap closing being worth ~+1.4 % more edges, **both label levers are
+weak**. Re-run B's arm when the gap-closed labels land and compare to its
+`experiments.csv` row; that is a clean one-variable test with the counterfactual already
+banked.
+
+**(b) The detection loss is anti-correlated with the score on this architecture.** Model
+A's detection loss fell **4.4×** (0.0416 → 0.0094) while its CV score fell 0.5461 →
+0.5248. Best epoch is **0**. That is a loss-specification problem, not a data or capacity
+problem, and it is the single most important open item — training longer currently makes
+the model worse.
+
+**(c) THE FIX: tighten the linking gate, and the U-Net overtakes the classical floor.**
+Since better nodes expose more links to scoring (metric fact 3), a detector with higher
+node recall wants a *stricter* linker. Swept on 30 samples of fold 0, model A, refined
+peaks, everything else held:
+
+| config | score | edge J | div J | node recall |
+|---|---|---|---|---|
+| U-Net, gate 12.0 µm (the motion-derived default) | 0.5849 | 0.5834 | 0.0071 | 0.8601 |
+| U-Net, gate **8.0 µm** | 0.6672 | 0.6656 | 0.0058 | 0.8601 |
+| U-Net, gate 5.0 µm | 0.6143 | 0.6132 | 0.0020 | 0.8601 |
+| **U-Net, gate 8.0 µm, division pass OFF** | **0.6925** | 0.6914 | 0.0000 | 0.8601 |
+| classical DoG, gate 8.0 µm | 0.6614 | 0.6572 | 0.0076 | 0.7959 |
+| classical DoG, gate 12.0 µm | 0.6435 | 0.6391 | — | 0.7959 |
+
+Node recall is identical down the U-Net rows — every one of these gains is the linker
+discarding links it should never have made. Three separate results:
+
+- **The 12 µm gate was too generous for *everyone*.** DoG gains +0.018 at 8 µm too. It
+  was derived from ordinary motion (p99.9 = 13.8 µm) without accounting for the FP
+  exposure of fact 3, which is a reasoning error, not a tuning miss.
+- **But the coupling is real: the U-Net gains +0.082 against DoG's +0.018.** The stronger
+  detector is the one punished by a loose gate, exactly as fact 3 predicts. **Sweep the
+  gate per detector and never carry one detector's gate to another.** The optimum is
+  interior — 5 µm starts severing real edges, and division Jaccard collapses to 0.0020
+  because the parent-to-far-daughter median is 7.13 µm.
+- **The division second pass is a net loss of ~0.025 and should be off by default.**
+  Turning it off raises edge Jaccard 0.6656 → 0.6914 while giving up 0.0058 of division
+  Jaccard — which at the 0.1 weight is worth **0.00058 of score**. It pays 0.026 to buy
+  0.0006. That is metric fact 2's over-detection/division trade running in reverse:
+  forcing a second child manufactures edge FPs far faster than it finds real forks.
+
+**Best configuration measured to date: U-Net + 8 µm gate + no division pass = 0.6925**,
+against the classical floor's 0.6424. The learned detector does win — but only once the
+linker is matched to it, and none of that was visible before a CV harness existed.
+
+**(d) The U-Net detects better and tracks worse, for a reason that is in the metric.**
+See metric fact 3: its 2.3× edge-FP excess is the price of its higher node recall
+exposing more links to scoring. **Two plausible explanations were tested and refuted**,
+which is why the FP decomposition was worth doing rather than guessing a third time:
+
+- *Plateau jitter.* The saturated map puts each cell on a plateau whose winning voxel
+  could move between frames. Response-weighted centroid refinement
+  (`detectors.refine_centres`) moved the median link 2.30 → 2.10 µm but left p90 at 8.75
+  µm untouched — so the long links join *different cells*, not the same cell wobbling.
+- *Marginal over-detection.* Dropping the budget makes it monotonically **worse** (1.0× →
+  0.585, 0.8× → 0.582, 0.6× → 0.525, 0.4× → 0.401), so the extra detections earn their
+  keep. Note DoG cannot even fill the budget (ratio −0.096) while the U-Net can (−0.016).
+
 **Gaussian vs legacy-voxel, first head-to-head on real held-out data — and it does not
 settle the question, but it relocates it.** Identical budget (split 3, 8 epochs, 60
 iters, batch 8, lr 1e-3, one pinned card, ~70 s/epoch), then detector calibration
@@ -876,7 +1074,29 @@ nothing recovers a miss.
    disagreement here is the most important bug in the project;** chase it down before any
    modelling. Also time one video end to end and extrapolate to a train-sized hidden test
    set against the 12 h cap.
-5. **Detection (week 2) — the loss is written, the evidence is not.**
+5. **Detection (week 2) — REWRITTEN 2026-09-07 now that CV numbers exist.** The
+   priority order below changed because measurement contradicted the previous ordering;
+   see Status for the runs. In order:
+   **(a) sweep the linking gate per detector.** Worth **+0.082** on model A from one
+   scalar, and it is what takes the learned detector past the classical floor. Nothing
+   else measured today comes close to that return. Then re-sweep the budget *jointly*,
+   since detector and linker are coupled through the FP-exposure mechanism in metric
+   fact 3.
+   **(b) find out why the detection loss is anti-correlated with the score.** Model A's
+   loss fell 4.4x while its CV fell; best epoch is 0. Until that is understood, longer
+   training makes the model worse and every detector experiment is fighting it. Score
+   per-epoch checkpoints, not just the best one — the harness makes this cheap.
+   **(c) sweep `det_neg_weight` and `bright_threshold`**, still unswept and still the
+   cheapest remaining detector knobs.
+   **(d) drop or fix the learned linker.** Deprioritised on geometry, then partly
+   rehabilitated: precision 0.755 says the *atypical* cases are where the score now
+   leaks, which is what a learned edge cost is for. But it emits zero edges today, so
+   fix the gate sweep first and revisit only if (a)–(c) plateau.
+   **Not a priority: more labels.** Pseudo-supervising the unannotated 96.5 % bought
+   +0.004, and closing every joinable annotation gap is worth ~+1.4 % more edges.
+
+   *Previous framing, kept because the reasoning is still sound:* the loss is written,
+   the evidence is not.
    `src/volt_biohub/detection_targets.py` implements Gaussian targets at the measured
    sigma plus positive-unlabeled masking, defaulted on, with `--det-target voxel` /
    `--no-det-pu-mask` retained so each half can be ablated. All three paths train and
@@ -896,7 +1116,10 @@ nothing recovers a miss.
    Fallback if the UNet
    will not converge in budget: Spotiflow 3D, which trains natively from point labels
    and is legal here (pre-trained models are explicitly allowed).
-6. **Linking (week 3)**, in priority order: (a) **global frame-to-frame registration
+6. **Linking (week 3)** — note (a) below is now partly superseded: the 12 µm gate was
+   derived from motion percentiles and turned out to be 4 µm too generous once the
+   detector improved, so *gate sweeping* moved into step 5a. The rest stands, in
+   priority order: (a) **global frame-to-frame registration
    before association** — bulk motion removed makes a dense assignment easy, and most
    teams skip it; temper the expectation, though, since these are ~104 µm crops rather
    than whole embryos, so measure the residual displacement in step 1 before investing.

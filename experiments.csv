@@ -1,0 +1,15 @@
+timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gate_um,division_gate_um,score,adj_edge_jaccard,edge_jaccard,division_jaccard,node_recall,node_count_ratio,seconds,notes
+2026-09-07T11:01:24+00:00,0583bbc,linux-server,dog_loeo_s0,dog,0,128,1.0,5.86,12.0,10.0,0.6424,0.6409,0.6371,0.0149,0.7775,-0.0956,599,"classical floor, untuned; sigma from 6.9um FWHM, gate from motion p99.9"
+2026-09-07T11:07:14+00:00,1bec409,linux-server,dog_loeo_s1,dog,1,71,1.0,5.86,12.0,10.0,0.4030,0.4018,0.3873,0.0118,0.5927,-0.3705,347,"classical floor, untuned; sigma from 6.9um FWHM, gate from motion p99.9"
+2026-09-07T13:08:32+00:00,9bafdf5,linux-server,modelA_corrected_loeo_s0,unet,0,128,1.0,5.86,12.0,10.0,0.5886,0.5879,0.5871,0.0069,0.8505,-0.0164,767,"12 epochs x 200 iters, seed 0, neg_weight 1e-1, geometric linker"
+2026-09-07T13:20:43+00:00,9bafdf5,linux-server,modelB_pseudo_loeo_s0,unet,0,128,1.0,5.86,12.0,10.0,0.5923,0.5917,0.5910,0.0057,0.8497,-0.0145,725,"12 epochs x 200 iters, seed 0, neg_weight 1e-1, geometric linker"
+2026-09-07T13:44:57+00:00,9bafdf5,linux-server,modelA_gate12.0,unet,0,30,1.0,5.86,12.0,10.0,0.5849,0.5842,0.5834,0.0071,0.8601,-0.0154,167,
+2026-09-07T13:47:52+00:00,9bafdf5,linux-server,modelA_gate8.0,unet,0,30,1.0,5.86,8.0,10.0,0.6672,0.6667,0.6656,0.0058,0.8601,-0.0154,170,
+2026-09-07T13:50:56+00:00,9bafdf5,linux-server,modelA_gate5.0,unet,0,30,1.0,5.86,5.0,10.0,0.6143,0.6141,0.6132,0.0020,0.8601,-0.0154,180,
+2026-09-07T13:53:47+00:00,9bafdf5,linux-server,modelA_gate8_nodiv,unet,0,30,1.0,5.86,8.0,off,0.6925,0.6925,0.6914,0.0000,0.8601,-0.0154,166,
+2026-09-07T13:56:08+00:00,9bafdf5,linux-server,dog_gate8,dog,0,30,1.0,5.86,8.0,10.0,0.6614,0.6607,0.6572,0.0076,0.7959,-0.0792,138,
+2026-09-07T13:26:54+00:00,9bafdf5,linux-server,modelA_b0.4,unet,0,30,0.4,5.86,12.0,10.0,0.4012,0.3998,0.3771,0.0136,0.5303,-0.6006,144,"budget sweep, 30 datasets, refined peaks"
+2026-09-07T13:29:28+00:00,9bafdf5,linux-server,modelA_b0.6,unet,0,30,0.6,5.86,12.0,10.0,0.5253,0.5243,0.5042,0.0095,0.7223,-0.3993,149,"budget sweep, 30 datasets, refined peaks"
+2026-09-07T13:32:15+00:00,9bafdf5,linux-server,modelA_b0.8,unet,0,30,0.8,5.86,12.0,10.0,0.5816,0.5809,0.5694,0.0074,0.8297,-0.2029,163,"budget sweep, 30 datasets, refined peaks"
+2026-09-07T13:35:08+00:00,9bafdf5,linux-server,modelA_b1.0,unet,0,30,1.0,5.86,12.0,10.0,0.5849,0.5842,0.5834,0.0071,0.8601,-0.0154,167,"budget sweep, 30 datasets, refined peaks"
+2026-09-07T13:37:27+00:00,9bafdf5,linux-server,dog_b1.0,dog,0,30,1.0,5.86,12.0,10.0,0.6435,0.6424,0.6391,0.0118,0.7959,-0.0792,137,

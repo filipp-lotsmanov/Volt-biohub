@@ -22,6 +22,10 @@ tests/data/
 *.geff
 
 # --- Run outputs ---
+# `eda/` and `figures/` are unanchored, so they also cover reports/eda/ and
+# reports/figures/ at any depth. reports/integrity/ is deliberately NOT ignored:
+# integrity.json is a small committed artifact that records which pipeline
+# assumptions held, and check_integrity.py exits non-zero when one breaks.
 weights/
 checkpoints/
 predictions/
@@ -37,8 +41,16 @@ wheels/
 *.ckpt
 submission.csv
 submission*.csv
+# Lives beside the data (see $VOLT_DATA_DIR), not in the repo. Regenerate it
+# rather than sharing one: an embryo-grouped split is the only honest CV here.
 dataset_splits.json
 /kaggle_csvs
+
+# Scratch scoring runs. `experiments.csv` at the repo root IS tracked -- it is
+# the run ledger the experiment discipline requires -- but per-sweep sidecars
+# written with --experiments elsewhere are not.
+exp_*.csv
+*_sweep.csv
 
 # --- Local config / secrets ---
 .env
