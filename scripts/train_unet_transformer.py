@@ -29,7 +29,11 @@ from tqdm import tqdm
 
 import tracksdata as td
 
-from volt_biohub.detection_targets import DEFAULT_SIGMA_UM, detection_loss
+from volt_biohub.detection_targets import (
+    DEFAULT_SIGMA_UM,
+    detection_loss,
+    detection_loss_with_pseudo,
+)
 from volt_biohub.io import invert_time_graph, open_dataset
 from volt_biohub.models import SimpleNodeTransformer, TemporalUNet3D
 
@@ -600,6 +604,7 @@ def build_detection_loss(
     voxel_size: tuple[float, ...] | None = None,
     images: torch.Tensor | None = None,
     sigma_um: float = DEFAULT_SIGMA_UM,
+    pseudo_weight: float = 0.0,
 ) -> torch.Tensor:
     """Detection loss, dispatching between the Gaussian and legacy single-voxel forms.
 
@@ -615,6 +620,13 @@ def build_detection_loss(
         raise ValueError(f"unknown det target {target!r}; choose from {DET_TARGET_CHOICES}")
     if voxel_size is None:
         raise ValueError("gaussian detection targets need voxel_size (microns per voxel)")
+    if pseudo_weight > 0.0:
+        if images is None:
+            raise ValueError("pseudo-labels need images; --no-det-pu-mask disables them")
+        return detection_loss_with_pseudo(
+            det_logits, coords, mask, tuple(voxel_size[:3]), images,
+            pseudo_weight=pseudo_weight, neg_weight=neg_weight, sigma_um=sigma_um,
+        )
     return detection_loss(
         det_logits, coords, mask, tuple(voxel_size[:3]),
         images=images, neg_weight=neg_weight, sigma_um=sigma_um,
@@ -826,6 +838,7 @@ def train_epoch(
     det_target: str = "gaussian",
     det_pu_mask: bool = True,
     det_sigma_um: float = DEFAULT_SIGMA_UM,
+    det_pseudo_weight: float = 0.0,
 ) -> tuple[float, float]:
     """Train for one epoch, return (avg edge loss, avg detection loss).
 
@@ -879,6 +892,7 @@ def train_epoch(
                 # imgs is already quantile-normalised, which is what the bright-voxel
                 # threshold is calibrated against.
                 images=imgs[:, i] if det_pu_mask else None,
+                pseudo_weight=det_pseudo_weight,
                 sigma_um=det_sigma_um,
             )
             for i in range(W)
@@ -965,6 +979,7 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     pool_kernel_um: float = 5.0,
+    max_batches: int | None = None,
 ) -> tuple[float, float, float]:
     """Evaluate model using detect→match→predict (same path as training).
 
@@ -974,7 +989,9 @@ def evaluate(
     total_loss, correct, total, n_pairs = 0.0, 0, 0, 0
     gt_matched, gt_total = 0, 0
 
-    for batch in loader:
+    for n_batch, batch in enumerate(loader):
+        if max_batches is not None and n_batch >= max_batches:
+            break
         imgs = batch["imgs"].to(device, dtype=torch.float32, non_blocking=True)
         coords = batch["coords"].to(device, non_blocking=True)
         pos_feats = batch["pos_feats"].to(device, non_blocking=True)
@@ -1060,6 +1077,7 @@ def train(
     det_target: str = "gaussian",
     det_pu_mask: bool = True,
     det_sigma_um: float = DEFAULT_SIGMA_UM,
+    det_pseudo_weight: float = 0.0,
     max_iters: int | None = None,
     debug_video: Path | None = None,
     seed: int | None = None,
@@ -1070,6 +1088,7 @@ def train(
     data_parallel: bool = True,
     select_videos: int = 8,
     select_budget: float = 1.0,
+    legacy_eval_batches: int | None = 20,
 ) -> UNetNodeTransformer:
     """Train on one fold from a pre-computed splits file.
 
@@ -1250,10 +1269,18 @@ def train(
             model, train_loader, optimizer, device, det_loss_weight, det_neg_weight,
             max_iters=max_iters, pool_kernel_um=pool_kernel_um,
             det_target=det_target, det_pu_mask=det_pu_mask, det_sigma_um=det_sigma_um,
+            det_pseudo_weight=det_pseudo_weight,
         )
         train_time = time.monotonic() - t0
 
-        test_acc = evaluate(model, test_loader, device, pool_kernel_um=pool_kernel_um)[1]
+        # Cosmetic only since selection moved to the competition scorer, and it
+        # walks every test window -- 12,392 on the heavy fold, ~13 of every 30
+        # minutes per epoch. Capped by default; 0 skips it entirely.
+        test_acc = (
+            evaluate(model, test_loader, device, pool_kernel_um=pool_kernel_um,
+                     max_batches=legacy_eval_batches)[1]
+            if legacy_eval_batches else float("nan")
+        )
         test_time = time.monotonic() - t0
 
         # NOT test_acc * test_recall. That product saturates at 0.99 within
@@ -1350,6 +1377,17 @@ def main() -> None:
                         help="Number of consecutive frames per training window (default: 2).")
     parser.add_argument("--pool-kernel-um", type=float, default=5.0,
                         help="Local-max suppression distance in microns (default: 5.0).")
+    parser.add_argument("--legacy-eval-batches", type=int, default=20,
+                        help="Batches of the old edge-matrix evaluate() per epoch, for "
+                             "display only (0 skips it). No longer used for selection, "
+                             "and walking the full test split costs ~13 min per epoch "
+                             "on the heavy fold.")
+    parser.add_argument("--det-pseudo-weight", type=float, default=0.0,
+                        help="Weight for classical DoG pseudo-labels on the unannotated "
+                             "cells, relative to a real annotation (0 = off). GT covers "
+                             "~3.5%% of cells; this supervises the rest instead of merely "
+                             "ignoring it. Keep well below 1: pseudo-labels outnumber real "
+                             "ones ~30x and come from a 0.94-recall detector.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Seed torch/numpy/random and the DataLoader. Runs are NOT "
                              "reproducible without it, so any ablation run without a seed "
@@ -1396,6 +1434,8 @@ def main() -> None:
             downsample=downsample,
             det_loss_weight=args.det_loss_weight,
             det_neg_weight=args.det_neg_weight,
+            det_pseudo_weight=args.det_pseudo_weight,
+            legacy_eval_batches=args.legacy_eval_batches or None,
             seed=args.seed,
             select_videos=max(1, args.select_videos),
             select_budget=args.select_budget,

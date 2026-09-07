@@ -1,0 +1,2 @@
+timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gate_um,division_gate_um,score,adj_edge_jaccard,edge_jaccard,division_jaccard,node_recall,node_count_ratio,seconds,notes
+2026-09-07T11:01:24+00:00,0583bbc,linux-server,dog_loeo_s0,dog,0,128,1.0,5.86,12.0,10.0,0.6424,0.6409,0.6371,0.0149,0.7775,-0.0956,599,"classical floor, untuned; sigma from 6.9um FWHM, gate from motion p99.9"

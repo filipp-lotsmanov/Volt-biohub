@@ -38,6 +38,7 @@ default ``--downsample 1,4,4``.
 
 from __future__ import annotations
 
+import math
 import warnings
 
 import torch
@@ -343,6 +344,171 @@ def detection_loss(
         is_pos, w_pos, torch.where(keep_neg, w_neg, torch.zeros((), device=target.device))
     )
     hard_target = is_pos.to(target.dtype)
+    return F.binary_cross_entropy_with_logits(
+        logits, hard_target, weight=weight, reduction="sum"
+    ) / B
+
+
+# =============================================================================
+# Pseudo-labels for the unannotated cells
+# =============================================================================
+
+PSEUDO_DOG_RATIO = 1.6
+"""Second Gaussian width in the Difference-of-Gaussians. 1.6 approximates a LoG."""
+
+
+def _gaussian_blur3d(
+    vol: torch.Tensor, sigma_vox: tuple[float, float, float]
+) -> torch.Tensor:
+    """Separable Gaussian blur on (B, Z, Y, X). Three 1D passes, not one 3D kernel.
+
+    A 3D kernel at sigma ~1.8 voxels would be 11^3 = 1331 taps per output voxel;
+    separating it costs 33. This runs inside the training step, so the difference
+    is between a few percent of step time and doubling it.
+    """
+    out = vol.unsqueeze(1)
+    for axis, s in enumerate(sigma_vox):
+        radius = max(1, int(3.0 * s + 0.5))
+        x = torch.arange(-radius, radius + 1, device=vol.device, dtype=vol.dtype)
+        k = torch.exp(-(x * x) / (2.0 * s * s))
+        k = k / k.sum()
+        shape = [1, 1, 1, 1, 1]
+        shape[2 + axis] = k.numel()
+        pad = [0, 0, 0, 0, 0, 0]
+        pad[2 * (2 - axis)] = radius
+        pad[2 * (2 - axis) + 1] = radius
+        out = F.conv3d(F.pad(out, pad, mode="reflect"), k.view(shape))
+    return out.squeeze(1)
+
+
+def pseudo_positive_mask(
+    images: torch.Tensor,
+    coords: torch.Tensor,
+    mask: torch.Tensor,
+    voxel_size_um: tuple[float, float, float],
+    sigma_um: float = DEFAULT_SIGMA_UM,
+    separation_um: float | None = None,
+    exclude_radius_um: float = DEFAULT_IGNORE_RADIUS_UM,
+) -> torch.Tensor:
+    """Voxels that look like an unannotated cell centre, as extra positives.
+
+    Ground truth annotates ~3.5 % of the cells present, and the ones it skips are
+    *brighter* than the ones it keeps (normalised intensity, median: non-GT local
+    maxima 1.00 against GT centroids 0.48). ``ignore_mask`` responds by dropping
+    those voxels from the negative term — correct, but it throws away the signal
+    rather than using it. This uses it: a Difference-of-Gaussians peak as strong
+    as the *typical annotated cell in the same frame* is called a cell.
+
+    Calibrating against the frame's own GT peaks is what makes this safe without
+    a threshold to tune. Absolute DoG response varies with brightness, which
+    spans 11x across samples even after 0.001/0.999 normalisation, so a fixed cut
+    would label almost everything on a bright sample and almost nothing on a dim
+    one. The median over that frame's annotated centroids moves with it.
+
+    Returns
+    -------
+    torch.Tensor
+        (B, Z, Y, X) bool. True on a pseudo-positive voxel, and never within
+        *exclude_radius_um* of a real annotation — those voxels already carry
+        exact supervision and must not be duplicated at a lower weight.
+    """
+    shape = tuple(images.shape[1:])
+    vox = torch.as_tensor(voxel_size_um, dtype=torch.float32, device=images.device)
+    sig = (sigma_um / vox).tolist()
+
+    imgs = images.float()
+    dog = _gaussian_blur3d(imgs, tuple(sig)) - _gaussian_blur3d(
+        imgs, tuple(s * PSEUDO_DOG_RATIO for s in sig)
+    )
+
+    if separation_um is None:
+        separation_um = 2.0 * sigma_um
+    k = [max(3, (2 * max(1, math.ceil(separation_um / float(v))) - 1) | 1) for v in vox]
+    pooled = F.max_pool3d(
+        dog.unsqueeze(1), kernel_size=k, stride=1,
+        padding=[kk // 2 for kk in k],
+    ).squeeze(1)
+    peaks = (dog >= pooled) & (dog > 0)
+
+    # Calibrate against this frame's own annotated centroids.
+    centre, node_ok = _snap_centres(coords, mask, shape)
+    keep = torch.zeros_like(peaks)
+    for b in range(images.shape[0]):
+        if not node_ok[b].any():
+            continue
+        c = centre[b][node_ok[b]]
+        gt_resp = dog[b, c[:, 0], c[:, 1], c[:, 2]]
+        keep[b] = peaks[b] & (dog[b] >= gt_resp.median())
+
+    near_gt = _stamp(
+        coords, mask, shape, voxel_size_um,
+        radius_um=exclude_radius_um,
+        values_fn=lambda d: (d <= exclude_radius_um).float(),
+    ) > 0
+    return keep & ~near_gt
+
+
+def detection_loss_with_pseudo(
+    det_logits: torch.Tensor,
+    coords: torch.Tensor,
+    mask: torch.Tensor,
+    voxel_size_um: tuple[float, float, float],
+    images: torch.Tensor,
+    pseudo_weight: float,
+    neg_weight: float = 0.1,
+    sigma_um: float = DEFAULT_SIGMA_UM,
+    bright_threshold: float = DEFAULT_BRIGHT_THRESHOLD,
+    ignore_radius_um: float = DEFAULT_IGNORE_RADIUS_UM,
+    beta: float = PENALTY_REDUCTION_BETA,
+) -> torch.Tensor:
+    """:func:`detection_loss` plus a positive term on classical pseudo-labels.
+
+    This is the experiment that asks whether label *quantity* is the bottleneck.
+    The annotator's temporal gaps are small — closing every joinable one across
+    all 199 samples would add roughly 1.4 % more edges — whereas 96.5 % of the
+    cells present were never labelled at all. If dense pseudo-supervision beats
+    sparse exact supervision, the shortage is spatial and no amount of gap
+    closing addresses it.
+
+    *pseudo_weight* scales each pseudo-positive relative to a real one. It should
+    be well below 1: these labels come from a detector measured at 0.94 node
+    recall, so a few percent of them are wrong, and at weight 1.0 the ~30x more
+    numerous pseudo-labels would drown the exact ones.
+    """
+    B = det_logits.shape[0]
+    shape = tuple(det_logits.shape[2:])
+    logits = det_logits[:, 0]
+
+    target = gaussian_targets(coords, mask, shape, voxel_size_um, sigma_um)
+    is_pos = target >= 1.0 - 1e-6
+    is_pseudo = pseudo_positive_mask(
+        images, coords, mask, voxel_size_um, sigma_um,
+        exclude_radius_um=ignore_radius_um,
+    ) & ~is_pos
+
+    # Pseudo-positives replace the ignore region rather than adding to it: a
+    # voxel we are willing to call a cell should not also be excluded as
+    # ambiguous. Everything still-ambiguous keeps the original PU treatment.
+    keep_neg = ~is_pos & ~is_pseudo & ~ignore_mask(
+        images, coords, mask, voxel_size_um, bright_threshold, ignore_radius_um
+    )
+
+    flat = (B, -1)
+    n_pos = is_pos.reshape(flat).sum(1).clamp(min=1)
+    n_pseudo = is_pseudo.reshape(flat).sum(1).clamp(min=1)
+    n_neg = keep_neg.reshape(flat).sum(1).clamp(min=1)
+    per_sample = (B,) + (1,) * len(shape)
+
+    w_pos = (1.0 / n_pos).reshape(per_sample).expand_as(target)
+    w_pseudo = (pseudo_weight / n_pseudo).reshape(per_sample).expand_as(target)
+    w_neg = (neg_weight / n_neg).reshape(per_sample) * (1.0 - target).pow(beta)
+
+    zero = torch.zeros((), device=target.device)
+    weight = torch.where(
+        is_pos, w_pos,
+        torch.where(is_pseudo, w_pseudo, torch.where(keep_neg, w_neg, zero)),
+    )
+    hard_target = (is_pos | is_pseudo).to(target.dtype)
     return F.binary_cross_entropy_with_logits(
         logits, hard_target, weight=weight, reduction="sum"
     ) / B

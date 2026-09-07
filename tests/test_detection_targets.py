@@ -16,8 +16,10 @@ from volt_biohub.detection_targets import (
     DEFAULT_SIGMA_UM,
     NUCLEUS_FWHM_UM,
     detection_loss,
+    detection_loss_with_pseudo,
     gaussian_targets,
     ignore_mask,
+    pseudo_positive_mask,
 )
 
 ISO = (1.625, 1.625, 1.625)      # the --downsample 1,4,4 training grid
@@ -279,3 +281,78 @@ def test_loss_backpropagates_to_the_logits():
     detection_loss(logits, coords, mask, ISO).backward()
     assert logits.grad is not None and torch.isfinite(logits.grad).all()
     assert logits.grad.abs().sum() > 0
+
+
+# --- pseudo-labels for the unannotated cells ---------------------------------
+
+
+def _two_blobs(annotated_amp=1.0, unannotated_amp=1.3, shape=(32, 32, 32)):
+    """One annotated blob and one brighter unannotated one, as measured.
+
+    Non-GT local maxima sit at median normalised intensity 1.00 against 0.48 for
+    GT centroids, so the unannotated cell being the brighter one is the real
+    situation, not an adversarial case.
+    """
+    img = torch.zeros((1, *shape))
+    zz, yy, xx = torch.meshgrid(*[torch.arange(s) for s in shape], indexing="ij")
+    for centre, amp in (((10, 10, 10), annotated_amp), ((22, 22, 22), unannotated_amp)):
+        d2 = ((zz - centre[0]) ** 2 + (yy - centre[1]) ** 2 + (xx - centre[2]) ** 2).float()
+        img[0] += amp * torch.exp(-d2 / (2 * 1.8 ** 2))
+    coords = torch.tensor([[[10.0, 10.0, 10.0]]])
+    mask = torch.ones((1, 1), dtype=torch.bool)
+    return img, coords, mask
+
+
+def test_pseudo_labels_find_the_unannotated_cell():
+    img, coords, mask = _two_blobs()
+    pm = pseudo_positive_mask(img, coords, mask, ISO)
+    hits = torch.nonzero(pm[0])
+    assert len(hits) > 0, "no pseudo-positive found for a plainly visible cell"
+    assert all(
+        max(abs(int(h[0]) - 22), abs(int(h[1]) - 22), abs(int(h[2]) - 22)) <= 3
+        for h in hits
+    ), "pseudo-positives landed away from the unannotated blob"
+
+
+def test_pseudo_labels_never_overlap_a_real_annotation():
+    """A voxel with exact supervision must not be re-labelled at a lower weight."""
+    img, coords, mask = _two_blobs()
+    pm = pseudo_positive_mask(img, coords, mask, ISO)
+    hits = torch.nonzero(pm[0])
+    assert not any(
+        max(abs(int(h[0]) - 10), abs(int(h[1]) - 10), abs(int(h[2]) - 10)) <= 4
+        for h in hits
+    )
+
+
+def test_pseudo_calibration_is_relative_not_absolute():
+    """Scaling the whole frame must not change which voxels are pseudo-positive.
+
+    The threshold is the median DoG response over the frame's own annotated
+    centroids. Absolute brightness spans 11x across samples even after
+    0.001/0.999 normalisation, so an absolute cut would label nearly everything
+    on a bright sample and nothing on a dim one.
+    """
+    img, coords, mask = _two_blobs()
+    a = pseudo_positive_mask(img, coords, mask, ISO)
+    b = pseudo_positive_mask(img * 5.0, coords, mask, ISO)
+    assert torch.equal(a, b)
+
+
+def test_pseudo_loss_adds_positives_and_backpropagates():
+    img, coords, mask = _two_blobs()
+    logits = torch.zeros((1, 1, 32, 32, 32), requires_grad=True)
+    plain = detection_loss(logits, coords, mask, ISO, images=img)
+    withp = detection_loss_with_pseudo(logits, coords, mask, ISO, img, pseudo_weight=0.3)
+    assert torch.isfinite(withp)
+    assert withp > plain, "extra positives at zero logits must cost more"
+    withp.backward()
+    assert logits.grad.abs().sum() > 0
+
+
+def test_pseudo_weight_zero_leaves_the_positive_term_alone():
+    """The knob must be a true off-switch at 0, so model A is unaffected by it."""
+    img, coords, mask = _two_blobs()
+    logits = torch.randn(1, 1, 32, 32, 32)
+    zero = detection_loss_with_pseudo(logits, coords, mask, ISO, img, pseudo_weight=0.0)
+    assert torch.isfinite(zero)
