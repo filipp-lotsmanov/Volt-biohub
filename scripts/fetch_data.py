@@ -41,7 +41,9 @@ Usage
     python scripts/fetch_data.py manifest --dest D:/data/biohub
 
 Both paths are resumable and idempotent: a file whose local size already matches is
-skipped, so re-running after an interruption is cheap.
+skipped, so re-running after an interruption is cheap. Neither reports success on a
+partial result — an incomplete download or extraction exits non-zero, because a
+half-populated data directory is otherwise indistinguishable from the dataset.
 """
 
 from __future__ import annotations
@@ -80,6 +82,17 @@ _MAX_CONSECUTIVE_THROTTLES = 12
 
 class Throttled(RuntimeError):
     """Raised when the API is rejecting requests faster than they can succeed."""
+
+
+class IncompleteTransfer(RuntimeError):
+    """Raised when some requested files are not on disk at their recorded size.
+
+    Raised rather than printed. A partial 24,886-file dataset is invisible in the
+    output of a run that reports thousands of successes, and a caller that returns
+    normally hands a half-populated data directory to `train` — which will happily
+    fit on whatever subset arrived. Resume is free (see ``_needs_fetch``), so the
+    honest response to a partial result is to fail and say "re-run".
+    """
 
 # The API throttles aggressively on both listing and download; treat 429 and the
 # transient 5xx family as retryable rather than fatal.
@@ -354,7 +367,9 @@ def status(entries: list[Entry], dest: Path, expected: list[Entry] | None = None
         f"{tot_have / 2**30:.2f} of {tot_want / 2**30:.2f} GiB ({pct:.1f}%)"
     )
     if complete < len(rows):
-        print("Re-run the same `get` command to finish; completed files are skipped.")
+        # Reached from both `get` and `zip`, so name neither: the remedy is the same
+        # command again either way.
+        print("Re-run the same command to finish; completed files are skipped.")
 
 
 def select(
@@ -473,12 +488,16 @@ def download(entries: list[Entry], dest: Path, workers: int = 6) -> None:
                         flush=True,
                     )
 
-    if failures:
-        print(f"\n{len(failures)} file(s) failed; re-run to retry:")
-        for name, err in failures[:10]:
-            print(f"  {name}: {err}")
-    else:
-        print("All files fetched.")
+    missing = [e for e in todo if _needs_fetch(e, dest)]
+    if failures or missing:
+        lines = [
+            f"Download incomplete: {len(missing)} of {len(todo)} requested file(s) "
+            f"missing or short on disk; {len(failures)} request(s) failed."
+        ]
+        lines += [f"  {name}: {err}" for name, err in failures[:10]]
+        lines.append("Re-run the same command to retry; completed files are skipped.")
+        raise IncompleteTransfer("\n".join(lines))
+    print("All files fetched.")
 
 
 # =============================================================================
@@ -604,6 +623,22 @@ def manifest_from_archive(zip_path: Path) -> list[Entry]:
             f"Top-level entries: {tops}\n"
             f"The archive layout has changed; Entry.split/Entry.sample need updating."
         )
+
+    # Every consumer joins these names onto `dest` — `_needs_fetch` for the size
+    # check, `extract` to pre-create the parent directory. `ZipFile.extract` instead
+    # *rewrites* a name that escapes its destination, so the two would disagree about
+    # where the file went and the size check would never converge on "complete", with
+    # "re-run to retry" looping forever. Cheaper to refuse the archive.
+    escaping = [
+        e.name for e in entries
+        if e.name.startswith(("/", "\\")) or ".." in e.name.split("/")
+        or ":" in e.name.split("/")[0]
+    ]
+    if escaping:
+        sys.exit(
+            f"{len(escaping)} member name(s) in {zip_path.name} escape the destination "
+            f"directory: {escaping[:5]}"
+        )
     return entries
 
 
@@ -617,6 +652,9 @@ def extract(
     chunks that arrive already blosc/zstd-compressed, so the zip's own deflate pass
     is close to a passthrough and the cost is dominated by filesystem writes; a
     handle is amortised over a batch of members to keep open/close off the hot path.
+
+    Raises ``IncompleteTransfer`` unless every requested member ends up on disk at
+    its recorded size — checked against the filesystem, not against the futures.
     """
     todo = [e for e in entries if _needs_fetch(e, dest)]
     total = sum(e.size for e in todo)
@@ -632,6 +670,14 @@ def extract(
     def _one(group: list[Entry]) -> int:
         with zipfile.ZipFile(zip_path) as zf:
             for e in group:
+                # Create the parent ourselves: `ZipFile.extract` uses an
+                # `exists()`-then-`os.makedirs()` pair with no `exist_ok` (CPython
+                # 3.11), so two workers whose members share a parent directory race
+                # and the loser's FileExistsError kills the rest of its batch. `dest`
+                # itself is such a parent — sample_submission.csv lands there — so a
+                # run into a fresh dest lost a whole batch ~10 % of the time.
+                # `Path.mkdir(exist_ok=True)` has no such window.
+                (dest / e.name).parent.mkdir(parents=True, exist_ok=True)
                 zf.extract(e.name, dest)
         return sum(e.size for e in group)
 
@@ -659,12 +705,25 @@ def extract(
                     )
                     next_log = done_files + _EXTRACT_LOG_EVERY
 
-    if failures:
-        print(f"\n{len(failures)} batch(es) failed; re-run to retry:")
-        for name, err in failures[:10]:
-            print(f"  near {name}: {err}")
-    else:
-        print("Extraction complete.")
+    # Trust the filesystem over the futures: a batch that raised took every member
+    # after the throwing one with it, and a short write raises nothing at all. This is
+    # the same size check that makes a re-run cheap, so it costs one stat per member.
+    missing = [e for e in todo if _needs_fetch(e, dest)]
+    if failures or missing:
+        lines = [
+            f"Extraction incomplete: {len(missing)} of {len(todo)} requested member(s) "
+            f"missing or short on disk; {len(failures)} batch(es) raised."
+        ]
+        lines += [f"  near {name}: {err}" for name, err in failures[:10]]
+        lines += [f"  missing: {e.name}" for e in missing[:10]]
+        if len(missing) > 10:
+            lines.append(f"  ... and {len(missing) - 10} more missing")
+        lines.append(
+            "Re-run the same command to retry: members already on disk at the right "
+            "size are skipped, so only the missing ones are extracted again."
+        )
+        raise IncompleteTransfer("\n".join(lines))
+    print("Extraction complete.")
 
 
 # =============================================================================
@@ -707,8 +766,8 @@ def main(argv: list[str] | None = None) -> None:
                              "Also the `zip` extraction thread count, where it is a "
                              "local-CPU knob and 8-16 is reasonable.")
     parser.add_argument("--rm-zip", action="store_true",
-                        help="`zip`: delete the archive once extraction reports no "
-                             "failures. Halves peak disk (88 GB rather than 176 GB) at "
+                        help="`zip`: delete the archive once extraction is verified "
+                             "complete. Halves peak disk (88 GB rather than 176 GB) at "
                              "the cost of a re-download if you later want other samples.")
     parser.add_argument("--force", action="store_true",
                         help="`zip`: re-transfer the archive from byte 0 instead of "
@@ -749,15 +808,20 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{len(chosen)} members, {sum(e.size for e in chosen) / 2**30:.2f} GiB")
             return
 
-        extract(zip_path, chosen, dest, workers=args.workers)
+        try:
+            extract(zip_path, chosen, dest, workers=args.workers)
+        except IncompleteTransfer as exc:
+            failure = str(exc)
+        else:
+            failure = None
         status(entries, dest, chosen)
+        if failure:
+            # Non-zero exit, and the archive stays: re-running is a local extraction,
+            # not another 88 GB transfer.
+            sys.exit(failure)
         if args.rm_zip:
-            incomplete = [e for e in chosen if _needs_fetch(e, dest)]
-            if incomplete:
-                print(f"Keeping the archive: {len(incomplete)} member(s) still missing.")
-            else:
-                zip_path.unlink()
-                print(f"Removed {zip_path}")
+            zip_path.unlink()
+            print(f"Removed {zip_path}")
         return
 
     entries = load_manifest(dest)
@@ -806,7 +870,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.dry_run:
         return
-    download(chosen, dest, workers=args.workers)
+    try:
+        download(chosen, dest, workers=args.workers)
+    except IncompleteTransfer as exc:
+        sys.exit(str(exc))
 
 
 if __name__ == "__main__":

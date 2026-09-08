@@ -1,14 +1,28 @@
 #!/usr/bin/env python
 """Run UNet + transformer edge prediction on datasets and export to .geff.
 
+**This is the local CV path, not the graded one.** ``kaggle/submit.py`` is what
+the notebook runs. This script imports tracksdata at module scope and keeps it
+there deliberately: its transitive closure (``volt_biohub.io``,
+``volt_biohub.metrics``, ``evaluate``, ``train_unet_transformer``) needs
+tracksdata in every branch, so lazifying one line here would advertise an offline
+capability that does not exist. Directory mode below is for local format and
+timing probes against a test-shaped folder, not for the submission itself.
+
 Usage:
+    # CV: a fold's test split, from dataset_splits.json
     uv run scripts/predict_unet_transformer.py --split 0
+
+    # Directory probe: every *.zarr in a folder, no GT and no splits file
+    uv run scripts/predict_unet_transformer.py \
+        --test-dir <dir> --weights <w.pth> --out-dir <out>
 """
 
 import argparse
 import contextlib
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,27 +31,24 @@ import numpy as np
 import polars as pl
 import torch
 import torch.nn.functional as F
+import tracksdata as td
 import zarr
 from tqdm import tqdm
 
-import tracksdata as td
-
-from volt_biohub.io import open_dataset, save_graph
+from volt_biohub.io import list_datasets, open_dataset, save_graph
 
 # Import model and helpers from companion training script.
 sys.path.insert(0, str(Path(__file__).parent))
+from dataspec import INTERACTIVE, USERNAME, WEIGHTS_PATH
+from evaluate import evaluate_run
 from train_unet_transformer import (
+    _POS_EMBED_DIM,
     DEFAULT_METHOD,
     UNetNodeTransformer,
     extract_pos_features,
-    _POS_EMBED_DIM,
 )
-from volt_biohub.models import TemporalUNet3D
-
-from dataspec import USERNAME, INTERACTIVE, WEIGHTS_PATH
-from evaluate import evaluate_run
 from volt_biohub.metrics import summarise
-
+from volt_biohub.models import TemporalUNet3D
 
 # =============================================================================
 # Prediction config
@@ -324,14 +335,13 @@ def predict_video(
     q_high = float(ds.quantiles["0.999"])
 
     T = ds.image_shape[0] if max_frames is None else min(ds.image_shape[0], max_frames)
-    image_shape = (T,) + ds.image_shape[1:]
+    image_shape = (T, *ds.image_shape[1:])
     target_shape = list(image_shape[1:])
 
     ds_arr = np.array(downsample, dtype=np.float32)  # for coord rescaling at the end
     ds_arr_t = torch.from_numpy(ds_arr).to(device)   # for predict_edges (original-space coords)
-    pos_feat_dim = 4 * _POS_EMBED_DIM
     W = window_size
-    voxel_size = tuple(s * d for s, d in zip(ds.scale, downsample))
+    voxel_size = tuple(s * d for s, d in zip(ds.scale, downsample, strict=True))
     pool_k = pool_kernel_from_um(cfg.pool_kernel_um, voxel_size)
 
     # Running node registry — each entry records the frame-t detections.
@@ -428,7 +438,7 @@ def predict_video(
             p_coords_src = torch.from_numpy(c_src[:, 1:].astype(np.float32)).unsqueeze(0).to(device)
             p_coords_tgt = torch.from_numpy(c_tgt[:, 1:].astype(np.float32)).unsqueeze(0).to(device)
             # Use window-relative time (f_idx, f_idx+1) normalised by W, not absolute frame index.
-            window_shape = (W,) + image_shape[1:]
+            window_shape = (W, *image_shape[1:])
             c_src_rel = c_src.copy()
             c_src_rel[:, 0] = f_idx
             c_tgt_rel = c_tgt.copy()
@@ -501,6 +511,119 @@ def predict_video(
 # Prediction loop
 # =============================================================================
 
+def enumerate_test_datasets(test_dir: Path) -> list[str]:
+    """Dataset names in *test_dir*, read off the ``*.zarr`` folders themselves.
+
+    The hidden test set's dataset names are not knowable in advance — at
+    notebook rerun a different, roughly train-sized set is swapped in — and
+    ``sample_submission.csv`` names only the four local placeholders, so the
+    directory listing is the *only* correct source. No ``.geff`` is required or
+    looked for: the competition test folder ships images alone.
+
+    Raises rather than returning an empty list. A submission is scored on every
+    test dataset being present, so an empty enumeration means a mis-pointed
+    mount, and failing here costs seconds where failing silently costs the
+    submission.
+    """
+    names = [p.name for p in list_datasets(test_dir, require_geff=False)]
+    if not names:
+        raise FileNotFoundError(f"No *.zarr datasets found in {test_dir}")
+    return names
+
+
+def run_predictions(
+    data_dir: Path,
+    names: list[str],
+    output_dir: Path,
+    weights_path: Path,
+    cfg: PredictConfig,
+    unet_batch_size: int = 4,
+    skip_failures: bool = False,
+) -> Path:
+    """Predict every dataset in *names* and write one ``.geff`` each; return *output_dir*.
+
+    Shared by both entry points — the fold-based CV path (:func:`predict`) and
+    the directory path the Kaggle notebook uses — so a fix to inference can
+    never land on one and miss the other.
+
+    *skip_failures* trades a loud crash for a complete output set. The .geffs are
+    written incrementally, so a crash at hour 8 of a 12 h notebook does not lose
+    the files already on disk — what it loses is the *submission*, because one
+    missing dataset invalidates it, a rerun clears the directory above, and
+    there is no second 12 h pass. In CV it stays off, where a failure is
+    information.
+    """
+    # Load the model BEFORE destroying anything. The stale-output deletion below
+    # is irreversible and used to run first, so a typo in --weights on a 12 h
+    # Kaggle run wiped the previous predictions and then produced none: the run
+    # ended strictly worse off than if it had never started. Every cheap way to
+    # fail — a missing checkpoint, a missing config.json, a state dict that does
+    # not match the architecture — is now hit while the old output is still on
+    # disk.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, window_size, downsample = load_model(weights_path, device)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # Stale .geffs from an earlier run would be picked up by the CSV writer,
+    # which globs the directory rather than taking a dataset list.
+    for old in output_dir.glob("*.geff"):
+        if old.is_dir():
+            shutil.rmtree(old)
+        else:
+            old.unlink()
+
+    print(
+        f"{len(names)} datasets | weights={weights_path} | device={device} | "
+        f"window_size={window_size} | downsample={downsample} | "
+        f"det_threshold={cfg.det_threshold} | pool_kernel_um={cfg.pool_kernel_um}",
+        flush=True,
+    )
+
+    failed: list[str] = []
+    for name in tqdm(names, desc="Predicting", disable=not INTERACTIVE):
+        try:
+            coords, edges = predict_video(
+                model, data_dir / name, device,
+                cfg=cfg,
+                window_size=window_size,
+                unet_batch_size=unet_batch_size,
+                downsample=downsample,
+            )
+        except Exception as exc:
+            if not skip_failures:
+                raise
+            print(f"  {name}: FAILED ({type(exc).__name__}: {exc}) — writing an empty graph",
+                  flush=True)
+            failed.append(name)
+            coords, edges = np.empty((0, 4), dtype=np.int16), []
+
+        graph = build_graph(coords, edges)
+        if cfg.use_ilp and graph.num_edges() > 0:
+            solver = td.solvers.ILPSolver(
+                edge_weight=cfg.ilp_edge_weight * td.EdgeAttr("edge_prob"),
+                appearance_weight=cfg.ilp_appearance_weight,
+                disappearance_weight=cfg.ilp_disappearance_weight,
+                division_weight=cfg.ilp_division_weight,
+            )
+            with suppress_output():
+                graph = solver.solve(graph)
+        # A zero-node dataset still gets a .geff, and the .geff stays honestly
+        # empty: it is a record of what was detected, which was nothing. Keeping
+        # the dataset *present* in the submission is the CSV writer's job, and
+        # geffs_to_csv now does it — it reads the geff with plain zarr (so an
+        # empty one is an empty array rather than tracksdata's prop-less graph,
+        # which used to raise ColumnNotFoundError right here at the end of a 12 h
+        # run) and emits one placeholder node row for a dataset with no rows at
+        # all. That is what makes skip_failures degrade instead of merely
+        # postponing the failure.
+        save_graph(graph, output_dir / f"{name}.geff")
+
+    print(f"Saved {len(names)} predictions to {output_dir}", flush=True)
+    if failed:
+        print(f"WARNING: {len(failed)} dataset(s) predicted as empty: {failed}", flush=True)
+    return output_dir
+
+
 def predict(
     data_dir: Path,
     fold: int,
@@ -513,7 +636,7 @@ def predict(
     video_slice: slice | None = None,
     evaluate: bool = False,
 ) -> None:
-    """Run inference on the test split and save predictions as .geff files."""
+    """Run inference on a fold's test split and save predictions as .geff files."""
     if debug_video is not None:
         test_names = [debug_video.name]
         data_dir = debug_video.parent
@@ -525,45 +648,15 @@ def predict(
 
     from dataspec import PREDICTIONS_PATH
     output_dir = PREDICTIONS_PATH / USERNAME / method / f"split_{fold}"
-    if output_dir.exists():
-        import shutil
-        for old in output_dir.glob("*.geff"):
-            if old.is_dir():
-                shutil.rmtree(old)
-            else:
-                old.unlink()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, window_size, downsample = load_model(weights_path, device)
-    print(
-        f"Fold {fold}: {len(test_names)} datasets | "
-        f"weights={weights_path} | device={device} | window_size={window_size} | pool_kernel_um={cfg.pool_kernel_um}",
-        flush=True,
+    print(f"Fold {fold}:", end=" ", flush=True)
+    run_predictions(
+        data_dir=data_dir,
+        names=test_names,
+        output_dir=output_dir,
+        weights_path=weights_path,
+        cfg=cfg,
+        unet_batch_size=unet_batch_size,
     )
-
-    for name in tqdm(test_names, desc="Predicting", disable=not INTERACTIVE):
-        ds_path = data_dir / name
-        coords, edges = predict_video(
-                model, ds_path, device,
-                cfg=cfg,
-                window_size=window_size,
-                unet_batch_size=unet_batch_size,
-                downsample=downsample,
-            )
-        graph = build_graph(coords, edges)
-        if cfg.use_ilp and graph.num_edges() > 0:
-            solver = td.solvers.ILPSolver(
-                edge_weight=cfg.ilp_edge_weight * td.EdgeAttr("edge_prob"),
-                appearance_weight=cfg.ilp_appearance_weight,
-                disappearance_weight=cfg.ilp_disappearance_weight,
-                division_weight=cfg.ilp_division_weight,
-            )
-            with suppress_output():
-                graph = solver.solve(graph)
-        save_graph(graph, output_dir / f"{name}.geff")
-
-    print(f"Saved {len(test_names)} predictions to {output_dir}", flush=True)
 
     if evaluate:
         run = {
@@ -602,7 +695,16 @@ def main() -> None:
     parser.add_argument("--splits", type=str, default=None,
                         help="Default: DATASET_PATH/dataset_splits.json")
     parser.add_argument("--split", type=str, default="0",
-                        help="Split index (0-4) or 'all'.")
+                        help="Split index (0-4) or 'all'. Ignored with --test-dir.")
+    parser.add_argument("--test-dir", type=str, default=None,
+                        help="Predict every *.zarr in this directory (no .geff needed, "
+                             "no dataset_splits.json needed). A local format and timing "
+                             "probe, not the graded path -- this script imports tracksdata, "
+                             "which cannot be installed in the offline notebook, so "
+                             "kaggle/submit.py is what the notebook runs.")
+    parser.add_argument("--out-dir", type=str, default=None,
+                        help="Where to write the .geff files. Default: "
+                             "predictions/{user}/{method}/test, i.e. inside the repo.")
     parser.add_argument("--weights", type=str, default=None,
                         help="Path to weights file. "
                              "Default: weights/{method}/split_{split}/edge_predictor_best.pth")
@@ -651,6 +753,33 @@ def main() -> None:
         ilp_disappearance_weight=args.ilp_disappearance_weight,
         ilp_division_weight=args.ilp_division_weight,
     )
+
+    if args.test_dir is not None:
+        # Directory mode. --weights is required rather than defaulting to
+        # split_0: the fold index that names a weights directory means nothing
+        # for an unseen embryo, so which trained model to submit is exactly the
+        # decision that must not be implicit.
+        if not args.weights:
+            parser.error("--test-dir requires --weights (no fold index to derive it from).")
+        test_dir = Path(args.test_dir)
+        names = enumerate_test_datasets(test_dir)
+        if video_slice is not None:
+            names = names[video_slice]
+        from dataspec import PREDICTIONS_PATH
+        output_dir = (
+            Path(args.out_dir) if args.out_dir
+            else PREDICTIONS_PATH / USERNAME / args.method / "test"
+        )
+        run_predictions(
+            data_dir=test_dir,
+            names=names,
+            output_dir=output_dir,
+            weights_path=Path(args.weights),
+            cfg=cfg,
+            unet_batch_size=args.unet_batch_size,
+            skip_failures=True,
+        )
+        return
 
     folds = range(5) if args.split == "all" else [int(args.split)]
 

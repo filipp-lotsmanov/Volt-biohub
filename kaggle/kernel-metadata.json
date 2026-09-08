@@ -1,0 +1,20 @@
+{
+  "id": "USERNAME/volt-biohub-submission",
+  "title": "volt-biohub-submission",
+  "code_file": "notebook.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "dataset_sources": [
+    "USERNAME/volt-wheels",
+    "USERNAME/volt-code",
+    "USERNAME/volt-weights"
+  ],
+  "competition_sources": [
+    "biohub-cell-tracking-during-development"
+  ],
+  "kernel_sources": []
+}
