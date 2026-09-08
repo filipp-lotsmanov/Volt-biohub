@@ -1,14 +1,15 @@
 """Tests for I/O utilities using real data from DATASET_PATH."""
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
 
 from volt_biohub.io import Dataset, list_datasets, open_dataset
 
-
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+# imported after the sys.path insert above: scripts/ is not a package
 from dataspec import DATASET_PATH
 
 DATA_DIR = DATASET_PATH
@@ -73,6 +74,21 @@ def test_open_dataset_normalize_returns_float32():
     import torch
     ds = open_dataset(DS_PATH, normalize=True)
     assert ds.image.dtype == torch.float32
+
+
+def test_open_dataset_never_assumes_a_gpu_exists():
+    """The default device must follow what is visible, not a hardcoded "cuda".
+
+    ``device="cuda"`` used to be the default, so every normalizing load — and
+    hence this file's float32 test — died with "No CUDA GPUs are available" on a
+    CPU-only box, and on the shared training box it would grab an unpinned card.
+    Asserted against the one resolver in :mod:`volt_biohub.gpu` so the two cannot
+    drift apart.
+    """
+    from volt_biohub.gpu import resolve_device
+
+    ds = open_dataset(DS_PATH, normalize=True)
+    assert ds.image.device.type == resolve_device().type
 
 
 def test_open_dataset_scale_is_3_tuple():

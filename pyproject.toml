@@ -15,6 +15,11 @@ description = "Cell tracking for the Biohub 'Cell Tracking During Development' c
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = "BSD-3-Clause"
+# Runtime only. This list is what gets bundled as offline wheels for Kaggle, so
+# anything that is not needed to detect, link and write a submission belongs in
+# an extra below. `kaggle/requirements-offline.txt` is the narrower list the
+# notebook actually installs; `kaggle/check_offline.py` is the gate that keeps
+# the two honest.
 dependencies = [
     "torch>=2.9.1",
     "tracksdata @ git+https://github.com/royerlab/tracksdata@main",
@@ -25,10 +30,6 @@ dependencies = [
     "dask[array]",
     "scipy",
     "tqdm",
-    "kagglehub>=1.0.2",
-    "python-dotenv>=1.2.3",
-    "pandas>=3.0.5",
-    "matplotlib>=3.11.1",
 ]
 
 [project.scripts]
@@ -41,6 +42,16 @@ volt_gpu = "volt_biohub.gpu:main"
 viz = [
     "napari>=0.5",
     "pyqt6",
+]
+# Measurement and figures only: explore_data.py and check_t_true.py use pandas,
+# visualize_data.py uses matplotlib, and none of the three is on the inference
+# path. `kagglehub` and `python-dotenv` were dropped rather than moved here —
+# grepping the whole repo (py, toml, md, ipynb) finds no import of either, so
+# they were dead weight in a list whose whole purpose is to be downloaded as
+# wheels. `scripts/fetch_data.py` uses the `kaggle` CLI from the dev group.
+eda = [
+    "pandas>=3.0.5",
+    "matplotlib>=3.11.1",
 ]
 
 [dependency-groups]

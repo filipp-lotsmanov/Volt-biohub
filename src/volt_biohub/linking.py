@@ -25,10 +25,15 @@ against the objective, because the objective only grades part of what you emit.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-import polars as pl
-import tracksdata as td
 from scipy.optimize import linear_sum_assignment
+
+if TYPE_CHECKING:
+    # Type-checking only: importing tracksdata for real at module scope is what
+    # made this module unimportable in the offline notebook. See build_graph.
+    import tracksdata as td
 
 MOTION_GATE_UM = 8.0
 """Linking gate, swept rather than derived -- 12.0 was wrong for a reason worth knowing.
@@ -156,7 +161,20 @@ def build_graph(
 
     ``add_node_attr_key`` is called explicitly for z/y/x to sidestep a
     tracksdata/Polars issue where a float default is mistaken for a dtype.
+
+    tracksdata and polars are imported *here* rather than at module scope, and
+    that is a hard requirement rather than a style choice: this module is on the
+    Kaggle inference path (``kaggle/submit.py`` imports ``link_sequence``), the
+    notebook runs with internet disabled, and tracksdata is a git dependency with
+    twenty transitive requirements including ilpy/SCIP, a Rust extension and
+    numba — unbundleable. ``build_graph`` is the only function here that needs
+    either package, and it exists solely to hand a graph to the local scorer,
+    which never runs on Kaggle. ``kaggle/check_offline.py`` is the gate that
+    keeps this true.
     """
+    import polars as pl
+    import tracksdata as td
+
     g = td.graph.InMemoryGraph()
     for key in ("z", "y", "x"):
         g.add_node_attr_key(key, pl.Float64, -999999.0)

@@ -1,0 +1,88 @@
+# Packages the offline inference path needs. DERIVED, not guessed.
+#
+# Derivation: read off the offline path's imports and then their package
+# metadata, not off pyproject.toml. The path is:
+#
+#   kaggle/submit.py
+#     -> kaggle/submission.py            csv (stdlib only, on purpose)
+#     -> volt_biohub.submission          polars, zarr   (the validator)
+#     -> volt_biohub.detectors           numpy, scipy.ndimage
+#     -> volt_biohub.linking             numpy, scipy.optimize
+#     -> volt_biohub.models              torch
+#     -> volt_biohub.gpu                 torch (lazily), subprocess
+#
+# NOT on the path, and that is the whole point: tracksdata, geff, dask, pandas,
+# matplotlib, tqdm. `tracksdata` is the one that could not be bundled even if we
+# wanted to — see "The one blocker" in kaggle/README.md.
+#
+# COMPLETENESS IS NOT ESTABLISHED BY check_offline.py. That gate runs inside the
+# dev venv, where everything is installed, so it only proves nothing *forbidden*
+# is reachable -- an import of a package that is present there but missing here
+# (tqdm, say) passes it and fails on Kaggle. What does establish it is a clean
+# venv built from this file alone; the recipe is in check_offline.py's docstring.
+# Verified that way on 2026-09-08: 12 wheels + the image's numpy/scipy/torch runs
+# kaggle/submit.py on the four local test samples, both the DoG and the U-Net
+# branch, to a validated submission.csv.
+#
+# The list below is COMPLETE, so download it with `--no-deps`. That is
+# deliberate: without it, pip resolves zarr's `numpy>=...` and drops a numpy
+# wheel into the directory, which on Kaggle would silently upgrade the numpy that
+# the image's torch and scipy are built against. See the note at the bottom.
+
+# ---------------------------------------------------------------------------
+# BUNDLE THESE — see the pip download command in kaggle/README.md.
+# ---------------------------------------------------------------------------
+
+# zarr 3.x is mandatory, not a preference: every sample is Zarr **v3** and
+# zarr 2.x cannot open a v3 store at all. If Kaggle's base image ships zarr 2,
+# not bundling this is a silent total failure.
+#
+# Pinned to 3.0.10 rather than the newest, for one specific reason: zarr >= 3.1
+# requires `numpy>=2.0`, while 3.0.10 accepts `numpy>=1.25`. Kaggle images have
+# shipped numpy 1.26, and on such an image the newer pin would force a numpy
+# 2.x upgrade underneath the preinstalled torch and scipy. We use only
+# open_group, .attrs and array slicing, which are identical across 3.0 and 3.1,
+# so the newer version buys nothing and risks an ABI break.
+zarr==3.0.10
+
+# zarr's requirements, listed explicitly because of --no-deps.
+donfig>=0.8
+pyyaml>=6              # donfig
+numcodecs>=0.14,<0.16
+deprecated>=1.2        # numcodecs
+wrapt>=1.10,<3         # deprecated
+packaging>=22.0
+typing-extensions>=4.9
+# zarr 3.0.x asks for numcodecs[crc32c] -> crc32c; zarr 3.1.x switched to
+# google-crc32c. Both are listed so the wheel directory works if the zarr pin is
+# ever moved; an unused wheel in the directory costs nothing.
+crc32c>=2.3
+google-crc32c>=1.5
+
+# The submission validator (volt_biohub.submission), which every offline run
+# calls before it writes submission.csv. polars 1.4x splits the compiled runtime
+# into a separate distribution, so both are required. (linking.py used to need it
+# at module scope as well; that import is now inside build_graph, which the
+# offline path never calls — but the validator needs polars regardless, so this
+# stays on the list.)
+polars>=1.36
+polars-runtime-32
+
+# ---------------------------------------------------------------------------
+# DO NOT BUNDLE — taken from the Kaggle base image.
+# ---------------------------------------------------------------------------
+#
+# torch   -- the image's build is matched to its CUDA driver; ours is not, and
+#            the Linux wheel drags in ~3 GB of nvidia-* packages. Reinstalling it
+#            offline is the fastest way to lose GPU acceleration and then the
+#            12 h budget with it (measured: the U-Net detector costs ~3.0 s/frame
+#            on CPU, ~16.5 h for a train-sized test set).
+# numpy   -- torch and scipy on the image are built against it; a version swap
+#            risks ABI breakage across the whole notebook. This is why the
+#            download uses --no-deps: zarr's numpy requirement would otherwise
+#            put a numpy wheel in the directory for pip to find.
+# scipy   -- preinstalled and stable; only ndimage and optimize are used.
+#
+# notebook.py prints all four versions before doing any work. Verify them there
+# rather than trusting this comment: if one is wrong the run is already lost, and
+# it is better to know in minute one than in hour eleven.

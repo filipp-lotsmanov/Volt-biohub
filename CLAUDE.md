@@ -202,7 +202,17 @@ Write `validate_submission()` early and run it before every save — a silent fo
 error costs a submission slot, and near the deadline the competition. Invariants:
 
 - integer coordinates in **original anisotropic voxel space**, not isotropic
-  resampled space (`io.rescale_graph_to_original` inverts it)
+  resampled space. **Do NOT reach for `io.rescale_graph_to_original` here** — an
+  earlier version of this line recommended it and that was wrong, in the highest-risk
+  direction. It inverts an *interpolating resample* (`open_dataset(target_scale=…)`,
+  `img_proc.rescale_coords_to_isotropic`) by dividing out that resample's zoom. Our
+  `1,4,4` path never resamples — it is a **strided read**, so the exact inverse is
+  `coord_original = coord_grid * downsample` and there is no scale arithmetic to
+  undo. Using the scale-based function on the strided grid divides z by 4 *and*
+  leaves y/x at a quarter of their true value: wrong on both axes, silently.
+  `src/volt_biohub/submission.py` validates against this, and
+  `tests/test_coordinate_roundtrip.py` is the reference for which inverse pairs with
+  which forward transform.
 - node IDs unique **within each dataset** — `sample_submission.csv` restarts them at 1
   for every dataset, and `csv_to_geffs.py` groups by dataset before resolving edges, so
   global uniqueness is *not* required (an earlier note here claimed otherwise)
@@ -719,14 +729,38 @@ Modelling and scoring:
   negatives. A detector that is barely penalised for firing saturates high, which is a
   second and independent reason inference needed `sigmoid > 0.99`. Pass it explicitly
   and sweep it; do not trust either default.
-- **`predict()` cannot enumerate a directory** — it needs a `dataset_splits.json` with a
-  `"test"` list, which the competition test folder has none of. Blocks full test-set
-  inference until fixed.
+- ~~**`predict()` cannot enumerate a directory.**~~ **Fixed 2026-09-08** —
+  `--test-dir` enumerates `*.zarr`, works with no `.geff` present, and the splits path
+  is unchanged. But read `predict_unet_transformer.py`'s docstring before assuming it is
+  the submission path: **that script cannot be imported on Kaggle** (module-scope
+  tracksdata reaches it via `io`/`metrics`). `kaggle/submit.py` is the submission entry
+  point.
 - Isotropic ↔ original-anisotropic round-trips are the highest-risk code here: wrong by
-  4× in z, no exception raised, score near zero. Anything crossing that boundary needs a
-  round-trip test.
+  4× in z, no exception raised, score near zero. **Two real bugs of exactly this shape
+  were found in `io.py` on 2026-09-08 and fixed** (see Status), which is what an audit
+  told to *assume a site is broken and prove it* turns up. There is now a round-trip test
+  — `tests/test_coordinate_roundtrip.py` — and it is the reference for which inverse
+  pairs with which forward transform. Anything new crossing that boundary goes in there.
+  The trap to know: the `1,4,4` path is a **strided read**, so its exact inverse is
+  `coord * downsample`; only an *interpolating* resample needs scale arithmetic.
 
 Hygiene, each capable of wasting a day:
+
+- **`validate_submission()` exists but nothing in the repo's own save paths calls it.**
+  `src/volt_biohub/submission.py` is written and tested; the only callers are
+  `kaggle/submission.py` and `kaggle/check_offline.py`. `scripts/geffs_to_csv.py` does
+  **not** call it, so a local `geffs_to_csv` run still produces an unvalidated CSV. One
+  line each at the two save sites closes this.
+- **`predict(debug_video=…)` keeps the `.zarr` suffix** (`debug_video.name`), so a
+  `--debug-video` run writes `x.zarr.geff` and puts `x.zarr` in the `dataset` column —
+  a failure mode `validate_submission` explicitly tests for. Pre-existing.
+- **`pos_feats` is dead code.** The window dataset still computes
+  `extract_pos_features` per window, stores it on `WindowData` and the collate stacks it,
+  but nothing reads it any more. Delete it rather than leaving it to imply the linker
+  uses positional features it does not.
+- **Nothing feeds an *empty* geff to `geffs_to_csv` in the suite** — the exact line that
+  crashed the graceful-degradation path. Verified manually; a revert would leave the
+  suite green and reintroduce a failure that only appears at the end of a 12 h run.
 
 - **Three disagreeing defaults per knob.** `det_loss_weight`: `train_epoch` signature
   0.1, `train()` signature 1e1, CLI 1e0 with help text claiming 1e1. Same shape for `lr`
@@ -763,8 +797,9 @@ Hygiene, each capable of wasting a day:
   real data does carry it on both train and test (see Data), so this is latent rather
   than active — but it is a hard crash, not a fallback, if the hidden test set ever
   differs.
-- `open_dataset(device="cuda")` is the **default** → crashes CPU-only. Needs a device
-  resolver. Its eager `da.from_zarr(...).compute()` loads a whole video, which at ~839 MB
+- ~~`open_dataset(device="cuda")` is the **default** → crashes CPU-only.~~ **Fixed
+  2026-09-08** — resolves cuda-if-available. It had gone from latent to actively failing
+  the suite under `CUDA_VISIBLE_DEVICES=`. Its eager `da.from_zarr(...).compute()` loads a whole video, which at ~839 MB
   is survivable; `load_image=False` gives metadata only.
 - Detections are stored as `int16` (`predict_unet_transformer.py:293,496`). Fine for
   256³-scale volumes, silently wrong if a future sample exceeds 32767 in any axis.
@@ -880,6 +915,71 @@ the code review.
 `train_unet_transformer.py`: unsorted imports, `zip` without `strict=`, trailing
 whitespace). Inherited, not ours, and concentrated in code slated for rework — but the
 lint gate is not green today, so don't read a clean run as a regression signal yet.
+
+**2026-09-08 — THE HEADLINE, and it took two corrections to get here.** Four numbers,
+all on **full** LOEO folds at the **identical** tuned config (gate 7 µm, separation
+4 µm, division gate 6 µm, refined peaks, budget 1.0× `T_true`):
+
+| method | fold 0 `6bba` (128) | fold 1 `44b6` (71) | weighted | **spread** |
+|---|---|---|---|---|
+| classical DoG | **0.7107** | 0.5117 | **0.6801** | 0.199 |
+| U-Net (models A / D) | 0.6794 | **0.6768** | 0.6790 | **0.003** |
+
+**They tie on weighted CV — 0.6801 vs 0.6790 — but the profiles are opposites, and the
+spread is what matters.** The hidden test set is a *third, entirely unseen embryo*, so
+the gap between our two LOEO folds is the only proxy we have for cross-embryo transfer.
+DoG is excellent on `6bba` and collapses on `44b6`; the U-Net scores the same on both to
+within **0.003**. A method that swings 0.199 between the two embryos we can see could
+land anywhere on a third. **Prefer the U-Net on generalisation grounds despite the tied
+average**, and note it is also uniformly the better *detector*: node recall 0.889/0.892
+against DoG's 0.833/0.679, and it hits the node budget almost exactly (ratio −0.0003 and
+−0.0031 against DoG's −0.060 and −0.270).
+
+**Correction 1 — tuning beat every model change, and it invalidated the earlier
+comparison.** Re-measuring the classical floor at the tuned settings moved it from
+0.6424 → **0.7107** on fold 0 and 0.4030 → **0.5117** on fold 1: **+0.068 and +0.109
+from four scalars, no training.** So 2026-09-07's claim that "the learned detector
+overtakes the classical floor at 0.6925" was an artefact of comparing a tuned U-Net
+against a baseline frozen at the old defaults. **General lesson: every model comparison
+run before the knobs were tuned was measuring the knobs.** Retune the baseline whenever
+you retune a model, or the comparison is worthless.
+
+**Correction 2 — the knobs interact three ways, so sweeping one at a time misleads.**
+The division second pass was recorded on 2026-09-07 as a flat net loss of ~0.025. That
+was true only behind `sep 5.86 / gate 10`. At `sep 4.0 / gate 7.0` it is net **positive**
+(0.7007 with it, 0.6997 without, divJ 0.0086). Separation also has a sharp optimum that
+is *quantised*: `_peak_window` takes `ceil(sep/1.625)`, so 5.0 and 5.86 both give a
+7-voxel window and score identically — there are ~5 distinct settings, not a continuum.
+Sweep the distinct windows, not round numbers.
+
+| sep | gate | div | score |
+|---|---|---|---|
+| 4.0 | **7.0** | **6.0** | **0.7007** |
+| 4.0 | 8.0 | 6.0 | 0.6994 |
+| 4.0 | 7.0 | off | 0.6997 |
+| 5.86 | 8.0 | off | 0.6925 |
+| 5.86 | 8.0 | 10.0 | 0.6672 |
+
+**The budget optimum is purely the node penalty, and that is an opportunity.** Edge
+Jaccard rises monotonically with budget — 0.6690 → 0.6914 → 0.6984 → **0.7008** at 1.5×
+— while the *score* peaks at 1.0×, because the ratio hits +0.4346 and the multiplier
+0.957. The detector genuinely wants to detect more; only the penalty stops it. Since
+`T_true` is predictable from stored quantiles at Spearman 0.856, **that 0.7008 is
+reachable with a better per-sample budget** and is the cheapest remaining upside.
+
+**The loss/metric anti-correlation is structural, not a fold artefact.** Model D (train
+`6bba` → test `44b6`) reproduces it on the other embryo: detection loss fell 2.4×
+(0.0842 → 0.0351) while CV drifted 0.6518 → 0.6254, best at **epoch 2**. Model A on the
+other fold fell 4.4× with best at **epoch 0**. Two embryos, two folds, same shape. This
+remains the most important open problem, and `--save-every` plus the new
+`epoch_metrics.csv` now make the divergence point measurable — that experiment has not
+been run yet.
+
+**Node recall is a bad proxy target — three independent knobs prove it.** Tightening
+separation 5.86 → 3.0 µm raises node recall 0.860 → 0.893 and *drops* the score to
+0.6478. The U-Net has higher recall than DoG and (before tuning) a lower score. Loosening
+the gate raises exposure without raising recall at all. In every case the mechanism is
+metric fact 3: node recall gates how much of your linking gets graded.
 
 **THE FIRST REAL CV NUMBER IN THE PROJECT, 2026-09-07 — and it comes from no learning at
 all.** `scripts/score_pipeline.py --detector dog`: Difference-of-Gaussians detection at
@@ -1017,6 +1117,55 @@ random-voxel sample):
   it froze at epoch 2 while `det` loss improved for six more epochs. Further evidence
   that number cannot be used for selection or comparison.
 
+**2026-09-08 — four blockers found and closed, one of them existential.** Suite
+**171 → 280 passing** on CPU, ruff 83 → 63. All four were surfaced by adversarial review
+of the implementing agents, and each was independently re-verified rather than taken on
+the implementer's word.
+
+1. **The Kaggle notebook could never have run.** `tracksdata` — which is *not on PyPI*,
+   in an internet-disabled competition — was imported at **module scope** in four places
+   on the inference path: `linking.py:30`, `scoring.py:20`,
+   `predict_unet_transformer.py:26`, `geffs_to_csv.py:7`. Now tracksdata-free, and
+   verified the only way that counts: a clean venv with tracksdata **physically absent**
+   (12 wheels from `kaggle/requirements-offline.txt`) ran the whole path on the 4 real
+   test samples to a validated `submission.csv`. The DoG fallback runs with **torch not
+   installed at all**. `kaggle/check_offline.py` is the gate; note it only blocks *named*
+   modules inside the dev venv, so it proves less than it looks — a clean venv is the
+   real test.
+2. **Two 4× coordinate bugs in `io.py`**, the class this file calls the highest risk in
+   the project, previously with no test at all. `open_dataset` ignored `downsample` when
+   `load_image=True` (same call reported shape `(5,64,64,64)` vs `(5,64,256,256)`), and
+   `rescale_graph_to_original` hardcoded `min(scale)` so it could not invert the resample
+   that produces our own isotropic grid. Both fixed; `tests/test_coordinate_roundtrip.py`
+   now pins which inverse pairs with which forward transform.
+3. **`predict --test-dir` exists**, so inference on the real test set is no longer
+   blocked. Two defects on that path also fixed: `skip_failures=True` wrote a zero-node
+   geff that then *crashed the CSV writer* (a graceful-degradation path that was a
+   guaranteed total failure), and stale-output deletion ran **before** the model loaded,
+   so a typo in `--weights` destroyed the previous predictions and produced nothing.
+4. **`fetch_data.extract()` returned success after a batch threw**, so a partial
+   extraction of 24,886 files looked complete. Now verifies against the filesystem and
+   raises `IncompleteTransfer`.
+
+**The flaky test was a CPython bug, and my diagnosis of it was wrong.**
+`test_zip64_archive_reports_real_sizes` fails because `zipfile._extract_member` does
+`if not exists(upperdirs): makedirs(upperdirs)` with **no `exist_ok`**, and `os.makedirs`
+re-raises `FileExistsError` for its *leaf* — so two extract workers sharing a parent
+directory race and the loser aborts its whole batch. It is `dest` itself that collides
+(`sample_submission.csv`'s parent *is* `dest`), which is why only the one test extracting
+into a not-yet-existing dir ever flaked. **Measured 11.3 % (34/300) in a fresh process**,
+so my "it needs the rest of the suite in the process first" theory was chance — p(0 in
+12) ≈ 0.25 at that rate. I over-read a null result; don't repeat that. Fixed by creating
+each parent with `exist_ok=True`: 0/600 after. The real download was never exposed, by
+luck of layout — **0 of 24,886 parent directories hold more than one member.**
+
+**Kaggle runtime is tighter than the 12 h cap suggests.** Measured, not assumed: the
+U-Net detector costs **1.86 s/frame pinned to 4 threads** (Kaggle-like), which is
+**10.3 h for a train-sized 199-video test set** — inside the cap with almost no margin.
+0.74 s/frame with all 256 cores here, so this box tells you nothing about it. **A GPU
+notebook is required**, and the DoG fallback exists precisely so a weights or torch
+failure degrades to something submittable.
+
 **PR #2 (B's EDA) is merged into `main` as of 2026-09-02** and supersedes the
 `inspect_data.py` item above: `explore_data.py`, `check_integrity.py`, `check_t_true.py`
 and `visualize_data.py` make the whole sweep reproducible, plus `DATASET.md`. Verified by
@@ -1074,9 +1223,23 @@ nothing recovers a miss.
    disagreement here is the most important bug in the project;** chase it down before any
    modelling. Also time one video end to end and extrapolate to a train-sized hidden test
    set against the 12 h cap.
-5. **Detection (week 2) — REWRITTEN 2026-09-07 now that CV numbers exist.** The
-   priority order below changed because measurement contradicted the previous ordering;
-   see Status for the runs. In order:
+5. **Detection — REWRITTEN AGAIN 2026-09-08. Read this ordering before starting any
+   detector work; it has now been wrong twice.** What changed: retuning four scalars
+   moved the *classical* baseline +0.068 and +0.109, more than any model change has, and
+   it invalidated the previous day's model comparison entirely. So:
+   **(0) RETUNE THE BASELINE WHENEVER YOU RETUNE A MODEL.** A model scored against a
+   baseline frozen at old defaults tells you nothing. This is the single cheapest way to
+   avoid wasting a week.
+   **(1) Per-sample node budget.** Edge Jaccard keeps rising with budget (0.7008 at 1.5×)
+   while the score peaks at 1.0× purely because of the node penalty. `T_true` is
+   predictable from stored quantiles at Spearman 0.856, so this is reachable upside with
+   no modelling at all — the best remaining lever.
+   **(2) Prefer the U-Net on generalisation, not on average.** The two methods tie on
+   weighted CV but the U-Net's fold spread is 0.003 against DoG's 0.199, and the hidden
+   test set is a third unseen embryo.
+   **(3) Then the loss/metric divergence** (below), now measurable via `--save-every`
+   and `epoch_metrics.csv`.
+   *Superseded ordering from 2026-09-07, kept because the reasoning still holds:*
    **(a) sweep the linking gate per detector.** Worth **+0.082** on model A from one
    scalar, and it is what takes the learned detector past the classical floor. Nothing
    else measured today comes close to that return. Then re-sweep the budget *jointly*,
@@ -1094,6 +1257,8 @@ nothing recovers a miss.
    fix the gate sweep first and revisit only if (a)–(c) plateau.
    **Not a priority: more labels.** Pseudo-supervising the unannotated 96.5 % bought
    +0.004, and closing every joinable annotation gap is worth ~+1.4 % more edges.
+   **Also not a priority: node recall.** It is a bad proxy target — three independent
+   knobs raise it while lowering the score (see Status). Score, or do not measure.
 
    *Previous framing, kept because the reasoning is still sound:* the loss is written,
    the evidence is not.

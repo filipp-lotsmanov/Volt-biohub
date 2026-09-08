@@ -13,9 +13,11 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import time
 from dataclasses import dataclass
+from itertools import cycle as _cycle
 from pathlib import Path
 
 import numpy as np
@@ -23,12 +25,17 @@ import polars as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import tracksdata as td
 import zarr
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-import tracksdata as td
-
+# scripts/ is not a package, so these two resolve only via the sys.path
+# insertion every entry point already does (__main__, tests/conftest,
+# predict_unet_transformer). They are module-level imports like any other; they
+# sat below the function definitions purely by accident of editing history.
+from augmentations import brightness_augment, flip_augment
+from dataspec import WEIGHTS_PATH
 from volt_biohub.detection_targets import (
     DEFAULT_SIGMA_UM,
     detection_loss,
@@ -37,7 +44,9 @@ from volt_biohub.detection_targets import (
 from volt_biohub.io import invert_time_graph, open_dataset
 from volt_biohub.models import SimpleNodeTransformer, TemporalUNet3D
 
-from itertools import cycle as _cycle
+DEFAULT_AUGMENTATIONS = [brightness_augment, flip_augment]
+DEFAULT_METHOD = "unet_transformer"
+_POS_EMBED_DIM = 8   # per axis; total = 4 axes x _POS_EMBED_DIM = 32
 
 
 def compute_gt_transition_matrix(
@@ -50,7 +59,9 @@ def compute_gt_transition_matrix(
     t1_to_col = {nid: i for i, nid in enumerate(gt_ids_t1)}
 
     matrix = torch.zeros(len(gt_ids_t), len(gt_ids_t1), dtype=torch.float32)
-    for source_id, target_id in zip(edge_attrs["source_id"], edge_attrs["target_id"]):
+    for source_id, target_id in zip(
+        edge_attrs["source_id"], edge_attrs["target_id"], strict=True,
+    ):
         if source_id in t_to_row and target_id in t1_to_col:
             matrix[t_to_row[source_id], t1_to_col[target_id]] = 1.0
 
@@ -113,14 +124,6 @@ def _evaluate_pair(
 
     return loss, correct, total
 
-from augmentations import brightness_augment, flip_augment
-
-DEFAULT_AUGMENTATIONS = [brightness_augment, flip_augment]
-from dataspec import WEIGHTS_PATH
-
-DEFAULT_METHOD = "unet_transformer"
-_POS_EMBED_DIM = 8   # per axis; total = 4 axes × _POS_EMBED_DIM = 32
-
 
 # =============================================================================
 # Data structures
@@ -177,7 +180,8 @@ def extract_pos_features(
     image_shape : tuple
         Full image shape (T, Z, Y, X) used for normalisation.
     pos_embed_dim : int
-        Half-dimension per axis (sin half + cos half).
+        Embedding width per axis: ``pos_embed_dim // 2`` frequencies, each
+        contributing a sin and a cos, so the output is ``4 * pos_embed_dim``.
 
     Returns
     -------
@@ -185,7 +189,9 @@ def extract_pos_features(
         Shape (N, 4 * pos_embed_dim), float32.
     """
     t, z, y, x = coords[:, 0], coords[:, 1], coords[:, 2], coords[:, 3]
-    norms = [c / max(s, 1) for c, s in zip([t, z, y, x], image_shape)]
+    # strict: a 3-length image_shape would silently drop x and normalise the
+    # wrong axes -- a coordinate-space error that raises nothing and scores zero.
+    norms = [c / max(s, 1) for c, s in zip([t, z, y, x], image_shape, strict=True)]
 
     def _embed(vals: np.ndarray) -> np.ndarray:
         freqs = 2 ** np.arange(pos_embed_dim // 2)
@@ -384,7 +390,9 @@ def load_dataset_windows(
 
     image_shape = ds.image_shape
     tracks = ds.tracks
-    voxel_size = tuple(s * d for s, d in zip(ds.scale, downsample))
+    # Both are (Z, Y, X); strict so a 4-length scale or downsample fails loudly
+    # instead of pairing z with t and being wrong by 4x in z.
+    voxel_size = tuple(s * d for s, d in zip(ds.scale, downsample, strict=True))
 
     if invert_time:
         tracks = invert_time_graph(tracks, max_t=image_shape[0])
@@ -647,8 +655,13 @@ def _pos_embed_torch(
 
     Parameters
     ----------
-    coords : (*, 4) with columns [t, z, y, x].
-    image_shape : (T, Z, Y, X) for normalisation.
+    coords : torch.Tensor
+        (*, 4) with columns [t, z, y, x].
+    image_shape : tuple
+        (T, Z, Y, X) used to normalise each axis to roughly [0, 1].
+    pos_embed_dim : int
+        Embedding width per axis: ``pos_embed_dim // 2`` frequencies, each
+        contributing a sin and a cos, so the output is ``4 * pos_embed_dim``.
 
     Returns
     -------
@@ -688,12 +701,24 @@ def detect_and_match(
         GT node coordinates (downsampled).
     mask : (B, max_nodes)
         Boolean mask for real (non-padded) nodes.
-    image_shape : (T, Z, Y, X) downsampled shape for pos-embed normalisation.
-    det_threshold : minimum logit to accept a peak.
-    pool_kernel_um : local-max suppression distance in microns.
-    max_match_distance : maximum physical distance for detection→GT matching.
-    voxel_size : (Z, Y, X) physical voxel size (scale * downsample).
-        When provided, distances are computed in physical units.
+    image_shape : tuple
+        (T, Z, Y, X) downsampled shape for pos-embed normalisation.
+    det_threshold : float
+        Minimum *logit* to accept a peak. Note this is a logit, while
+        predict_unet_transformer thresholds a sigmoid -- see CLAUDE.md.
+    pool_kernel_um : float
+        Local-max suppression distance in microns.
+    max_match_distance : float
+        Maximum physical distance for detection->GT matching.
+    voxel_size : tuple, optional
+        (Z, Y, X) physical voxel size (scale * downsample). When provided,
+        distances are computed in physical units.
+    frame_index : int
+        Position of this frame within the window, used as the time coordinate
+        of the positional embedding.
+    window_size : int, optional
+        Window length W. When given, time is normalised by W rather than by the
+        video length, so the embedding does not depend on absolute frame index.
 
     Returns
     -------
@@ -785,7 +810,7 @@ def detect_and_match(
     # Use window-relative time (0, 1, ..., W-1) normalised by W, not absolute frame index.
     t_col = torch.full((B, max_det, 1), frame_index, device=device, dtype=torch.float32)
     full_coords = torch.cat([t_col, padded_coords], dim=-1)  # (B, M, 4)
-    pos_shape = (window_size,) + image_shape[1:] if window_size is not None else image_shape
+    pos_shape = (window_size, *image_shape[1:]) if window_size is not None else image_shape
     padded_pos = _pos_embed_torch(full_coords, pos_shape)     # (B, M, D)
 
     return padded_coords, padded_pos, padded_mask, sample_matches
@@ -857,6 +882,11 @@ def train_epoch(
         batch_iter = iter(loader)
         pbar = tqdm(range(len(loader)), desc="  batches", leave=False, disable=False)
 
+    # The data/forward/backward split below needs a barrier to mean anything,
+    # but torch.cuda.synchronize() *raises* with no CUDA device, so calling it
+    # unconditionally makes CPU runs impossible (CLAUDE.md: never assume a GPU).
+    sync = torch.cuda.synchronize if device.type == "cuda" else lambda: None
+
     t_data, t_forward, t_backward = 0.0, 0.0, 0.0
     t0 = time.perf_counter()
 
@@ -865,14 +895,13 @@ def train_epoch(
 
         imgs = batch["imgs"].to(device, dtype=torch.float32, non_blocking=True)       # (B, W, *sp)
         coords = batch["coords"].to(device, non_blocking=True)                         # (B, W, M, 3)
-        pos_feats = batch["pos_feats"].to(device, non_blocking=True)                   # (B, W, M, D)
         masks = batch["masks"].to(device, non_blocking=True)                           # (B, W, M)
         targets = batch["targets"].to(device, non_blocking=True)                       # (B, W-1, M, M)
         image_shape = tuple(batch["image_shape"][0].tolist())
         voxel_size = tuple(batch["voxel_size"][0].tolist())
         ds_scale = batch["downsample"][0].to(device)                                   # (3,)
 
-        torch.cuda.synchronize()
+        sync()
         t1 = time.perf_counter()
         t_data += t1 - t0
 
@@ -939,7 +968,7 @@ def train_epoch(
         # --- 5. Combined loss -----------------------------------------------
         loss = edge_loss + det_loss_weight * det_loss
 
-        torch.cuda.synchronize()
+        sync()
         t2 = time.perf_counter()
         t_forward += t2 - t1
 
@@ -948,7 +977,7 @@ def train_epoch(
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
-        torch.cuda.synchronize()
+        sync()
         t3 = time.perf_counter()
         t_backward += t3 - t2
 
@@ -994,7 +1023,6 @@ def evaluate(
             break
         imgs = batch["imgs"].to(device, dtype=torch.float32, non_blocking=True)
         coords = batch["coords"].to(device, non_blocking=True)
-        pos_feats = batch["pos_feats"].to(device, non_blocking=True)
         masks = batch["masks"].to(device, non_blocking=True)
         targets = batch["targets"].to(device, non_blocking=True)
         image_shape = tuple(batch["image_shape"][0].tolist())
@@ -1059,6 +1087,52 @@ def evaluate(
 # Main training function
 # =============================================================================
 
+def _portable_state(model: nn.Module) -> dict[str, torch.Tensor]:
+    """State dict with the DataParallel "unet.module." prefix normalised away.
+
+    Training may wrap the UNet in DataParallel; inference is a single Kaggle
+    card. Stripping the prefix here is what makes every checkpoint we write
+    loadable by predict_unet_transformer.load_model with weights_only=True.
+    """
+    return {k.replace("unet.module.", "unet.", 1): v for k, v in model.state_dict().items()}
+
+
+_EPOCH_METRIC_FIELDS = (
+    "epoch", "edge_loss", "det_loss", "cv_score", "adj_edge_jaccard",
+    "division_jaccard", "node_recall", "legacy_acc", "is_best",
+)
+
+
+def _append_epoch_metrics(path: Path, row: dict) -> None:
+    """Append one epoch of the CV curve, writing the header on first call.
+
+    The competition score is computed every epoch anyway; without this it was
+    printed and thrown away, leaving the loss/CV divergence recoverable only by
+    grepping a tqdm-mangled console log. Appended and flushed per epoch rather
+    than dumped at the end because the container can be rebuilt out from under a
+    run, and a curve that only materialises after the last epoch is exactly the
+    one that goes missing.
+    """
+    write_header = not path.exists()
+    with path.open("a", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_EPOCH_METRIC_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def _save_this_epoch(epoch: int, n_epochs: int, save_every: int) -> bool:
+    """Which epochs get their own checkpoint under --save-every.
+
+    Epoch 0 and the final epoch are always included when saving is on: they are
+    the two ends of the CV curve, and the divergence being measured is precisely
+    that model A's best epoch was 0 while its loss kept improving to the end.
+    """
+    if save_every <= 0:
+        return False
+    return epoch % save_every == 0 or epoch == n_epochs - 1
+
+
 def train(
     data_dir: Path,
     fold: int,
@@ -1089,6 +1163,7 @@ def train(
     select_videos: int = 8,
     select_budget: float = 1.0,
     legacy_eval_batches: int | None = 20,
+    save_every: int = 0,
 ) -> UNetNodeTransformer:
     """Train on one fold from a pre-computed splits file.
 
@@ -1126,18 +1201,56 @@ def train(
     output_dir = WEIGHTS_PATH / method / f"split_{fold}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save arch config so predict_unet_transformer can reconstruct the model.
-    model_config = {
+    # The whole run config, not just the architecture: a checkpoint whose lr,
+    # loss weights, seed and epoch budget are not recorded beside it cannot be
+    # placed in an ablation later (CLAUDE.md experiment discipline).
+    # The architecture keys stay FLAT at the top level because
+    # predict_unet_transformer.load_model indexes this dict directly; it merges
+    # over its own defaults and ignores keys it does not know, so adding to the
+    # file is backward compatible with checkpoints already on disk.
+    run_config = {
+        # Read back by predict_unet_transformer.load_model -- do not nest these.
         "unet_out_channels": unet_out_channels,
         "unet_layers": unet_layers,
         "downsample": list(downsample),
         "window_size": window_size,
+        # Inference defaults that came from this run rather than from the model.
         "pool_kernel_um": pool_kernel_um,
         "det_target": det_target,
         "det_pu_mask": det_pu_mask,
         "det_sigma_um": det_sigma_um,
+        # The rest is the experiment record.
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "method": method,
+        "fold": fold,
+        "data_dir": str(data_dir),
+        "splits_file": None if debug_video is not None else str(splits_file),
+        "debug_video": None if debug_video is None else str(debug_video),
+        "n_epochs": n_epochs,
+        "lr": lr,
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "max_iters": max_iters,
+        "max_frames": max_frames,
+        "seed": seed,
+        "det_loss_weight": det_loss_weight,
+        "det_neg_weight": det_neg_weight,
+        "det_pseudo_weight": det_pseudo_weight,
+        "unet_weights": None if unet_weights is None else str(unet_weights),
+        "augmentations": [getattr(a, "__name__", str(a)) for a in (augmentations or [])],
+        "data_parallel": data_parallel,
+        "select_videos": select_videos,
+        "select_budget": select_budget,
+        "legacy_eval_batches": legacy_eval_batches,
+        "save_every": save_every,
     }
-    (output_dir / "config.json").write_text(json.dumps(model_config, indent=2))
+    (output_dir / "config.json").write_text(json.dumps(run_config, indent=2))
+
+    # Replaced, not appended to: a re-run of the same fold overwrites
+    # config.json, so leaving the previous run's rows in place would splice two
+    # curves into one file.
+    metrics_path = output_dir / "epoch_metrics.csv"
+    metrics_path.unlink(missing_ok=True)
 
     def _load(
         files: list[Path], desc: str,
@@ -1294,14 +1407,30 @@ def train(
         )
         is_best = score > best_score
 
+        _append_epoch_metrics(metrics_path, {
+            "epoch": epoch,
+            "edge_loss": round(float(edge_loss), 6),
+            "det_loss": round(float(det_loss), 6),
+            "cv_score": round(float(score), 6),
+            "adj_edge_jaccard": round(float(sel["adj_edge_jaccard"]), 6),
+            "division_jaccard": round(float(sel["division_jaccard"]), 6),
+            "node_recall": round(float(sel["node_recall"]), 6),
+            "legacy_acc": round(float(test_acc), 6),
+            "is_best": int(is_best),
+        })
+
         if is_best:
             best_score = score
-            # Normalise any DataParallel "unet.module." prefix to "unet." so the
-            # checkpoint loads on a single GPU (e.g. in the prediction script).
-            torch.save(
-                {k.replace("unet.module.", "unet.", 1): v for k, v in model.state_dict().items()},
-                save_path,
-            )
+            torch.save(_portable_state(model), save_path)
+
+        # Keeping only the best checkpoint makes the loss/CV divergence
+        # unmeasurable after the fact: model A peaked at epoch 0 and decayed
+        # while its loss kept improving, and there was nothing left to score in
+        # between. Written beside config.json and zero-padded, so
+        # `score_pipeline.py --detector unet --weights <path>` works unchanged
+        # and a glob sorts by epoch.
+        if _save_this_epoch(epoch, n_epochs, save_every):
+            torch.save(_portable_state(model), output_dir / f"edge_predictor_epoch{epoch:03d}.pth")
 
         marker = "*" if is_best else " "
         pbar.set_postfix(edge=f"{edge_loss:.4f}", det=f"{det_loss:.4f}", cv=f"{score:.4f}")
@@ -1400,6 +1529,14 @@ def main() -> None:
     parser.add_argument("--select-budget", type=float, default=1.0,
                         help="Node budget as a multiple of t_true used during "
                              "checkpoint scoring (default 1.0).")
+    parser.add_argument("--save-every", type=int, default=0,
+                        help="Also save a checkpoint every N epochs, beside the best one "
+                             "(0 = off). Epoch 0 and the last epoch are always included. "
+                             "For re-scoring the epochs where CV turns away from the "
+                             "training loss; the curve itself is always written to "
+                             "epoch_metrics.csv, with or without this flag. ~8 MB each at "
+                             "the default architecture, and the box has little headroom "
+                             "under its 100 GB cap, so don't leave it on for long runs.")
     parser.add_argument("--data-parallel", dest="data_parallel", action="store_true", default=True,
                         help="Split the UNet across all visible GPUs via nn.DataParallel "
                              "when more than one is available (default: on).")
@@ -1448,6 +1585,7 @@ def main() -> None:
             window_size=args.window_size,
             pool_kernel_um=args.pool_kernel_um,
             data_parallel=args.data_parallel,
+            save_every=args.save_every,
         )
 
 

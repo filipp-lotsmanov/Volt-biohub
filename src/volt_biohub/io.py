@@ -10,6 +10,8 @@ import torch
 import tracksdata as td
 import zarr
 
+from volt_biohub.gpu import resolve_device
+
 DEFAULT_SCALE: tuple[float, float, float] = (1.625, 0.40625, 0.40625)
 
 
@@ -38,10 +40,10 @@ def open_dataset(ds_path: Path | str,
                 target_scale: tuple[float, float, float] | None = None,
                 normalize: bool = True,
                 gamma: float = 1.0,
-                device: str = "cuda",
+                device: str | torch.device | None = None,
                 require_tracks: bool = False,
                 load_image: bool = True,
-                downsample: tuple[int, ...] | None = None) -> Dataset:
+                downsample: tuple[int, int, int] | None = None) -> Dataset:
     """Open a dataset from a zarr file and optionally a geff tracks file.
 
     Parameters
@@ -54,20 +56,29 @@ def open_dataset(ds_path: Path | str,
         Whether to normalize the image intensities.
     gamma : float
         Gamma correction value for normalization.
-    device : str
-        Device to use for GPU processing.
+    device : str, torch.device or None
+        Where to normalize/resample. ``None`` resolves to cuda only when a card is
+        actually visible, else cpu -- the library must never assume a GPU exists.
     require_tracks : bool
         Whether to require a .geff tracks file.
     load_image : bool
         If False, skip loading image data (metadata + tracks only).
     downsample : tuple, optional
-        Spatial downsample strides (Z, Y, X). Applied via strided indexing.
+        Spatial strides (Z, Y, X) for the image read: ``image[:, ::dz, ::dy, ::dx]``.
+        Decimation, not pooling, so downsampled index ``j`` holds original voxel
+        ``j * d`` and ``coord_original = coord_grid * downsample`` is exact.
+        ``scale`` and the track coordinates deliberately stay in *original* voxel
+        space, so the grid's physical voxel size is ``scale * downsample`` -- that
+        product is what train and predict feed to every micrometre distance.
+        Mutually exclusive with ``target_scale``.
 
     Returns
     -------
     Dataset
-        Dataset with image shape (T, Z, Y, X). When ``load_image=False``,
-        ``image`` is None but ``image_shape`` and ``zarr_path`` are populated.
+        Dataset with image shape (T, Z, Y, X). ``image_shape`` always describes the
+        array ``image`` holds, with or without ``load_image``; the two disagreeing
+        was a silent 4x-in-y/x trap for any caller that divided GT coordinates by
+        ``downsample``.
     """
     ds_path = Path(ds_path)
     if ds_path.suffix in (".zarr", ".geff"):
@@ -81,6 +92,19 @@ def open_dataset(ds_path: Path | str,
     if require_tracks and not tracks_path.exists():
         raise FileNotFoundError(f"Tracks file not found: {tracks_path}")
 
+    if downsample is not None:
+        downsample = _validate_downsample(downsample)
+        if target_scale is not None:
+            # Both arguments resample, and combining them cannot be made to mean one
+            # thing: the zoom below is derived from `scale`, which keeps describing the
+            # *original* grid, so it would scale an already-strided array a second time
+            # -- 4x wrong in y/x with nothing raised. Refusing beats guessing.
+            raise ValueError(
+                "downsample and target_scale both resample the image and cannot be "
+                "combined: pass downsample=(1, 4, 4) for the strided training grid, "
+                "or target_scale=(1.625, 1.625, 1.625) for the interpolated one."
+            )
+
     img_ds = zarr.open_group(image_path, mode="r")
     tracks = None
     if require_tracks and tracks_path.exists():
@@ -93,7 +117,9 @@ def open_dataset(ds_path: Path | str,
 
     raw_shape = tuple(img_ds["0"].shape)
     if downsample is not None:
-        ds_shape = raw_shape[:1] + tuple(-(-s // d) for s, d in zip(raw_shape[1:], downsample))
+        ds_shape = raw_shape[:1] + tuple(
+            -(-s // d) for s, d in zip(raw_shape[1:], downsample, strict=True)
+        )
     else:
         ds_shape = raw_shape
 
@@ -103,7 +129,15 @@ def open_dataset(ds_path: Path | str,
             image_shape=ds_shape, zarr_path=image_path, quantiles=quantiles,
         )
 
-    da_arr = da.from_zarr(img_ds["0"]).compute()
+    da_arr = da.from_zarr(img_ds["0"])
+    if downsample is not None:
+        dz, dy, dx = downsample
+        da_arr = da_arr[:, ::dz, ::dy, ::dx]
+    da_arr = da_arr.compute()
+
+    # The invariant bug 1 broke: the two load paths must report the same grid, or a
+    # caller mixes full-resolution voxels with training-grid coordinates.
+    assert tuple(da_arr.shape) == ds_shape, (tuple(da_arr.shape), ds_shape)
 
     resample = target_scale is not None
     original_scale = None
@@ -111,7 +145,7 @@ def open_dataset(ds_path: Path | str,
         if resample:
             original_scale = scale
         da_arr, tracks, scale = _process_on_gpu(
-            da_arr, tracks, scale, device,
+            da_arr, tracks, scale, resolve_device() if device is None else device,
             resample=resample, target_scale=target_scale,
             normalize=normalize, gamma=gamma,
             precomputed_quantiles=quantiles,
@@ -124,6 +158,21 @@ def open_dataset(ds_path: Path | str,
         original_scale=original_scale, image_shape=tuple(da_arr.shape),
         zarr_path=image_path, quantiles=quantiles,
     )
+
+
+def _validate_downsample(downsample: tuple[int, ...]) -> tuple[int, int, int]:
+    """Require exactly three positive integer (Z, Y, X) strides.
+
+    A short tuple used to be truncated away by ``zip``, dropping the X axis from
+    the shape computation entirely, and a non-integer stride would be silently
+    floored by the slice. Both leave one axis wrong by a factor with nothing
+    raised, which is the failure mode this whole module has to stop.
+    """
+    if len(downsample) != 3 or any(int(d) != d or d < 1 for d in downsample):
+        raise ValueError(
+            f"downsample must be three positive (Z, Y, X) integer strides, got {downsample!r}"
+        )
+    return tuple(int(d) for d in downsample)
 
 
 def _parse_scale(attrs: dict) -> tuple[float, float, float]:
@@ -155,7 +204,7 @@ def _process_on_gpu(
     image: np.ndarray,
     tracks: td.graph.IndexedRXGraph | None,
     scale: tuple[float, float, float],
-    device: str,
+    device: str | torch.device,
     resample: bool = False,
     target_scale: tuple[float, float, float] | None = None,
     normalize: bool = True,
@@ -196,7 +245,13 @@ def _process_on_gpu(
             q2 = np.float32(q2)
 
     # 2. Transfer raw float32 to GPU once (pinned memory for faster DMA)
-    tensor = torch.from_numpy(image).pin_memory().to(torch_device, non_blocking=True)
+    # pin_memory() is a CUDA host allocation and raises on a CPU-only box, so the
+    # fast DMA path is taken only when there is a device to DMA to.
+    tensor = torch.from_numpy(image)
+    if torch_device.type == "cuda":
+        tensor = tensor.pin_memory().to(torch_device, non_blocking=True)
+    else:
+        tensor = tensor.to(torch_device)
 
     # 3. Apply normalization on GPU
     if normalize:
@@ -208,16 +263,11 @@ def _process_on_gpu(
 
     # 4. Resample to target scale (if enabled)
     if resample:
-        scale_arr = np.array(scale)
         if target_scale is None:
-            target_scale_val = scale_arr.min()
-        else:
-            target_scale_val = np.array(target_scale)
-
-        zoom_factors = scale_arr / target_scale_val
+            raise ValueError("resample=True requires an explicit target_scale")
+        zoom_factors = np.array(scale) / np.array(target_scale)
 
         # For 4D input (T, Z, Y, X), reshape to (T, 1, Z, Y, X) for interpolate
-        T = tensor.shape[0]
         new_spatial_shape = (np.array(tensor.shape[1:]) * zoom_factors).astype(int).tolist()
         tensor = tensor[:, None]  # (T, 1, Z, Y, X)
         tensor = torch.nn.functional.interpolate(
@@ -239,11 +289,7 @@ def _process_on_gpu(
                 node_ids=node_attrs[td.DEFAULT_ATTR_KEYS.NODE_ID].to_list(),
             )
 
-        # Update scale to isotropic
-        if target_scale is not None:
-            scale = target_scale
-        else:
-            scale = (float(target_scale_val),) * 3
+        scale = target_scale
 
     return tensor, tracks, scale
 
@@ -287,37 +333,69 @@ def invert_time_graph(tracks: td.graph.IndexedRXGraph, max_t: int = 100) -> td.g
 def rescale_graph_to_original(
     graph: td.graph.BaseGraph,
     original_scale: tuple[float, float, float],
+    isotropic_scale: tuple[float, float, float] | float,
 ) -> td.graph.BaseGraph:
     """
-    Rescale graph coordinates from isotropic space back to original anisotropic space.
+    Rescale graph coordinates from an isotropic grid back to original voxel space.
 
-    This inverts the isotropic resampling transformation applied during dataset loading.
+    ``isotropic_scale`` is required because two different isotropic grids are
+    reachable and they disagree by 4x in y and x, so there is no default this
+    function may safely assume:
+
+    * ``open_dataset(target_scale=(1.625,) * 3)`` interpolates y and x *down*
+      (zoom ``(1, 0.25, 0.25)``). Pair it as
+      ``rescale_graph_to_original(g, ds.original_scale, ds.scale)``.
+    * ``img_proc.rescale_coords_to_isotropic`` normalises to ``min(scale)``, i.e.
+      it interpolates z *up* by 4 (zoom ``(4, 1, 1)``). Pass
+      ``isotropic_scale=min(original_scale)``.
+
+    It previously hardcoded the second convention, so the natural pairing with
+    ``ds.original_scale`` divided z by 4 and left y/x at a quarter of their true
+    value -- the submission is then in no coordinate space at all and scores ~0
+    with nothing raised.
+
+    Note that the ``--downsample 1,4,4`` strided grid needs no scale arithmetic at
+    all: ``coord_original = coord_grid * downsample`` exactly, which is what
+    ``build_graph(upsample=...)`` does.
 
     Parameters
     ----------
     graph : td.graph.BaseGraph
-        Graph with coordinates in isotropic space.
+        Graph with coordinates on the isotropic grid.
     original_scale : tuple[float, float, float]
-        Original (z, y, x) voxel scale before isotropic resampling.
+        Original (z, y, x) um/voxel before resampling.
+    isotropic_scale : tuple[float, float, float] or float
+        The (z, y, x) um/voxel of the grid the graph is currently on; a scalar is
+        broadcast to all three axes.
 
     Returns
     -------
     td.graph.BaseGraph
-        Graph with coordinates scaled back to original space.
+        The same graph, coordinates in original anisotropic voxel space.
     """
-    scale_arr = np.array(original_scale)
-    target_scale = scale_arr.min()
-    zoom_factors = scale_arr / target_scale
+    scale_arr = np.asarray(original_scale, dtype=np.float64)
+    iso_arr = np.broadcast_to(np.asarray(isotropic_scale, dtype=np.float64), (3,))
 
-    # Invert the zoom by dividing coordinates
-    inverse_zoom = 1.0 / zoom_factors
+    # Exactly the zoom the forward resample applied, so dividing by it is its inverse.
+    inverse_zoom = iso_arr / scale_arr
 
     node_attrs = graph.node_attrs()
-    node_attrs = node_attrs.with_columns(
-        (pl.col("z") * inverse_zoom[0]),
-        (pl.col("y") * inverse_zoom[1]),
-        (pl.col("x") * inverse_zoom[2]),
-    )
+    dtypes = {col: node_attrs.schema[col] for col in ("z", "y", "x")}
+
+    # Keep each column's dtype. A geff-backed graph (all GT, and any prediction
+    # round-tripped through .geff) stores integer voxel centroids, and polars
+    # refuses to write a float back into an Int64 column -- so this used to raise
+    # TypeError on exactly the graphs the function exists for. Rounding is the
+    # right coercion anyway: the submission demands integer coordinates, and the
+    # 7 um tolerance is ~17 y/x voxels wide.
+    exprs = []
+    for col, inv in zip(("z", "y", "x"), inverse_zoom, strict=True):
+        expr = pl.col(col) * inv
+        if not dtypes[col].is_float():
+            expr = expr.round(0)
+        exprs.append(expr.cast(dtypes[col]))
+
+    node_attrs = node_attrs.with_columns(exprs)
     graph.update_node_attrs(
         attrs=node_attrs.select("z", "y", "x").to_dict(),
         node_ids=node_attrs[td.DEFAULT_ATTR_KEYS.NODE_ID].to_list(),

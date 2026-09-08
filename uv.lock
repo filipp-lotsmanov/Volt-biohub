@@ -1143,22 +1143,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kagglehub"
-version = "1.0.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "kagglesdk" },
-    { name = "packaging" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b5/b9/e1bdafdcdb98e8e5354b30959ed48f4a08ca2c2dc72c968c5b38c4baa1b5/kagglehub-1.0.2.tar.gz", hash = "sha256:08abae0c1e249904003ce6f23c189166e3032220478426a552c77c2edb08b93a", size = 117457, upload-time = "2026-06-09T17:14:05.313Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/1a/6b1293d0b091905e367f86771a7122e5f7f2729ab9f0f36a1617f7ad6c05/kagglehub-1.0.2-py3-none-any.whl", hash = "sha256:ffad2d79cfda9b06848e98cb0a4a48e286285cfba4aeadadc0b8dbd9bcadd372", size = 70645, upload-time = "2026-06-09T17:14:04.04Z" },
-]
-
-[[package]]
 name = "kagglesdk"
 version = "0.1.37"
 source = { registry = "https://pypi.org/simple" }
@@ -3498,13 +3482,9 @@ source = { editable = "." }
 dependencies = [
     { name = "dask", extra = ["array"] },
     { name = "geff" },
-    { name = "kagglehub" },
-    { name = "matplotlib" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pandas" },
     { name = "polars" },
-    { name = "python-dotenv" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
@@ -3516,6 +3496,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+eda = [
+    { name = "matplotlib" },
+    { name = "pandas" },
+]
 viz = [
     { name = "napari" },
     { name = "pyqt6" },
@@ -3532,14 +3516,12 @@ dev = [
 requires-dist = [
     { name = "dask", extras = ["array"] },
     { name = "geff", specifier = ">=1.3" },
-    { name = "kagglehub", specifier = ">=1.0.2" },
-    { name = "matplotlib", specifier = ">=3.11.1" },
+    { name = "matplotlib", marker = "extra == 'eda'", specifier = ">=3.11.1" },
     { name = "napari", marker = "extra == 'viz'", specifier = ">=0.5" },
     { name = "numpy" },
-    { name = "pandas", specifier = ">=3.0.5" },
+    { name = "pandas", marker = "extra == 'eda'", specifier = ">=3.0.5" },
     { name = "polars" },
     { name = "pyqt6", marker = "extra == 'viz'" },
-    { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "scipy" },
     { name = "torch", marker = "sys_platform != 'win32'", specifier = ">=2.9.1" },
     { name = "torch", marker = "sys_platform == 'win32'", specifier = ">=2.9.1", index = "https://download.pytorch.org/whl/cu130" },
@@ -3547,7 +3529,7 @@ requires-dist = [
     { name = "tracksdata", git = "https://github.com/royerlab/tracksdata?rev=main" },
     { name = "zarr", specifier = ">=3.0.10" },
 ]
-provides-extras = ["viz"]
+provides-extras = ["viz", "eda"]
 
 [package.metadata.requires-dev]
 dev = [

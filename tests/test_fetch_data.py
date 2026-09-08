@@ -218,3 +218,116 @@ def test_write_manifest_round_trips(archive, tmp_path):
     assert sorted(fd.load_manifest(tmp_path), key=lambda e: e.name) == sorted(
         entries, key=lambda e: e.name
     )
+
+
+def _drop_member(monkeypatch, victim: str, *, raise_instead: bool):
+    """Make ``ZipFile.extract`` fail on one member, the two ways it can fail.
+
+    ``raise_instead`` reproduces a batch that throws (what the makedirs race did);
+    otherwise the call returns as if it had worked and writes nothing, which is the
+    shape of a silent short write. Both must be caught by the same check.
+    """
+    real = zipfile.ZipFile.extract
+
+    def patched(self, member, path=None, pwd=None):
+        if member == victim:
+            if raise_instead:
+                raise OSError("simulated batch failure")
+            return None
+        return real(self, member, path, pwd)
+
+    monkeypatch.setattr(zipfile.ZipFile, "extract", patched)
+
+
+@pytest.mark.parametrize("raise_instead", [True, False])
+def test_extract_refuses_to_report_a_partial_extraction(
+    archive, tmp_path, monkeypatch, raise_instead
+):
+    """Returning normally here made a partial 24,886-file dataset look complete.
+
+    A batch that threw was appended to a list, printed, and swallowed — so the only
+    thing standing between a half-extracted dataset and a training run was someone
+    reading the scrollback.
+    """
+    entries = fd.manifest_from_archive(archive)
+    chosen = _select_like_cli(entries, split="both", take_all=True)
+    victim = chosen[3].name
+    _drop_member(monkeypatch, victim, raise_instead=raise_instead)
+
+    with pytest.raises(fd.IncompleteTransfer, match="Re-run the same command"):
+        fd.extract(archive, chosen, tmp_path, workers=2, batch=4)
+
+
+def test_zip_command_exits_and_keeps_the_archive_when_extraction_is_partial(
+    archive, tmp_path, monkeypatch
+):
+    """Non-zero exit, and `--rm-zip` must not delete the only local copy."""
+    entries = fd.manifest_from_archive(archive)
+    victim = next(e.name for e in entries if "6bba_c328f2fd" in e.name)
+    _drop_member(monkeypatch, victim, raise_instead=True)
+    monkeypatch.setattr(fd, "download_archive", lambda dest, *, force=False: dest / fd.ZIP_NAME)
+
+    with pytest.raises(SystemExit, match="Extraction incomplete"):
+        fd.main(["zip", "--dest", str(tmp_path), "--samples", "6bba_c328f2fd", "--rm-zip"])
+    assert archive.exists(), "re-running is a local extraction; the archive must survive"
+
+
+def test_extract_retries_only_the_missing_members(archive, tmp_path, monkeypatch, capsys):
+    """The documented remedy — re-run the same command — has to actually work."""
+    entries = fd.manifest_from_archive(archive)
+    chosen = _select_like_cli(entries, split="both", take_all=True)
+    victim = chosen[3].name
+    _drop_member(monkeypatch, victim, raise_instead=True)
+    with pytest.raises(fd.IncompleteTransfer):
+        fd.extract(archive, chosen, tmp_path, workers=2, batch=1)
+
+    monkeypatch.undo()
+    capsys.readouterr()
+    fd.extract(archive, chosen, tmp_path, workers=2, batch=1)
+    assert "1 member(s) to extract" in capsys.readouterr().out
+    assert [e for e in chosen if fd._needs_fetch(e, tmp_path)] == []
+
+
+def test_extract_creates_parent_dirs_itself(archive, tmp_path, monkeypatch):
+    """The flake: zipfile's own directory creation is not thread-safe.
+
+    ``_extract_member`` does ``if not os.path.exists(upperdirs): os.makedirs(upperdirs)``
+    with no ``exist_ok``, and ``os.makedirs`` re-raises FileExistsError for its leaf.
+    Members sharing a parent therefore race — and ``dest`` is itself the parent of
+    ``sample_submission.csv``, so extracting a root file alongside anything else into a
+    dest that does not exist yet lost a whole batch on roughly 10 % of runs (measured
+    at 34/300 with two workers). Extraction must never reach that code path.
+    """
+    entries = fd.manifest_from_archive(archive)
+    chosen = _select_like_cli(entries, split="both", take_all=True)
+
+    calls = []
+    real_makedirs = zipfile.os.makedirs
+
+    def watched(name, *a, **kw):
+        calls.append(name)
+        return real_makedirs(name, *a, **kw)
+
+    monkeypatch.setattr(zipfile.os, "makedirs", watched)
+    out = tmp_path / "fresh"  # deliberately absent: the first run on a new machine
+    fd.extract(archive, chosen, out, workers=4, batch=1)
+
+    assert calls == [], "zipfile's non-atomic makedirs is back on the extraction path"
+    assert [e for e in chosen if fd._needs_fetch(e, out)] == []
+
+
+@pytest.mark.parametrize("name", ["/etc/passwd", "train/../../x.zarr/0", "C:/x.zarr/0"])
+def test_manifest_from_archive_rejects_escaping_member_names(tmp_path, name):
+    """A name that escapes `dest` breaks resume, not just safety.
+
+    `ZipFile.extract` rewrites such a name to stay inside its destination; our size
+    check and parent-directory creation join it onto `dest` verbatim. The two would
+    then disagree about where the file is, so the member would read as missing on
+    every re-run — an infinite "re-run to retry".
+    """
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr("train/6bba_c328f2fd.zarr/0/c/0/0/0/0", b"ok")
+        zf.writestr(name, b"x")
+    with pytest.raises(SystemExit, match="escape the destination"):
+        fd.manifest_from_archive(bad)
