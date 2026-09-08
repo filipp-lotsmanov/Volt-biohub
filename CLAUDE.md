@@ -916,6 +916,43 @@ the code review.
 whitespace). Inherited, not ours, and concentrated in code slated for rework — but the
 lint gate is not green today, so don't read a clean run as a regression signal yet.
 
+**2026-09-08 — THE BIGGEST SCORE GAIN IN THE PROJECT, and it needs no new training:
+switch detector on predicted cell density.** DoG and the U-Net tie on aggregate but
+disagree per sample, and the disagreement is **predictable**. Over all 199 samples,
+scored per sample at the tuned config and aggregated by `w_i`:
+
+| strategy | weighted score |
+|---|---|
+| classical DoG alone | 0.6753 |
+| U-Net alone | 0.6789 |
+| **switch at 150 cells/frame** | **0.7366** |
+| per-sample oracle | 0.7433 (the ceiling) |
+
+**+0.058 over the better single method, capturing 91 % of the oracle headroom.** The
+mechanism is exactly the fold split: `spearman(cells_per_frame, unet − dog) = +0.700` —
+**the U-Net wins on the crowded samples, DoG on the sparse ones**, and the U-Net wins
+107/199 overall.
+
+**It survives a predicted density, which is what makes it shippable.** `T_true` does not
+exist at test time, but `check_t_true.py` measures the p90-quantile predictor at R² 0.72
+/ 25 % median relative error. Simulating exactly that noise (lognormal, 400 draws):
+
+| threshold | mean | p5 | worst of 400 |
+|---|---|---|---|
+| 125 | 0.7343 | 0.7308 | 0.7271 |
+| **150** | **0.7350** | 0.7321 | **0.7297** |
+| 175 | 0.7334 | 0.7301 | 0.7276 |
+
+**The worst single draw (0.7297) still beats the best single method (0.6789) by +0.051**,
+and the response is flat from 125–175 so the threshold is not delicate. Cost: run both
+detectors — DoG is ~5 s/video on CPU, so it is nearly free next to the U-Net's 1.86
+s/frame.
+
+*Caveat on the aggregation:* these weighted figures pool all 199 samples by `w_i`
+directly (0.6753 / 0.6789), where the per-fold table below weights fold aggregates
+(0.6801 / 0.6790). Both are legitimate; the pooled one is the more direct computation and
+is what the switch numbers are built on. Do not mix them.
+
 **2026-09-08 — THE HEADLINE, and it took two corrections to get here.** Four numbers,
 all on **full** LOEO folds at the **identical** tuned config (gate 7 µm, separation
 4 µm, division gate 6 µm, refined peaks, budget 1.0× `T_true`):
