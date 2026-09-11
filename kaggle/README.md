@@ -367,7 +367,16 @@ Measured on the Linux box, 100-frame videos, extrapolated to a hidden test set
 |---|---|---|---|
 | DoG | CPU, 4 threads | 5.9 s | **0.32 h** |
 | U-Net | CPU, 8 threads | ~299 s (3.0 s/frame) | **16.5 h — over the cap** |
-| U-Net | T4 / P100 | not yet measured | **must be measured** |
+| U-Net | **Kaggle T4** | **13.3 s** | **0.74 h** |
+| **switch, mixed** | **Kaggle T4** | **8.9 s** | **0.49 h** |
+
+Measured on the real kernel 2026-09-11, not extrapolated from this box: the
+four-sample visible test set ran DoG at 3.8–4.0 s and the U-Net at 13.3 s per
+video, for 8.9 s/video mixed. **The cap is not the constraint it was feared to
+be — 0.49 h against 12 h.** That is 24x headroom, which is worth knowing in the
+other direction: the budget is nowhere near binding, so a *more* expensive
+detector, flip TTA, or a second model are all affordable. The 12 h worry came
+from CPU numbers on this box and does not survive contact with a GPU kernel.
 
 Two conclusions:
 
@@ -382,8 +391,27 @@ Two conclusions:
   half-built weights dataset degrades to a scoring submission rather than to no
   submission.
 
-Still open: the U-Net's per-frame cost on an actual T4/P100. Run this on the box
-once a GPU frees up, and record the number here —
+**Open, and newly discovered: node count is not reproducible across GPUs.** The
+same checkpoint, config and input produced **50,561** nodes for
+`44b6_0b24845f` on this box's A6000 and **34,837** on Kaggle's T4 — 31 % short
+of a budget it filled locally. Not precision: `load_detector` is fp32 on both
+and never calls `.half()`. The mechanism is the saturated map's *plateaus*.
+`detectors._top_peaks` marks `field >= pooled`, so on a plateau where many
+voxels are exactly equal to the window maximum, every one of them is a "peak" —
+and how many compare exactly equal depends on the cuDNN convolution algorithm,
+which differs between an A6000 and a T4. Consequences:
+
+* **Our CV node-count calibration was measured on hardware the submission does
+  not run on.** The node-count penalty is a function of `N_pred/N_true`, so a
+  31 % shortfall moves the multiplier — favourably here, since under-predicting
+  multiplies J *above* 1.0, but it costs edges outright at two per missed node.
+* It is a second, independent argument for fixing the saturation itself
+  (`det_neg_weight`, `bright_threshold`) rather than tuning around it: a
+  detector whose output has real dynamic range would not have ties to break.
+* Until then, treat any CV-vs-LB gap on this submission as *partly* this, and
+  do not spend a day hunting a scoring bug before ruling it out.
+
+Also still useful to record here —
 
 ```bash
 CUDA_VISIBLE_DEVICES=$(volt_gpu) uv run python kaggle/submit.py \
@@ -414,6 +442,47 @@ It is a weak *per-sample* predictor — on the four local placeholders it lands
 between 0.50× and 1.54× of truth — but the penalty is soft in both directions
 (±10 % relative), so being roughly right per sample beats being exactly wrong
 everywhere.
+
+---
+
+---
+
+## Submitting — the actual procedure
+
+Submission is by **notebook**, not by CSV upload. `kaggle competitions submit
+-f submission.csv` names *the output file the kernel produces*; the local CSV in
+the repo root is never uploaded and cannot be submitted. Kaggle **reruns** the
+notebook against the hidden test set when you submit — the run you watch after
+`kernels push` only touches the four visible placeholder samples.
+
+The CLI does all of it; the Kaggle MCP server is not needed and adds a browser
+OAuth step for nothing. Auth here is the `KGAT_` token at
+`$KAGGLE_API_TOKEN` (`/home/y2a/.kaggle/access_token`, on the persistent
+volume).
+
+```bash
+# 1. datasets  (see "Build the three datasets")
+uv run kaggle datasets version -p /tmp/volt-code -m "$(git rev-parse --short HEAD)" -r zip
+
+# 2. confirm the new version is actually mounted — NOT `datasets status`,
+#    which says "ready" about the dataset while a version is still processing
+uv run kaggle datasets files oleksiikrasnoshtanov/volt-code   # sizes must match local
+
+# 3. push, run, read the log
+uv run kaggle kernels push -p kaggle
+uv run kaggle kernels status oleksiikrasnoshtanov/volt-biohub-submission
+uv run kaggle kernels output oleksiikrasnoshtanov/volt-biohub-submission -p /tmp/out
+
+# 4. submit that kernel VERSION (-v), with -f naming the kernel's output file
+uv run kaggle competitions submit biohub-cell-tracking-during-development \
+    -k oleksiikrasnoshtanov/volt-biohub-submission -v 4 \
+    -f submission.csv -m "<git sha> <what changed>"
+uv run kaggle competitions submissions biohub-cell-tracking-during-development
+```
+
+Read the kernel log before submitting, every time. It prints the detector
+actually chosen, the test directory actually found and the per-video timing —
+the three things that have each silently been wrong once.
 
 ---
 

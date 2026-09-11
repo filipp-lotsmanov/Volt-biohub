@@ -1254,6 +1254,50 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-11 — THE CHAIN IS CLOSED: first real submission made, from the server, by
+CLI.** `kaggle competitions submit -k <notebook> -v <version>`; no browser and no MCP
+server needed. Submission is by **notebook**, and `-f submission.csv` names *the
+kernel's output file*, not a file to upload — the local CSV is never sent, and Kaggle
+reruns the notebook against the hidden test set. Full procedure in `kaggle/README.md`
+→ *Submitting*.
+
+**It took four kernel runs to get there, and every failure was an environment
+assumption this file had recorded as fact.** Worth reading as a group, because the
+shape repeats: each was invisible locally, each produced a plausible-looking error
+somewhere other than its cause, and a one-minute throwaway probe kernel would have
+caught all four at once.
+
+| run | died on | actual cause |
+|---|---|---|
+| 1 | `StopIteration` | competition mounts at `competitions/<slug>/test`, not `<slug>/test` |
+| 2 | missing `requirements-offline.txt` | pushed while the dataset **version was still processing** — `datasets status` says `ready` about the *dataset*, not the pending version |
+| 3 | same error again | same race; the fix is to diff `datasets files` sizes against local, not to poll status |
+| 4 | — | **completed, validated, submitted** |
+
+Latent behind run 1, and never reached: the wheels were built `--python-version 3.11`
+against an image that is **3.12.13**, so five of twelve carried `cp311` tags and
+`pip --no-index` would have found no candidate one line later.
+
+**The runtime worry was unfounded, by 24x.** Measured on the real T4 kernel: DoG 3.8–4.0
+s/video, U-Net 13.3 s/video, **8.9 s/video mixed under the density switch → 0.49 h for a
+train-sized 199-video test set**, against the 12 h cap. The 16.5 h figure was a CPU
+extrapolation off this box and does not survive contact with a GPU notebook. So the cap
+is *not* a design constraint: flip TTA, a larger model, or running both detectors on
+every sample are all affordable now, and that reopens options step 5 had closed.
+
+**A new and genuinely awkward finding: node count is not reproducible across GPUs.**
+Same checkpoint, same config, same input — `44b6_0b24845f` gave **50,561** nodes on this
+box's A6000 and **34,837** on Kaggle's T4, 31 % short of a budget it filled locally. Not
+precision (`load_detector` is fp32 on both). It is the saturated map again:
+`_top_peaks` marks `field >= pooled`, so on a plateau every voxel tied with the window
+maximum counts as a peak, and *how many compare exactly equal* depends on the cuDNN
+algorithm, which differs by card. Three consequences, and the third is the one that
+costs time if forgotten: the node-budget calibration in metric fact 4 was measured on
+hardware the submission does not run on; it is a second independent argument for fixing
+saturation (`det_neg_weight`, `bright_threshold`) rather than tuning around it; and
+**any CV-vs-LB gap on this submission is partly this**, so rule it out before hunting a
+scoring bug.
+
 ## Plan
 
 **Gate 0 — the team is the only thing left that needs a human.** Dev subset downloaded,
