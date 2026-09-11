@@ -235,8 +235,10 @@ are a free luxury; a large *model* is not. Measure full test-set timing on Kaggl
 week 2, not from one video in week 4.
 
 **Windows dev box (this machine).** PowerShell 7 — *assume PowerShell syntax*. `uv`
-for Python, `.python-version` pinned to **3.11** to match the Kaggle image; don't
-bump it. The 5070 is Blackwell (`sm_120`) and needs CUDA ≥ 12.8, but PyPI's Windows
+for Python, `.python-version` pinned to **3.11**. That pin used to be justified as
+"matches the Kaggle image" and **that is no longer true — the image is Python
+3.12.13** (measured 2026-09-11 by probe kernel). Our source is clean on both, so the
+pin itself is harmless; the offline wheels are what must track the image. The 5070 is Blackwell (`sm_120`) and needs CUDA ≥ 12.8, but PyPI's Windows
 torch wheels are CPU-only, so `pyproject.toml` routes torch to the **cu130** index
 on `sys_platform == 'win32'` (cu128 wheels stop at torch 2.11; cu126 has no
 `sm_120`). After any dependency change:
@@ -307,14 +309,37 @@ retired `kaggle.json` pair — and `KAGGLE_CONFIG_DIR` does **not** apply to it:
 be accepted in the browser or the API returns 403. Data is CC0, so university storage
 is fine.
 
-**Kaggle notebook.** Internet **disabled**, ≤12 h, output `submission.csv`.
+**Kaggle notebook — four facts measured on the real image 2026-09-11, three of which
+contradicted what this file stated.** Python is **3.12.13**, not 3.11. The competition
+mounts at **`/kaggle/input/competitions/<slug>/test`**, not `/kaggle/input/<slug>/test`
+— the one-level glob matched nothing and killed the first kernel run on
+`StopIteration` in its opening seconds. Preinstalled: torch 2.10.0+cu128, numpy 2.0.2,
+scipy 1.16.3, polars 1.35.2, and **no zarr**, which is what the wheels dataset is for.
+
+**And the one that would have cost a whole submission cycle: `enable_gpu: true` hands
+out a Tesla P100 at compute capability `sm_60`, while the image's torch ships cubins
+for `sm_70` upward.** `torch.cuda.is_available()` returns **True** there and every
+convolution then raises "no kernel image is available for execution on the device".
+An availability check is not merely insufficient here, it is *confidently wrong* — the
+same trap as `open_dataset(device="cuda")`, one level deeper. Two defences, both
+needed: request `"machine_shape": "NvidiaTeslaT4"` (sm_75) in `kernel-metadata.json`,
+**and** keep `notebook.py::gpu_is_usable()`, which executes one real `conv3d` and
+degrades to DoG if it raises — Kaggle substitutes hardware when a shape is
+unavailable, so the request alone is not a guarantee. **Probe the image before
+trusting a run**: `kaggle/README.md` → *Probing the image* has the throwaway kernel,
+it costs a minute, and it settled all four.
+
+Internet **disabled**, ≤12 h, output `submission.csv`.
 `tracksdata` is **not on PyPI**, so **keep the inference path free of tracksdata** —
 numpy/scipy/torch/zarr plus our own CSV writer — and use tracksdata only locally for
 GT parsing and scoring. Since `.geff` is plain Zarr v3 (see Data), this costs little.
 That removes the largest single submission-failure risk. If ILP is needed at inference,
 `ilpy` + `pyscipopt` ship manylinux wheels and bundle fine. Offline install:
 `pip download <pkgs> -d wheels --only-binary=:all: --platform manylinux2014_x86_64
---python-version 3.11`, then `pip install --no-index --find-links=/kaggle/input/<ds>`.
+--python-version 3.12`, then `pip install --no-index --find-links=/kaggle/input/<ds>`.
+**3.12, not 3.11**: wheels built for 3.11 carry `cp311` ABI tags, `pip --no-index`
+then finds no candidate, and the run dies at minute one. (`cp310-abi3` is *not* a
+wrong tag — abi3 is the stable ABI and is forward-compatible.)
 Three Kaggle Datasets — **wheels**, **code** (this repo, versioned per push with the git
 SHA in the message so an LB entry traces to a commit), **weights**; the notebook is ~30
 lines of glue, all logic lives in the repo. 20 GB output storage fills faster than
