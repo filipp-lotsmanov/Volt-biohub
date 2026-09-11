@@ -1270,6 +1270,55 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-11 — FIRST LEADERBOARD SCORE: 0.588, AND IT INVALIDATES THE PROJECT'S WHOLE
+SENSE OF SCALE.** Submission `56173960` (density switch, model A, gate 8 µm) scored
+**0.588 public** against a CV of 0.7366. The CV/LB gap is real and worth chasing — but
+it is the *second* most important thing in this result. The first is the field:
+
+| | score |
+|---|---|
+| leaderboard max | **0.970** |
+| 7th place (prize cutoff) | **0.958** |
+| **median of 3,402 teams** | **0.902** |
+| teams ≥ 0.90 | **1,812** |
+| teams ≥ 0.70 | **2,797** |
+| **us** | **0.588 — rank ~2932 / 3402** |
+
+**Half the field is above 0.90 and we are in the bottom 14 %.** Every internal
+comparison in this file was made against our own previous numbers, so "the biggest
+score gain in the project, +0.058" was measured on a scale where the gap to a *median*
+competitor is **+0.31**. Tuning four scalars bought 0.068; we need roughly five times
+that just to reach the middle of the board. **Stop treating knob sweeps as the main
+line of work.**
+
+**What the field's scores imply about the method.** A score of 0.90 is essentially a
+weighted adjusted edge Jaccard of 0.90, which requires near-complete detection — our
+node recall is 0.86–0.89 and our edge Jaccard 0.69. Linking is not the gap (geometry
+already solves it, and the margin analysis holds). **The detector is the entire gap**,
+and this file already documents it as broken on four independent counts: the map is
+saturated (median sigmoid 1.0000 at GT centroids), the detection loss is
+*anti-correlated* with the score, the best epoch is 0, and `det_neg_weight` runs 10×
+weaker than designed. We knew the detector was broken and spent the effort tuning
+around it. The leaderboard says that was the wrong call.
+
+**Revised priorities, replacing step 5's ordering:**
+
+1. **Find out what a 0.90 actually takes before building anything.** The public
+   notebooks and discussion are visible now and are the cheapest information in the
+   project. 1,812 teams are doing something we are not.
+2. **Score the unmodified upstream baseline.** We forked `royerlab/kaggle-cell-tracking-competition`
+   and replaced its learned linker with a geometric one after finding it emitted zero
+   edges. If the baseline as shipped scores ~0.9, we broke something rather than
+   improved it, and that is a one-run question.
+3. **Fix detection properly, not around the edges** — `det_neg_weight`,
+   `bright_threshold`, and the loss/metric divergence, in that order. Or replace it:
+   **Spotiflow trains natively from point labels and is explicitly legal here.** This
+   file listed it as a fallback; at 0.588 it is a primary candidate.
+4. The node-budget and switch work stands, but it is worth ~0.06 on a 0.38 gap.
+
+**Do not read the CV/LB gap as the main problem.** Even a perfect CV→LB transfer would
+have put us at 0.7366, which is still rank ~2800. The harness is not what is wrong.
+
 **2026-09-11 — THE CHAIN IS CLOSED: first real submission made, from the server, by
 CLI.** `kaggle competitions submit -k <notebook> -v <version>`; no browser and no MCP
 server needed. Submission is by **notebook**, and `-f submission.csv` names *the
