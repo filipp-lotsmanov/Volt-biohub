@@ -23,39 +23,72 @@ import subprocess
 import sys
 from pathlib import Path
 
-WHEELS = Path("/kaggle/input/volt-wheels")
-CODE = Path("/kaggle/input/volt-code")
+ROOT = Path("/kaggle/input")
 
 
-def find_weights(root: Path) -> Path | None:
-    """The checkpoint, wherever Kaggle's unzip happened to put it.
+def find_in_mounts(pattern: str, *, max_depth: int = 4) -> Path | None:
+    """First match for *pattern*, searched shallowly across the dataset mounts.
 
-    Measured on the real upload, not guessed. `kaggle datasets create -r zip`
-    sends each top-level subdirectory as `<name>.zip`; Kaggle's extractor then
-    *kept* the directory level for volt-code (`kaggle/...`, `src/...`, two
-    archives) and *dropped* it for volt-weights, whose single `split_0.zip`
-    landed flat at the mount root. So the documented
-    `volt-weights/split_0/edge_predictor_best.pth` resolves to nothing.
+    Nothing here hardcodes a mount path any more, and that is the product of
+    three separate failures rather than caution. `kaggle datasets create -r zip`
+    uploads each top-level subdirectory as `<name>.zip`, and Kaggle's extractor
+    keeps the directory level for a dataset with two of them (volt-code:
+    `kaggle/`, `src/`) and drops it for one with a single archive (volt-weights:
+    `split_0/` gone, contents flat at the root). Meanwhile the competition does
+    not mount at `<slug>/` at all but at `competitions/<slug>/`. Every one of
+    those was documented wrong, and each cost a push-run-read cycle to find.
 
-    That is the worst shape of bug available here: the path check fails,
-    HAVE_WEIGHTS goes False, the DoG fallback engages, and the log line says
-    "NO -> DoG fallback" — a submission that completes, validates, scores, and
-    is quietly worth 0.6753 instead of 0.7366. Searching for the file costs
-    milliseconds and removes the entire class, including whatever Kaggle does
-    next time the dataset is re-uploaded with a different number of folders.
-
-    The sibling config.json is required, not optional: architecture is not
-    inferable from a state dict and submit.load_detector exits without it, so a
-    pth found without its config must read as "no weights" rather than as a
-    checkpoint that crashes an eleven-hour run at minute one.
+    Bounded depth, and the competition mount skipped, on purpose: it holds
+    **90,776 entries** of zarr chunk files (measured), so an unbounded
+    `rglob` over `/kaggle/input` spends minutes walking it before finding a
+    12-file wheels directory.
     """
-    for pth in sorted(root.rglob("edge_predictor_best.pth")):
-        if (pth.parent / "config.json").exists():
-            return pth
+    for mount in sorted(q for q in ROOT.iterdir() if q.is_dir()):
+        if mount.name == "competitions":
+            continue
+        for depth in range(max_depth):
+            hits = sorted(mount.glob("/".join(["*"] * depth + [pattern])))
+            if hits:
+                return hits[0]
     return None
 
 
-WEIGHTS = find_weights(Path("/kaggle/input/volt-weights"))
+def find_weights() -> Path | None:
+    """The checkpoint, wherever Kaggle's unzip put it — beside its config.json.
+
+    The sibling config is required, not optional: architecture is not inferable
+    from a state dict and `submit.load_detector` exits without it, so a `.pth`
+    found alone must read as "no weights" rather than as a checkpoint that kills
+    an eleven-hour run at minute one.
+    """
+    for mount in sorted(q for q in ROOT.iterdir() if q.is_dir()):
+        if mount.name == "competitions":
+            continue
+        for depth in range(4):
+            for pth in sorted(mount.glob(
+                    "/".join(["*"] * depth + ["edge_predictor_best.pth"]))):
+                if (pth.parent / "config.json").exists():
+                    return pth
+    return None
+
+
+REQUIREMENTS = find_in_mounts("requirements-offline.txt")
+_pkg = find_in_mounts("volt_biohub/metrics.py")
+SRC = _pkg.parent.parent if _pkg else None
+_whl = find_in_mounts("*.whl")
+WHEELS = _whl.parent if _whl else None
+if not (REQUIREMENTS and SRC and WHEELS):
+    # Hard failure, unlike the weights: without the code and the wheels there is
+    # no submission of any kind, so say exactly which mount is missing rather
+    # than dying twenty lines later on an import.
+    raise SystemExit(
+        f"missing inputs — requirements={REQUIREMENTS} src={SRC} wheels={WHEELS}. "
+        f"mounts: {sorted(q.name for q in ROOT.iterdir())}. Attach volt-code and "
+        f"volt-wheels, and check `kaggle datasets files` shows the version you "
+        f"expect: a version still being processed mounts as the previous one."
+    )
+
+WEIGHTS = find_weights()
 HAVE_WEIGHTS = WEIGHTS is not None
 OUT = Path("/kaggle/working/submission.csv")
 
@@ -119,11 +152,11 @@ TEST = find_test_dir(Path("/kaggle/input"))
 
 subprocess.run(
     [sys.executable, "-m", "pip", "install", "--no-index", f"--find-links={WHEELS}",
-     "-r", str(CODE / "kaggle" / "requirements-offline.txt")],
+     "-r", str(REQUIREMENTS)],
     check=True,
 )
 
-sys.path[:0] = [str(CODE / "src"), str(CODE / "kaggle")]
+sys.path[:0] = [str(SRC), str(REQUIREMENTS.parent)]
 
 import torch  # noqa: E402
 import zarr  # noqa: E402
@@ -149,9 +182,9 @@ if not HAVE_WEIGHTS:
     # Not an assert: DoG really is a valid submission and a torch/weights
     # failure should still produce one. But list what is actually mounted, so
     # the log says *why* rather than leaving the next person to guess.
-    print("  mounted under /kaggle/input/volt-weights:",
-          sorted(str(q) for q in Path("/kaggle/input/volt-weights").rglob("*"))[:20],
-          flush=True)
+    print("  mounts:", {q.name: sorted(r.name for r in q.iterdir())[:8]
+                        for q in ROOT.iterdir()
+                        if q.is_dir() and q.name != "competitions"}, flush=True)
 assert int(zarr.__version__.split(".")[0]) >= 3, "need zarr 3.x for Zarr v3 stores"
 
 import submit  # noqa: E402
