@@ -309,6 +309,20 @@ retired `kaggle.json` pair — and `KAGGLE_CONFIG_DIR` does **not** apply to it:
 be accepted in the browser or the API returns 403. Data is CC0, so university storage
 is fine.
 
+**How a code competition is actually submitted** (researched 2026-09-11; we had been
+reasoning from the competition page alone and were wrong three ways). You submit a
+**notebook version**, and Kaggle re-executes it privately with the competition data
+**replaced by the hidden set**, then extracts and scores the file it wrote.
+`competitions submit -f submission.csv` names *the kernel's output file* — the local
+CSV is never uploaded, though the flag is spelled exactly like the upload flag for
+ordinary competitions. The run you watch after `kernels push` uses the four visible
+placeholders, so **timing must always be extrapolated**, and **the graded rerun's log is
+not visible at all**. Crucially, **errored submissions still count against the daily
+limit** (five/day) — Kaggle does this so a failure cannot be used to probe the hidden
+data, which makes a one-minute probe kernel much cheaper than a guess. Full procedure,
+the four failure modes and the checklist: `kaggle/README.md` → *How code competitions
+actually work*.
+
 **Kaggle notebook — four facts measured on the real image 2026-09-11, three of which
 contradicted what this file stated.** Python is **3.12.13**, not 3.11. The competition
 mounts at **`/kaggle/input/competitions/<slug>/test`**, not `/kaggle/input/<slug>/test`
@@ -653,6 +667,8 @@ than silently extracting nothing.
 | `src/volt_biohub/scoring.py` | 165 | video-level detect→link→score, shared by train and CLI | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
+| `kaggle/notebook.py` | 80 | the kernel: bootstrap + one `submit.run` call | glue only |
+| `kaggle/kaggle_env.py` | 121 | Kaggle mount / test-dir / weights / GPU discovery | ours; keep |
 | `scripts/dataspec.py` | 40 | path resolution | keep |
 | `scripts/fetch_data.py` | 757 | Kaggle downloader: bulk archive + per-file, resumable | ours; keep |
 | `scripts/train_unet_transformer.py` | 1294 | joint training | rework or replace |

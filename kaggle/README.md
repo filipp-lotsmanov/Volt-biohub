@@ -203,6 +203,90 @@ uv run kaggle datasets files oleksiikrasnoshtanov/volt-weights
 
 ---
 
+---
+
+## How code competitions actually work
+
+Researched 2026-09-11 against Kaggle's own docs and the community write-ups
+linked at the bottom, because we had been reasoning from the competition page
+alone and three of our assumptions were wrong.
+
+**The rerun is the submission.** You submit a *notebook version*, not a file.
+Kaggle then privately re-executes that notebook end to end with the competition
+dataset **replaced by a hidden version**, validates the execution against the
+competition's constraints, extracts the submission file from its output
+directory, and scores that. Consequences we had not internalised:
+
+* **The local `submission.csv` in the repo root is not submittable and never
+  was.** `kaggle competitions submit -f submission.csv` names *the file the
+  kernel produces*, not a file to upload. The flag looks identical to the
+  regular-competition upload flag and does something completely different.
+* **The run you watch after `kernels push` is not the graded run.** It executes
+  against the four visible placeholder samples. Its only jobs are to prove the
+  code runs and to give you a per-video timing to extrapolate from.
+* **The hidden set can be larger, smaller or otherwise different.** Ours is
+  "approximately the size of the training set" — 199 videos — against 4 visible.
+  So timing must always be extrapolated, never read off the visible run.
+
+**Errored submissions still count against the daily limit.** This is deliberate:
+otherwise a failing submission would be a free probe of the hidden data. With
+five per day, a blind guess costs a fifth of a day's budget, which is why the
+probe-kernel habit below is worth its minute. Ours cost three of them before
+this was understood.
+
+**The four failure modes, and what each actually means:**
+
+| shown | means |
+|---|---|
+| Notebook Threw Exception | your code raised. The log is visible; read it. |
+| Submission CSV Not Found | the rerun finished but no file was at the expected path — usually an upstream error that halted execution before the write |
+| Notebook Timeout | exceeded the competition's runtime limit *on the hidden set*, which is the one you never measured directly |
+| Submission Scoring Error | the file exists but is malformed: wrong columns, wrong row count, empty values, bad dtypes, invalid values |
+
+The last one is the argument for `validate_submission()` running before every
+save, which it now does — a scoring error is indistinguishable from a modelling
+failure on the leaderboard, and costs a slot either way.
+
+**You cannot see the rerun.** Its log is not exposed. So everything you want to
+know about the environment has to be established by a *visible* run — hence
+*Probing the image* above. Establish it once, cheaply, and write it down.
+
+**Shipping code: three options, and why we use the one we do.**
+
+| method | good for | why not here |
+|---|---|---|
+| Utility Script (attach a kernel as a module) | one file of helpers | ours is a package, `src/volt_biohub/...`, not a single module |
+| **Dataset of `.py` files + `sys.path`** | **a whole repo at a known commit** | **what we do** |
+| import another notebook's `/kaggle/working` | chaining train → infer | adds a second kernel to keep in sync for no gain |
+
+The Dataset route also gives the property we most want: the version message
+carries the git SHA, so a leaderboard entry traces back to a commit.
+
+**Why a `.py` script kernel rather than a `.ipynb`.** `kaggle kernels push`
+accepts a plain `.py` when `kernel_type` is `script`, and it produces the same
+graded `submission.csv`. A notebook is JSON with embedded outputs, so it diffs
+unreadably and cannot be reviewed in a PR. Since this file is glue by design,
+the notebook format would add only noise. It still runs top to bottom if pasted
+into the Kaggle editor.
+
+**Checklist before spending a submission**
+
+1. `uv run python kaggle/check_offline.py` — imports and runs with tracksdata hidden.
+2. `kaggle datasets files <each>` — sizes match local, so you know the *version*
+   you think is mounted is the one that is.
+3. `kaggle kernels push` → `status` → `output`, and **read the log**: the
+   detector actually chosen, the test dir actually found, the per-video timing.
+4. Extrapolate that timing to the hidden set's size and compare to the cap.
+5. Only then `competitions submit -k … -v …`.
+
+Sources: [Kaggle — Code Competitions, Errors & Debugging Tips](https://www.kaggle.com/code-competition-debugging),
+[Kaggle — Competitions Documentation](https://www.kaggle.com/docs/competitions),
+[Kaggle — Notebooks Documentation](https://www.kaggle.com/docs/notebooks),
+[Guide on Submitting Offline Kernels to a Kaggle Competition](https://medium.com/data-science/submitting-model-predictions-to-kaggle-competition-ccb64b17132e),
+[Organizing Code, Experiments, and Research for Kaggle Competitions](https://towardsdatascience.com/organizing-code-experiments-and-research-for-kaggle-competitions/).
+
+---
+
 ## Probing the image
 
 **Do this before trusting any run, and re-do it when Kaggle updates the image.**
