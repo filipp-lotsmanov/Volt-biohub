@@ -163,8 +163,29 @@ EOF
 uv run kaggle datasets create -p /tmp/volt-weights -r zip
 ```
 
-`notebook.py` expects `/kaggle/input/volt-weights/split_0/edge_predictor_best.pth`,
-so keep the `split_0/` level.
+**What Kaggle's unzip actually does — measured on the real upload 2026-09-11,
+and it is not consistent.** `-r zip` sends each top-level subdirectory as
+`<name>.zip`. Kaggle then extracts them, and whether the directory level
+survives depends on how many there were:
+
+| dataset | uploaded | mounted as |
+|---|---|---|
+| `volt-code` | `kaggle.zip`, `src.zip` | `kaggle/...`, `src/...` — level **kept** |
+| `volt-weights` | `split_0.zip` | `config.json`, `edge_predictor_best.pth` at the **root** — level **dropped** |
+
+So the `split_0/` this file used to tell you to keep does **not** exist on the
+mount, and `notebook.py`'s old hardcoded path resolved to nothing. That failure
+is silent by construction: `HAVE_WEIGHTS` goes False, the DoG fallback engages,
+the run completes and validates, and the submission is quietly worth 0.6753
+instead of 0.7366. `notebook.py` now calls `find_weights()`, which searches the
+mount for `edge_predictor_best.pth` beside a `config.json`, so either layout
+works and a future re-upload cannot reintroduce this.
+
+**Verify the mount rather than trusting the upload**, whatever you change:
+
+```bash
+uv run kaggle datasets files oleksiikrasnoshtanov/volt-weights
+```
 
 ---
 

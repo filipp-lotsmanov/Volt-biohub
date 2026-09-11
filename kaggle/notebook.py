@@ -25,12 +25,38 @@ from pathlib import Path
 
 WHEELS = Path("/kaggle/input/volt-wheels")
 CODE = Path("/kaggle/input/volt-code")
-WEIGHTS = Path("/kaggle/input/volt-weights/split_0/edge_predictor_best.pth")
-# The U-Net path needs the checkpoint AND its config.json — architecture is not
-# inferable from a state dict, and submit.load_detector exits if the config is
-# missing. Checking both here is what makes the DoG fallback real: guarding on
-# the .pth alone turns a half-built weights dataset into no submission at all.
-HAVE_WEIGHTS = WEIGHTS.exists() and (WEIGHTS.parent / "config.json").exists()
+
+
+def find_weights(root: Path) -> Path | None:
+    """The checkpoint, wherever Kaggle's unzip happened to put it.
+
+    Measured on the real upload, not guessed. `kaggle datasets create -r zip`
+    sends each top-level subdirectory as `<name>.zip`; Kaggle's extractor then
+    *kept* the directory level for volt-code (`kaggle/...`, `src/...`, two
+    archives) and *dropped* it for volt-weights, whose single `split_0.zip`
+    landed flat at the mount root. So the documented
+    `volt-weights/split_0/edge_predictor_best.pth` resolves to nothing.
+
+    That is the worst shape of bug available here: the path check fails,
+    HAVE_WEIGHTS goes False, the DoG fallback engages, and the log line says
+    "NO -> DoG fallback" — a submission that completes, validates, scores, and
+    is quietly worth 0.6753 instead of 0.7366. Searching for the file costs
+    milliseconds and removes the entire class, including whatever Kaggle does
+    next time the dataset is re-uploaded with a different number of folders.
+
+    The sibling config.json is required, not optional: architecture is not
+    inferable from a state dict and submit.load_detector exits without it, so a
+    pth found without its config must read as "no weights" rather than as a
+    checkpoint that crashes an eleven-hour run at minute one.
+    """
+    for pth in sorted(root.rglob("edge_predictor_best.pth")):
+        if (pth.parent / "config.json").exists():
+            return pth
+    return None
+
+
+WEIGHTS = find_weights(Path("/kaggle/input/volt-weights"))
+HAVE_WEIGHTS = WEIGHTS is not None
 OUT = Path("/kaggle/working/submission.csv")
 
 # The test directory is discovered, never hardcoded and never read out of
@@ -59,6 +85,13 @@ print(f"zarr {zarr.__version__} · torch {torch.__version__} · "
 # quietly cost the 0.7366 -> 0.6753 gap (the switch needs the U-Net to switch to).
 print(f"weights {'yes' if HAVE_WEIGHTS else 'NO -> DoG fallback'} ({WEIGHTS})",
       flush=True)
+if not HAVE_WEIGHTS:
+    # Not an assert: DoG really is a valid submission and a torch/weights
+    # failure should still produce one. But list what is actually mounted, so
+    # the log says *why* rather than leaving the next person to guess.
+    print("  mounted under /kaggle/input/volt-weights:",
+          sorted(str(q) for q in Path("/kaggle/input/volt-weights").rglob("*"))[:20],
+          flush=True)
 assert int(zarr.__version__.split(".")[0]) >= 3, "need zarr 3.x for Zarr v3 stores"
 
 import submit  # noqa: E402
