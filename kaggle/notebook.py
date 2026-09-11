@@ -59,10 +59,63 @@ WEIGHTS = find_weights(Path("/kaggle/input/volt-weights"))
 HAVE_WEIGHTS = WEIGHTS is not None
 OUT = Path("/kaggle/working/submission.csv")
 
-# The test directory is discovered, never hardcoded and never read out of
-# sample_submission.csv: that file names the four local placeholder datasets and
-# they are replaced at rerun, so reading names from it submits an empty file.
-TEST = next(iter(sorted(Path("/kaggle/input").glob("*/test"))))
+
+
+def find_test_dir(root: Path) -> Path:
+    """The competition's ``test/``, wherever Kaggle mounts it.
+
+    Never hardcoded and never read out of ``sample_submission.csv``: that file
+    names the four local placeholder datasets and they are replaced at rerun,
+    so reading names from it submits an empty file.
+
+    The previous glob was ``*/test`` — one level, on the assumption that a
+    competition mounts at ``/kaggle/input/<slug>/``. Measured: it mounts at
+    ``/kaggle/input/competitions/<slug>/test``, two levels down, so the glob
+    matched nothing and the kernel died on ``StopIteration`` in its first
+    seconds. Search a few depths and require the candidate to actually contain
+    ``.zarr`` folders, so a mount layout change fails loudly here rather than
+    producing an empty submission eleven hours later.
+    """
+    seen = [p for pat in ("*/test", "*/*/test", "*/*/*/test")
+            for p in sorted(root.glob(pat)) if p.is_dir()]
+    for p in seen:
+        if any(p.glob("*.zarr")):
+            return p
+    raise SystemExit(
+        f"no test/ directory containing *.zarr under {root}. "
+        f"test-like dirs seen: {seen}. "
+        f"mounts: {sorted(q.name for q in root.iterdir()) if root.exists() else 'none'}"
+    )
+
+
+def gpu_is_usable() -> bool:
+    """Does a CUDA kernel actually *run* here — not just ``is_available()``.
+
+    Measured on the real image: ``enable_gpu`` hands out a **Tesla P100**,
+    compute capability **sm_60**, while the preinstalled torch 2.10.0+cu128
+    ships cubins for sm_70 and up. ``torch.cuda.is_available()`` returns True
+    on that machine and every convolution then dies with "no kernel image is
+    available for execution on the device". An availability check is therefore
+    worse than useless here: it is confidently wrong.
+
+    ``machine_shape: NvidiaTeslaT4`` in kernel-metadata.json asks for sm_75
+    instead, which this torch does support — but Kaggle substitutes hardware
+    when a shape is unavailable, so the request is not a guarantee and this
+    stays in. Run the smallest real conv3d and believe the result.
+    """
+    if not torch.cuda.is_available():
+        return False
+    try:
+        x = torch.zeros(1, 1, 4, 4, 4, device="cuda")
+        torch.nn.Conv3d(1, 1, 3, padding=1).cuda()(x).sum().item()
+        return True
+    except Exception as exc:
+        print(f"  GPU present but unusable ({type(exc).__name__}: "
+              f"{str(exc)[:200]}) -> DoG", flush=True)
+        return False
+
+
+TEST = find_test_dir(Path("/kaggle/input"))
 
 subprocess.run(
     [sys.executable, "-m", "pip", "install", "--no-index", f"--find-links={WHEELS}",
@@ -76,14 +129,21 @@ import torch  # noqa: E402
 import zarr  # noqa: E402
 
 # Fail in minute one rather than hour eleven. zarr 2.x cannot open a Zarr v3
-# store at all, and no-GPU with the U-Net detector cannot finish inside 12 h.
+# store at all, and the U-Net without a working GPU cannot finish inside 12 h.
 print(f"zarr {zarr.__version__} · torch {torch.__version__} · "
-      f"cuda {torch.cuda.is_available()} · test dir {TEST}", flush=True)
-# `kaggle datasets create -r zip` zips subdirectories, so whether the mounted
-# layout matches these paths is not something we can verify from the dev box.
-# Print it: a reshaped volt-weights would otherwise fall back to DoG silently and
-# quietly cost the 0.7366 -> 0.6753 gap (the switch needs the U-Net to switch to).
-print(f"weights {'yes' if HAVE_WEIGHTS else 'NO -> DoG fallback'} ({WEIGHTS})",
+      f"cuda {torch.cuda.is_available()} · {sys.version.split()[0]} · "
+      f"test dir {TEST}", flush=True)
+
+# The U-Net needs BOTH the checkpoint and a GPU that actually executes kernels,
+# and either missing means DoG. Measured costs, extrapolated to a train-sized
+# 199-video hidden test set: DoG 0.32 h, U-Net on CPU 16.5 h. The density switch
+# only puts 55% of samples on the U-Net, so CPU+switch is ~9.2 h — inside the
+# 12 h cap on paper, but that figure came off this box's 8 threads and Kaggle
+# has a single-digit vCPU count, so it is not a margin worth betting a run on.
+# Degrade to the 20-minute path that always finishes instead.
+USE_UNET = HAVE_WEIGHTS and gpu_is_usable()
+print(f"weights {'yes' if HAVE_WEIGHTS else 'NO'} ({WEIGHTS}) · "
+      f"detector {'unet + density switch' if USE_UNET else 'DoG fallback'}",
       flush=True)
 if not HAVE_WEIGHTS:
     # Not an assert: DoG really is a valid submission and a torch/weights
@@ -121,9 +181,9 @@ import submit  # noqa: E402
 # the DoG fallback into a crash.
 submit.run(
     TEST, OUT,
-    weights=WEIGHTS if HAVE_WEIGHTS else None,
+    weights=WEIGHTS if USE_UNET else None,
     budget=1.0,
     gate_um=8.0,
     division_gate_um=None,
-    switch_at=150.0 if HAVE_WEIGHTS else None,
+    switch_at=150.0 if USE_UNET else None,
 )

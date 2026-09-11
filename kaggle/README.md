@@ -92,9 +92,17 @@ the datasets, in the commands *and* in `kernel-metadata.json`.
 ### 1. `volt-wheels`
 
 `requirements-offline.txt` explains why each package is or is not in the list.
-`--platform manylinux2014_x86_64` and `--python-version 3.11` target the Kaggle
+`--platform manylinux2014_x86_64` and `--python-version 3.12` target the Kaggle
 image, not this box, so the wheels are correct even though they are downloaded
 here.
+
+**3.12, not 3.11 — measured on the image 2026-09-11.** `.python-version` in this
+repo pins 3.11 and used to claim it matched Kaggle; the image is now
+**3.12.13**. Wheels built for 3.11 carry `cp311` ABI tags, and `pip install
+--no-index` then finds no candidate and fails the whole run at minute one. Our
+own source is 3.11/3.12-clean either way, so the repo pin is unaffected — but
+the `--python-version` on this command is load-bearing and must track the image.
+Re-probe it before each competition (see *Probing the image*).
 
 `--no-deps` is not optional: the list in `requirements-offline.txt` is already
 complete, and without the flag pip resolves zarr's `numpy>=...` and drops a numpy
@@ -118,6 +126,10 @@ uv run --with pip python -m pip download \
 # wheel means --no-deps was dropped.
 ls /tmp/volt-wheels | grep -v '\.whl$' && echo "NON-WHEEL PRESENT — fix before uploading"
 ls /tmp/volt-wheels | grep -i '^numpy' && echo "NUMPY PRESENT — remove it, see above"
+# Wrong-ABI check. cp311/cp310 wheels will not install on the image's 3.12.
+# `cp310-abi3` is NOT a hit: abi3 is the stable ABI and is forward-compatible,
+# which is why polars_runtime_32 legitimately ships as cp310-abi3.
+ls /tmp/volt-wheels | grep -E 'cp3(9|10|11)-cp3' && echo "WRONG ABI — rebuild with the right --python-version"
 
 cat > /tmp/volt-wheels/dataset-metadata.json <<'EOF'
 {"title": "volt-wheels", "id": "USERNAME/volt-wheels", "licenses": [{"name": "other"}]}
@@ -186,6 +198,55 @@ works and a future re-upload cannot reintroduce this.
 ```bash
 uv run kaggle datasets files oleksiikrasnoshtanov/volt-weights
 ```
+
+---
+
+---
+
+## Probing the image
+
+**Do this before trusting any run, and re-do it when Kaggle updates the image.**
+Three of the assumptions this file used to state as fact were wrong, and each
+would have cost a full submission cycle. A throwaway script kernel with the
+competition attached and no datasets settles all of them in about a minute:
+
+```python
+import sys
+from pathlib import Path
+print("PYTHON", sys.version)
+for p in sorted(Path("/kaggle/input").iterdir()):
+    print("== MOUNT", p.name)
+    for q in sorted(p.rglob("*")):
+        if len(q.relative_to(p).parts) <= 2:
+            print("   ", q.relative_to(p))
+import torch
+print("CUDA", torch.cuda.is_available(), torch.cuda.get_device_name(0))
+```
+
+Measured 2026-09-11:
+
+| question | assumed | actual |
+|---|---|---|
+| Python | 3.11 | **3.12.13** |
+| competition mount | `/kaggle/input/<slug>/test` | **`/kaggle/input/competitions/<slug>/test`** |
+| GPU under `enable_gpu` | "a GPU" | **Tesla P100, sm_60** |
+| preinstalled | — | torch 2.10.0+cu128, numpy 2.0.2, scipy 1.16.3, polars 1.35.2; **no zarr** |
+
+**The GPU one is the dangerous one.** `enable_gpu: true` hands out a P100 at
+compute capability **sm_60**, and the image's torch 2.10.0+cu128 ships cubins
+for sm_70 upward only. `torch.cuda.is_available()` returns **True** on that
+machine and then every convolution raises "no kernel image is available for
+execution on the device" — an availability check is not merely insufficient
+here, it is confidently wrong. Two defences, both needed:
+
+* `"machine_shape": "NvidiaTeslaT4"` in `kernel-metadata.json` asks for sm_75,
+  which this torch supports. Valid values are `NvidiaTeslaT4`,
+  `NvidiaTeslaP100`, `Tpu1VmV38` (`kagglesdk` `machine_shape`); the CLI also
+  takes `--accelerator`. Kaggle substitutes hardware when a shape is short, so
+  this is a request, not a guarantee.
+* `notebook.py::gpu_is_usable()` runs one real `conv3d` and falls back to DoG if
+  it raises. Execute, never infer — the same rule that settled `sm_89` on the
+  training box.
 
 ---
 
