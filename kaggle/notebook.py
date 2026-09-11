@@ -56,20 +56,41 @@ print(f"zarr {zarr.__version__} · torch {torch.__version__} · "
 # `kaggle datasets create -r zip` zips subdirectories, so whether the mounted
 # layout matches these paths is not something we can verify from the dev box.
 # Print it: a reshaped volt-weights would otherwise fall back to DoG silently and
-# quietly cost the 0.6925 -> 0.6424 gap.
+# quietly cost the 0.7366 -> 0.6753 gap (the switch needs the U-Net to switch to).
 print(f"weights {'yes' if HAVE_WEIGHTS else 'NO -> DoG fallback'} ({WEIGHTS})",
       flush=True)
 assert int(zarr.__version__.split(".")[0]) >= 3, "need zarr 3.x for Zarr v3 stores"
 
 import submit  # noqa: E402
 
-# Defaults are the best configuration measured to date (LOEO fold 0: 0.6925,
-# against the classical floor's 0.6424). gate_um is a per-detector knob — do not
-# carry it to a different detector without re-sweeping.
+# Defaults are the best configuration measured to date. gate_um is a
+# per-detector knob — do not carry it to a different detector without
+# re-sweeping.
+#
+# switch_at is the largest single gain in the project: DoG and the U-Net tie on
+# aggregate (0.6753 / 0.6789 pooled over all 199 samples) but disagree per
+# sample, and the disagreement is predictable — spearman(cells/frame,
+# unet - dog) = +0.700. Switching at 150 predicted cells/frame scores 0.7366
+# against 0.6789 for the better single detector, 91% of the per-sample oracle's
+# 0.7433. It survives the predicted density it has to run on: simulating the
+# p90-quantile predictor's real 25% error over 400 draws, the *worst* draw still
+# scores 0.7297.
+#
+# It also makes the run cheaper rather than dearer, which is not obvious: the
+# U-Net runs only on the crowded samples, so 55% of a train-like test set takes
+# the 1.86 s/frame path and 45% takes DoG's 0.06 s/frame. Caveat for the
+# leaderboard: the 0.7366 was measured with each fold scored by the model that
+# held it out (A on 6bba, D on 44b6), and a submission has one model for one
+# unseen embryo. Expect less.
+#
+# None when the weights are missing, not 150: run() refuses a switch without a
+# U-Net rather than silently degrading to plain DoG, and that guard would turn
+# the DoG fallback into a crash.
 submit.run(
     TEST, OUT,
     weights=WEIGHTS if HAVE_WEIGHTS else None,
     budget=1.0,
     gate_um=8.0,
     division_gate_um=None,
+    switch_at=150.0 if HAVE_WEIGHTS else None,
 )
