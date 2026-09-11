@@ -250,6 +250,25 @@ here, it is confidently wrong. Two defences, both needed:
 
 ---
 
+## Wait for `ready` before pushing the kernel
+
+`kaggle datasets version` returns as soon as the **upload** finishes, but Kaggle
+then processes the version asynchronously — and a kernel pushed into that window
+mounts the *previous* content. That cost a run: the kernel died on
+`No such file or directory: /kaggle/input/volt-code/kaggle/requirements-offline.txt`
+while a probe minutes later showed the file present and the tree exactly right.
+Nothing in the failure points at a race; it reads as a wrong path, which is what
+makes it worth a line here.
+
+```bash
+for d in volt-wheels volt-code volt-weights; do
+  until [ "$(uv run kaggle datasets status oleksiikrasnoshtanov/$d)" = "ready" ]; do
+    sleep 10
+  done
+done
+uv run kaggle kernels push -p kaggle
+```
+
 ## Push and run the kernel
 
 `notebook.py` is a **Script** kernel, not a `.ipynb`. A notebook is JSON with
