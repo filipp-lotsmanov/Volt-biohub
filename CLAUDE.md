@@ -1280,6 +1280,35 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-12 — E1: the loss/metric divergence is REAL, not a bent ruler.** This was the
+project's leading excuse for not fixing the loss, and it is now refuted. The
+`reports/diagnosis_loss_metric.md` H1 hypothesis said the "det loss falls 4.4x while CV
+falls" observation might be an artefact of scoring at gate 12 µm with the division pass
+on — the one linker configuration where a *better* detector scores *worse*. Re-run on
+**fold 1** (the label-rich embryo, 4x the positives), `det_neg_weight 1e-1`, selection
+at the tuned gate with divisions on:
+
+| epoch | 0 | 1 | 3 | 5 | 7 | 9 | 11 |
+|---|---|---|---|---|---|---|---|
+| det loss | 0.0685 | 0.0451 | 0.0371 | 0.0338 | 0.0328 | 0.0310 | **0.0295** |
+| CV | **0.6541** | 0.6465 | 0.6452 | 0.6269 | 0.6427 | 0.6087 | 0.6360 |
+
+**Detection loss falls 2.3x, CV is best at epoch 0, and the ruler is not the
+explanation.** Three folds, three configurations, same shape. Training this loss longer
+makes the detector worse, and no amount of gate tuning changes that.
+
+**A methodology error worth recording, because it cost a run.** The paired arm changed
+*two* variables at once — ignore radius 7.0→8.45 **and** ordering hinge 0→1.0 — so it
+could attribute nothing. It also revealed a scale problem: the hinge contributed ~1.10
+against a BCE of ~0.03, a **40x imbalance**, so that arm was almost purely the hinge.
+Relaunched as a proper 2x2 at `ordering_weight 0.05`. One variable at a time, and check
+the *magnitudes* of a summed loss's terms before trusting the sum.
+
+Worth watching in the rerun: the hinge arm's CV was **rising** (0.475 → 0.562 over six
+epochs) while the control's fell. Lower absolute level, opposite direction, and it had
+not converged when another tenant's process filled the card and OOM'd it. That is the
+first training dynamic in this project that improves with epochs.
+
 **2026-09-12 — Phase 0 landed, and three measurements redirect the remaining work.**
 
 **The linker is not the problem, and now we know by how much.** For every GT edge,
