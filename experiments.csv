@@ -72,3 +72,6 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-12T19:38:52,b415a50,linux-server,E2_E2_radius_subpath,unet,1,10,1.0,,8.0,6.0,0.5989,0.5864,0.5723,0.1250,0.7217,-0.1824,60,2x2 detection-loss arms scored through the submission path
 2026-09-12T19:39:56,b415a50,linux-server,E2_E2_hinge_subpath,unet,1,10,1.0,,8.0,6.0,0.5793,0.5793,0.5635,0.0000,0.6513,-0.2222,60,2x2 detection-loss arms scored through the submission path
 2026-09-12T19:41:03,b415a50,linux-server,E2_E2_both_subpath,unet,1,10,1.0,,8.0,6.0,0.5525,0.5525,0.5370,0.0000,0.6347,-0.2281,62,2x2 detection-loss arms scored through the submission path
+2026-09-12T21:29:47,8fd11f3,linux-server,RANDOM_init_subpath,unet,1,10,1.0,,8.0,6.0,0.3523,0.3523,0.3381,0.0000,0.5015,-0.3695,56,is the learned detector actually learning?
+2026-09-12T21:30:51,8fd11f3,linux-server,E1_control_subpath,unet,1,10,1.0,,8.0,6.0,0.6077,0.6000,0.5864,0.0769,0.7439,-0.1785,60,is the learned detector actually learning?
+2026-09-12T21:31:44,8fd11f3,linux-server,dog_subpath_10,dog,1,10,1.0,,8.0,6.0,0.5348,0.5348,0.5100,0.0000,0.6024,-0.4483,48,"DoG baseline, matched sample set"

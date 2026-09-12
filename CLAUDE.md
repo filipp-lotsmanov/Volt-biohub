@@ -1280,6 +1280,37 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-12 — The learned detector IS real, and everything it learns happens in the
+first 200 iterations.** Seven runs now peak at epoch 0, which raised the obvious
+question nobody had asked: does training do anything at all? Scored through the
+**submission path** on the same 10 fold-1 videos:
+
+| detector | score | edge J | node recall |
+|---|---|---|---|
+| randomly initialised U-Net | 0.3523 | 0.3381 | 0.5015 |
+| **trained U-Net (epoch 0)** | **0.6077** | 0.5864 | **0.7439** |
+| classical DoG | 0.5348 | 0.5100 | 0.6024 |
+
+**Training is worth +0.255 over random init, and the U-Net beats DoG by +0.073 on
+matched samples.** So the learned path is not an illusion and should not be abandoned
+— but 200 iterations of batch 16 captures all of it, and every epoch after makes it
+worse. Note also that DoG at 0.5348 is well below the ~0.73 a public DoG notebook
+reaches, so our classical arm is weak too.
+
+**Two explanations tested and eliminated.** Closing the loss's null space (ignore
+radius, ordering hinge) made it worse, monotonically. Rebalancing the trunk's
+objectives did essentially nothing: `det_loss_weight` 1e0 / 1e1 / 1e2 gave best CV
+0.6541 / 0.6591 / 0.6662, **all at epoch 0**. So the detection head being a
+33-parameter probe on a trunk shared with the edge task is not the binding problem
+either.
+
+**What that leaves, and it is embarrassing in a useful way:** `train()` builds
+`AdamW(model.parameters(), lr=lr)` with **no scheduler, no warmup and no weight decay
+tuning** (`train_unet_transformer.py:1391`), and runs a constant 1e-3 for the whole
+run. A model that reaches a good region in 200 steps and then degrades under a
+constant, fairly high LR is the textbook symptom. That is now the live hypothesis and
+it is being tested at 1e-4 and 3e-4.
+
 **2026-09-12 — E1: the loss/metric divergence is REAL, not a bent ruler.** This was the
 project's leading excuse for not fixing the loss, and it is now refuted. The
 `reports/diagnosis_loss_metric.md` H1 hypothesis said the "det loss falls 4.4x while CV
