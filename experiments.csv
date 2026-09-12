@@ -63,3 +63,8 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-07T15:33:43+00:00,6af909f,linux-server,ix_s5.86_g8.0_d6.0,unet,0,30,1.0,5.86,8.0,6.0,0.6933,0.6928,0.6917,0.0055,0.8601,-0.0154,166,sep x gate x division interaction
 2026-09-07T15:36:33+00:00,6af909f,linux-server,ix_s5.86_g9.0_doff,unet,0,30,1.0,5.86,9.0,off,0.6884,0.6884,0.6874,0.0000,0.8601,-0.0154,164,sep x gate x division interaction
 2026-09-07T15:39:25+00:00,6af909f,linux-server,ix_s5.86_g9.0_d6.0,unet,0,30,1.0,5.86,9.0,6.0,0.6894,0.6888,0.6877,0.0058,0.8601,-0.0154,166,sep x gate x division interaction
+2026-09-12T15:54:23,9561d6d,linux-server,phase1_dog_fold1,dog,1,8,1.0,,8.0,6.0,0.5823,0.5823,0.5549,0.0000,0.6146,-0.4478,39,first end-to-end run of the submission path
+2026-09-12T15:55:30,9561d6d,linux-server,budget_1.0_fold1,dog,1,8,1.0,,8.0,6.0,0.5823,0.5823,0.5549,0.0000,0.6146,-0.4478,41,submission-path budget sweep vs predicted N_true
+2026-09-12T15:56:15,9561d6d,linux-server,budget_1.4_fold1,dog,1,8,1.4,,8.0,6.0,0.5820,0.5820,0.5549,0.0000,0.6146,-0.4228,41,submission-path budget sweep vs predicted N_true
+2026-09-12T15:57:00,9561d6d,linux-server,budget_1.8_fold1,dog,1,8,1.8,,8.0,6.0,0.5818,0.5818,0.5549,0.0000,0.6146,-0.4023,41,submission-path budget sweep vs predicted N_true
+2026-09-12T15:57:45,9561d6d,linux-server,budget_2.2_fold1,dog,1,8,2.2,,8.0,6.0,0.5817,0.5817,0.5549,0.0000,0.6146,-0.3927,41,submission-path budget sweep vs predicted N_true
