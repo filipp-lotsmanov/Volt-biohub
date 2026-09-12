@@ -51,7 +51,30 @@ NUCLEUS_FWHM_UM = 6.9
 DEFAULT_SIGMA_UM = NUCLEUS_FWHM_UM / 2.3548
 """Sigma of a Gaussian with the measured FWHM (2.3548 = 2*sqrt(2*ln2)); ~2.93 µm."""
 
-DEFAULT_IGNORE_RADIUS_UM = 7.0
+DEFAULT_IGNORE_RADIUS_UM = 8.45
+"""Radius inside which a bright voxel is a *near miss*, not an unlabeled cell.
+
+**Was 7.0, and that number silently decided the score.** Peak survival is a local
+contest: ``detectors._top_peaks`` keeps a voxel only if it is the maximum of a
+7-voxel cube, whose corner sits ``3 * 1.625 * sqrt(3) = 8.44 um`` away. At radius
+7.0 the shell between 7.0 and 8.44 um is *bright, ignored, and inside the cube that
+decides whether the annotated centroid survives* — so 73-79 % of annotated centroids
+had a zero-gradient voxel competing with them, and the loss could not see it.
+
+Demonstrated rather than argued: adding +-5 to the logits **only inside the ignored
+region** changes this loss by a bit-identical zero across 42 frames while moving node
+recall from 1.000 to 0.250. 8.45 closes the shell; measured masked volume changes by
+under one point (36.8 % -> 36.2 %), so this buys the coverage almost free.
+"""
+
+ORDERING_WINDOW = 7
+"""NMS cube side used by the ordering hinge. Must match ``detectors._peak_window``."""
+
+DEFAULT_ORDERING_MARGIN = 1.0
+"""Logit margin by which a centroid should beat its neighbourhood."""
+
+DEFAULT_ORDERING_WEIGHT = 0.0
+"""Off by default so the hinge is an opt-in, measurable ablation (--det-ordering-weight)."""
 """Beyond this, a bright voxel is treated as an unlabeled cell rather than
 background. Chosen where the measured radial profile flattens."""
 
@@ -257,6 +280,62 @@ PENALTY_REDUCTION_BETA = 4.0
 """Exponent suppressing the negative term near a centroid, as in CenterNet."""
 
 
+def ordering_hinge(
+    logits: torch.Tensor,
+    coords: torch.Tensor,
+    mask: torch.Tensor,
+    window: int = ORDERING_WINDOW,
+    margin: float = DEFAULT_ORDERING_MARGIN,
+) -> torch.Tensor:
+    """Penalise an annotated centroid that does not win its own NMS neighbourhood.
+
+    This is the only term here that expresses the contest the metric actually runs.
+    Everything else in :func:`detection_loss` is pointwise calibration — it asks
+    "is this voxel a cell?" — while the score is decided by *ranking*: a centroid
+    scores only if it is the strict maximum of a ``window``-sided cube. Those are
+    different questions, and a loss can be driven to near zero while losing the
+    second one, which is what has been happening.
+
+    ``max_pool3d`` over the cube gives each voxel its neighbourhood maximum, so
+    ``pooled[c] - logits[c]`` is zero exactly when the centroid already wins and
+    positive by the amount it is losing by. The hinge asks for a *margin* on top,
+    because winning by 1e-6 is a tie that the peak finder breaks arbitrarily and
+    that a different cuDNN algorithm can flip — the mechanism behind the same
+    checkpoint emitting 50,561 nodes on an A6000 and 34,837 on a T4.
+
+    Returns the mean over annotated centroids, so a frame with two nodes and a frame
+    with sixteen contribute per-node rather than per-frame.
+    """
+    centre, ok = _snap_centres(coords, mask, tuple(logits.shape[1:]))
+    if not bool(ok.any()):
+        return logits.sum() * 0.0
+
+    b = torch.arange(logits.shape[0], device=logits.device).unsqueeze(1).expand_as(ok)
+    z, y, x = centre[..., 0], centre[..., 1], centre[..., 2]
+    bi, zi, yi, xi = b[ok], z[ok], y[ok], x[ok]
+
+    # The neighbourhood max must EXCLUDE the centroid, or a clear winner still
+    # pays the margin (max_pool3d over a cube centred on c includes c itself, so
+    # pooled[c] == logits[c] exactly when the centroid is already winning).
+    #
+    # Every annotated centroid is masked out, not just the one being scored. When
+    # two annotated cells fall inside one cube only one can survive NMS, so asking
+    # each to strictly outrank the other is asking for the impossible; that is a
+    # genuine recall loss the hinge cannot fix and should not chase. Masking them
+    # keeps the term honest about what it can win.
+    masked = logits.masked_fill(
+        torch.zeros_like(logits, dtype=torch.bool).index_put_(
+            (bi, zi, yi, xi), torch.ones_like(bi, dtype=torch.bool)
+        ),
+        torch.finfo(logits.dtype).min,
+    )
+    pooled = F.max_pool3d(
+        masked.unsqueeze(1), kernel_size=window, stride=1, padding=window // 2
+    ).squeeze(1)
+
+    return F.relu(pooled[bi, zi, yi, xi] - logits[bi, zi, yi, xi] + margin).mean()
+
+
 def detection_loss(
     det_logits: torch.Tensor,
     coords: torch.Tensor,
@@ -268,6 +347,8 @@ def detection_loss(
     bright_threshold: float = DEFAULT_BRIGHT_THRESHOLD,
     ignore_radius_um: float = DEFAULT_IGNORE_RADIUS_UM,
     beta: float = PENALTY_REDUCTION_BETA,
+    ordering_weight: float = DEFAULT_ORDERING_WEIGHT,
+    ordering_margin: float = DEFAULT_ORDERING_MARGIN,
 ) -> torch.Tensor:
     """Penalty-reduced BCE: hard positive at each centroid, softened around it.
 
@@ -311,6 +392,12 @@ def detection_loss(
         See :func:`gaussian_targets` and :func:`ignore_mask`.
     beta : float
         Penalty-reduction exponent for near-centroid negatives.
+    ordering_weight : float
+        Weight on :func:`ordering_hinge`. Zero disables it, which is the control
+        arm — the rest of this loss is pointwise calibration and cannot express
+        the local winner-take-all contest the peak finder runs.
+    ordering_margin : float
+        Logit margin the hinge asks for. See :func:`ordering_hinge`.
 
     Returns
     -------
@@ -344,9 +431,14 @@ def detection_loss(
         is_pos, w_pos, torch.where(keep_neg, w_neg, torch.zeros((), device=target.device))
     )
     hard_target = is_pos.to(target.dtype)
-    return F.binary_cross_entropy_with_logits(
+    loss = F.binary_cross_entropy_with_logits(
         logits, hard_target, weight=weight, reduction="sum"
     ) / B
+    if ordering_weight > 0.0:
+        loss = loss + ordering_weight * ordering_hinge(
+            logits, coords, mask, margin=ordering_margin
+        )
+    return loss
 
 
 # =============================================================================
