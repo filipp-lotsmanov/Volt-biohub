@@ -51,20 +51,30 @@ NUCLEUS_FWHM_UM = 6.9
 DEFAULT_SIGMA_UM = NUCLEUS_FWHM_UM / 2.3548
 """Sigma of a Gaussian with the measured FWHM (2.3548 = 2*sqrt(2*ln2)); ~2.93 µm."""
 
-DEFAULT_IGNORE_RADIUS_UM = 8.45
+DEFAULT_IGNORE_RADIUS_UM = 7.0
 """Radius inside which a bright voxel is a *near miss*, not an unlabeled cell.
 
-**Was 7.0, and that number silently decided the score.** Peak survival is a local
-contest: ``detectors._top_peaks`` keeps a voxel only if it is the maximum of a
-7-voxel cube, whose corner sits ``3 * 1.625 * sqrt(3) = 8.44 um`` away. At radius
-7.0 the shell between 7.0 and 8.44 um is *bright, ignored, and inside the cube that
-decides whether the annotated centroid survives* — so 73-79 % of annotated centroids
-had a zero-gradient voxel competing with them, and the loss could not see it.
+**Kept at 7.0 because the theoretically-motivated 8.45 was MEASURED WORSE.** The
+argument for raising it is genuine and mechanical: peak survival is decided by a
+7-voxel cube whose corner sits ``3 * 1.625 * sqrt(3) = 8.44 um`` away, so at 7.0 the
+shell between them is bright, zero-gradient, and inside the cube that decides whether
+the annotated centroid survives. 73-79 % of centroids have such a voxel, and adding
++-5 to logits only in the ignored region changes this loss by a bit-identical zero
+while moving node recall 1.000 -> 0.250.
 
-Demonstrated rather than argued: adding +-5 to the logits **only inside the ignored
-region** changes this loss by a bit-identical zero across 42 frames while moving node
-recall from 1.000 to 0.250. 8.45 closes the shell; measured masked volume changes by
-under one point (36.8 % -> 36.2 %), so this buys the coverage almost free.
+All of that is true and it still did not help. Fold 1, 12 epochs, seed 0, one variable,
+scored through the submission path on 10 held-out videos:
+
+| ignore radius | score | edge J | node recall |
+|---------------|-------|--------|-------------|
+| **7.0**       | **0.6077** | 0.5864 | **0.7439** |
+| 8.45          | 0.5989 | 0.5723 | 0.7217 |
+
+The gap is small enough to be noise at n=1, so this is "not supported" rather than
+"refuted" -- but the diagnosis predicted +0.06 to +0.13 of node recall and delivered
+-0.02. **A mechanism being real does not make the knob that closes it useful.**
+Reachable as ``--det-ignore-radius-um`` if someone wants to sweep it against a
+different loss.
 """
 
 ORDERING_WINDOW = 7
@@ -74,7 +84,27 @@ DEFAULT_ORDERING_MARGIN = 1.0
 """Logit margin by which a centroid should beat its neighbourhood."""
 
 DEFAULT_ORDERING_WEIGHT = 0.0
-"""Off by default so the hinge is an opt-in, measurable ablation (--det-ordering-weight)."""
+"""Off, and **measured harmful** at the one scale tested -- do not switch it on blind.
+
+Fold 1, 12 epochs, seed 0, scored through the submission path on 10 held-out videos:
+
+| ignore radius | hinge | score | edge J | node recall |
+|---------------|-------|-------|--------|-------------|
+| 7.0           | 0.00  | **0.6077** | 0.5864 | **0.7439** |
+| 8.45          | 0.00  | 0.5989 | 0.5723 | 0.7217 |
+| 7.0           | 0.05  | 0.5793 | 0.5635 | 0.6513 |
+| 8.45          | 0.05  | 0.5525 | 0.5370 | 0.6347 |
+
+Monotone and well outside noise: the hinge costs ~0.09 of node recall. It also
+destabilises training badly -- the selection score swings 0.2236 epoch to epoch
+against the control's 0.0676.
+
+The reasoning behind it still looks right (the rest of the loss is pointwise
+calibration and cannot express the local winner-take-all contest the peak finder
+runs), which is precisely why the measurement matters. Untested variations: a smaller
+margin, a schedule that introduces it after the BCE has converged, or applying it only
+to centroids that are currently losing. None of them are evidence yet.
+"""
 """Beyond this, a bright voxel is treated as an unlabeled cell rather than
 background. Chosen where the measured radial profile flattens."""
 

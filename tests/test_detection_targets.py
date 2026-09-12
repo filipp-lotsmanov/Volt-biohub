@@ -440,16 +440,25 @@ class TestOrderingHinge:
         assert on.item() > off.item()
 
 
-def test_ignore_radius_covers_the_nms_cube_corner():
-    """7.0 um left a bright, zero-gradient voxel inside the deciding cube.
+def test_ignore_radius_sits_below_the_nms_cube_corner_deliberately():
+    """The geometry is real; closing it was measured worse. Both facts are load-bearing.
 
-    `_top_peaks` uses a 7-voxel window on the 1.625 um isotropic grid, so the
-    cube corner is 3 * 1.625 * sqrt(3) = 8.44 um from the centre. Anything below
-    that leaves voxels the loss cannot see competing with the centroid it is
-    trying to promote -- 73-79 % of annotated centroids had one.
+    `_top_peaks` uses a 7-voxel window on the 1.625 um isotropic grid, so the cube
+    corner is 3 * 1.625 * sqrt(3) = 8.44 um from the centre, while the ignore radius
+    is 7.0. The shell between them is bright, zero-gradient and inside the cube that
+    decides whether the annotated centroid survives -- a genuine null space, and
+    73-79 % of centroids have a voxel in it.
+
+    Raising the radius to 8.45 to close it scored 0.5989 against 0.6077, with node
+    recall 0.7217 against 0.7439. So the gap stays, on measurement rather than on
+    theory. This test exists to stop the next reader "fixing" it from first
+    principles; sweep --det-ignore-radius-um against CV instead.
     """
     import math
 
     corner_um = (detection_targets.ORDERING_WINDOW // 2) * 1.625 * math.sqrt(3)
     assert corner_um == pytest.approx(8.4437, abs=1e-3)
-    assert detection_targets.DEFAULT_IGNORE_RADIUS_UM >= corner_um
+    assert detection_targets.DEFAULT_IGNORE_RADIUS_UM < corner_um
+    assert detection_targets.DEFAULT_ORDERING_WEIGHT == 0.0, (
+        "the ordering hinge measured -0.09 node recall; keep it opt-in"
+    )

@@ -68,3 +68,7 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-12T15:56:15,9561d6d,linux-server,budget_1.4_fold1,dog,1,8,1.4,,8.0,6.0,0.5820,0.5820,0.5549,0.0000,0.6146,-0.4228,41,submission-path budget sweep vs predicted N_true
 2026-09-12T15:57:00,9561d6d,linux-server,budget_1.8_fold1,dog,1,8,1.8,,8.0,6.0,0.5818,0.5818,0.5549,0.0000,0.6146,-0.4023,41,submission-path budget sweep vs predicted N_true
 2026-09-12T15:57:45,9561d6d,linux-server,budget_2.2_fold1,dog,1,8,2.2,,8.0,6.0,0.5817,0.5817,0.5549,0.0000,0.6146,-0.3927,41,submission-path budget sweep vs predicted N_true
+2026-09-12T19:37:48,b415a50,linux-server,E2_E1_control_subpath,unet,1,10,1.0,,8.0,6.0,0.6077,0.6000,0.5864,0.0769,0.7439,-0.1785,60,2x2 detection-loss arms scored through the submission path
+2026-09-12T19:38:52,b415a50,linux-server,E2_E2_radius_subpath,unet,1,10,1.0,,8.0,6.0,0.5989,0.5864,0.5723,0.1250,0.7217,-0.1824,60,2x2 detection-loss arms scored through the submission path
+2026-09-12T19:39:56,b415a50,linux-server,E2_E2_hinge_subpath,unet,1,10,1.0,,8.0,6.0,0.5793,0.5793,0.5635,0.0000,0.6513,-0.2222,60,2x2 detection-loss arms scored through the submission path
+2026-09-12T19:41:03,b415a50,linux-server,E2_E2_both_subpath,unet,1,10,1.0,,8.0,6.0,0.5525,0.5525,0.5370,0.0000,0.6347,-0.2281,62,2x2 detection-loss arms scored through the submission path
