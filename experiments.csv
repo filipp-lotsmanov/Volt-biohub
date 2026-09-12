@@ -75,3 +75,4 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-12T21:29:47,8fd11f3,linux-server,RANDOM_init_subpath,unet,1,10,1.0,,8.0,6.0,0.3523,0.3523,0.3381,0.0000,0.5015,-0.3695,56,is the learned detector actually learning?
 2026-09-12T21:30:51,8fd11f3,linux-server,E1_control_subpath,unet,1,10,1.0,,8.0,6.0,0.6077,0.6000,0.5864,0.0769,0.7439,-0.1785,60,is the learned detector actually learning?
 2026-09-12T21:31:44,8fd11f3,linux-server,dog_subpath_10,dog,1,10,1.0,,8.0,6.0,0.5348,0.5348,0.5100,0.0000,0.6024,-0.4483,48,"DoG baseline, matched sample set"
+2026-09-12T21:38:40,3259967,linux-server,dog_subpath_fold0,dog,0,12,1.0,,8.0,6.0,0.6856,0.6808,0.6741,0.0476,0.7850,-0.1094,60,submission path on the heavy fold; prior comparisons were all fold 1

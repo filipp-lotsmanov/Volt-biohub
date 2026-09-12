@@ -1280,6 +1280,30 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-12 — Fold choice was distorting every recent comparison, and the numbers are
+far apart.** Detector debugging moved to fold 1 because it trains on the label-rich
+embryo (median 8 annotated nodes per frame against fold 0's 2). That is right for
+*training* and wrong for *scoring*: fold 1 tests on `44b6`, which is the crowded,
+0.77 %-annotated embryo carrying only **15 % of the metric weight**. Through the
+submission path:
+
+| fold | tests on | share of metric weight | DoG score | node recall |
+|---|---|---|---|---|
+| 1 | `44b6` (71 samples) | 15 % | 0.5348 | 0.6024 |
+| 0 | `6bba` (128 samples) | **85 %** | **0.6856** | 0.7850 |
+
+Weighted, the shipped classical config is worth roughly **0.663**, not the 0.53 the
+fold-1 runs suggested. **Train on fold 1, report on both, and never quote a fold-1
+number as the result.**
+
+**The organizers' starter detector does not transfer, measured not assumed.** Their
+60-line notebook thresholds a smoothed volume at the 90th percentile and takes
+connected-component centroids rather than top-N DoG maxima. On 10 fold-1 videos it
+scores **0.1440** at pct 90 and **0.2952** at its best setting (pct 99, gate 8),
+against our DoG's 0.5348 — because on a crowded embryo a percentile threshold merges
+adjacent nuclei into single blobs, yielding 54–77 nodes/frame where ~260–330 are
+needed, and node recall caps at 0.38. Whatever reaches ~0.73 publicly, it is not this.
+
 **2026-09-12 — The learned detector IS real, and everything it learns happens in the
 first 200 iterations.** Seven runs now peak at epoch 0, which raised the obvious
 question nobody had asked: does training do anything at all? Scored through the
