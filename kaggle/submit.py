@@ -41,7 +41,13 @@ from pathlib import Path
 import numpy as np
 import zarr
 
-from volt_biohub.detectors import DEFAULT_SIGMA_UM, budget_for, detect_dog, detect_from_map
+from volt_biohub.detectors import (
+    DEFAULT_SIGMA_UM,
+    budget_for,
+    detect_dog,
+    detect_from_map,
+    predict_n_true,
+)
 from volt_biohub.gpu import resolve_device
 
 # volt_biohub.linking is importable offline: its only tracksdata/polars users are
@@ -62,12 +68,6 @@ ISO_UM = 1.625
 DEFAULT_SEPARATION_UM = 2.0 * DEFAULT_SIGMA_UM
 """~5.86 um. Hard floor is 2.87 um, the closest observed division sister pair."""
 
-# log(N_true) = 0.7992 * log(q0.9 + 1) + 4.5725, least squares over the 199
-# training samples. R^2 0.722 in log space, 25.3 % median relative error, and a
-# 0.9927 edge-weighted node multiplier against 0.936 for the best global
-# constant. Refit with scripts/check_t_true.py; it reports the same numbers.
-N_TRUE_LOG_SLOPE = 0.79920777
-N_TRUE_LOG_INTERCEPT = 4.57252748
 
 
 def _load_submission_module():
@@ -159,22 +159,6 @@ def load_volumes(zarr_path: Path) -> tuple[np.ndarray, float]:
     dz, dy, dx = DOWNSAMPLE
     raw = np.asarray(g["0"][:, ::dz, ::dy, ::dx]).astype(np.float32)
     return np.clip((raw - lo) / (hi - lo + 1e-6), 0, None), q90
-
-
-def predict_n_true(q90: float) -> float:
-    """Estimate ``estimated_number_of_nodes`` from the stored 0.9 quantile.
-
-    The node-count penalty is ``J * (1 - 0.1 * (N_pred - N_true) / N_true)`` and
-    ``N_true`` varies 20x across samples (3,783-78,644), so a single global node
-    budget is expensive: the best constant is worth an edge-weighted multiplier of
-    0.936 with 63 samples below 0.9, while this per-sample fit reaches 0.9927.
-
-    It is a weak predictor per sample (25 % median error, and on the four local
-    placeholders it lands between 0.50x and 1.54x of truth) — but the penalty is
-    soft in both directions, so being roughly right per sample beats being exactly
-    wrong everywhere.
-    """
-    return float(np.exp(N_TRUE_LOG_SLOPE * np.log(q90 + 1.0) + N_TRUE_LOG_INTERCEPT))
 
 
 def load_detector(weights: Path, device):

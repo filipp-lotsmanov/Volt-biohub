@@ -51,18 +51,32 @@ So this is a per-detector knob. Sweep it whenever the detector changes; do not c
 detector's value to another.
 """
 
-DIVISION_GATE_UM: float | None = None
-"""Second-child gate. **Off by default: measured as a net loss of ~0.025.**
+DIVISION_GATE_UM: float | None = 6.0
+"""Second-child gate, 6.0 um. **Was None, and that forfeited the whole 0.1 division
+weight**: Hungarian assignment is one-to-one, so with no second pass the prediction
+contains no forks at all and division Jaccard is exactly 0. Our first leaderboard
+submission had **0 forks in 73,130 edges**.
 
-Turning the second pass off raised edge Jaccard 0.6656 -> 0.6914 while giving up 0.0058
-of division Jaccard -- worth 0.00058 of score at the 0.1 division weight. It pays 0.026
-to buy 0.0006. This is metric fact 2's over-detection/division trade running in reverse:
-forcing a second child manufactures edge false positives far faster than it finds real
-forks.
+The old "net loss of ~0.025" reading was measured behind sep 5.86 / gate 10 and does
+not survive the tuned config. Re-swept on 12 fold-0 samples that actually contain
+divisions (23 GT events), at sep 4.0 / gate 8.0:
 
-Set it to a distance (far-daughter p90 is 10.05 um, max 13.53) to turn divisions back on
--- worth retrying once edge Jaccard plateaus, since 0.1 of the score is unreachable
-without it.
+| div gate | score      | edge J | div J  | TP | FP  | FN |
+|----------|------------|--------|--------|----|-----|----|
+| off      | 0.6900     | 0.6873 | 0.0000 |  0 |   0 | 23 |
+| **6.0**  | **0.6949** | 0.6877 | 0.0448 |  3 |  44 | 20 |
+| 8.0      | 0.6873     | 0.6824 | 0.0221 |  4 | 158 | 19 |
+| 10.0     | 0.6696     | 0.6656 | 0.0145 |  6 | 390 | 17 |
+| 14.0     | 0.6473     | 0.6440 | 0.0083 |  6 | 699 | 17 |
+
+**Opening the gate finds more real divisions and scores worse** -- 6 TP at gate 10
+against 3 at gate 6, drowned by 390 false forks. So the binding constraint is the
+*ranking* of fork candidates, not the gate: the geometric ranker spends its budget on
+duplicate detections rather than on real divisions. 6.0 is the best a geometric ranker
+can do; the remaining ~0.095 of the division term needs a learned fork scorer.
+
+Sweep only on samples that contain divisions. 112 of 199 do not, and ``summarise``
+silently drops the division term for a split with none.
 """
 
 _BIG = 1.0e9

@@ -159,6 +159,32 @@ def _top_peaks(
     return idx[order].astype(np.int64)
 
 
+N_TRUE_LOG_SLOPE = 0.79920777
+N_TRUE_LOG_INTERCEPT = 4.57252748
+"""``log(N_true) = 0.7992*log(q0.9 + 1) + 4.5725``, least squares over all 199
+training samples. R^2 0.722 in log space, 25.3 % median relative error. Refit with
+``scripts/check_t_true.py``."""
+
+
+def predict_n_true(q90: float) -> float:
+    """Estimate ``estimated_number_of_nodes`` from the stored 0.9 quantile.
+
+    **This lives here, not in `kaggle/submit.py`, because having two copies of the
+    node budget was a real and expensive bug.** The submission path predicted
+    `N_true` while `scoring.score_video` read the true value out of the ground-truth
+    geff, so every CV number in `experiments.csv` was measured with information the
+    leaderboard run does not have. Measured on the four samples whose GT we can
+    check, the predictor lands at **0.54x, 1.54x, 1.12x and 0.50x** of truth — two
+    of four videos were given half the node budget they should have had, which the
+    CV could not see. One definition, one import, both callers.
+
+    It is a weak per-sample predictor, but the node penalty is soft in both
+    directions: this fit is worth an edge-weighted multiplier of 0.9927 against
+    0.936 for the best global constant.
+    """
+    return float(math.exp(N_TRUE_LOG_SLOPE * math.log(q90 + 1.0) + N_TRUE_LOG_INTERCEPT))
+
+
 def budget_for(t_true: float, n_frames: int, multiplier: float = 1.0) -> int:
     """Detections per frame for a target total of ``multiplier * t_true``.
 

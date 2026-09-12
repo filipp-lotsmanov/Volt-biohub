@@ -74,6 +74,5 @@ submit.run(
     weights=WEIGHTS if USE_UNET else None,
     budget=1.0,
     gate_um=8.0,
-    division_gate_um=None,
     switch_at=150.0 if USE_UNET else None,
 )

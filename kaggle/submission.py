@@ -40,6 +40,7 @@ def dataset_rows(
     coords_per_t: Sequence[Sequence[Sequence[float]]],
     links_per_t: Sequence[Sequence[tuple[int, int, float]]],
     upsample: tuple[int, int, int] = (1, 1, 1),
+    drop_isolated: bool = True,
 ) -> Iterator[dict]:
     """Flatten one video's detections and links into submission rows.
 
@@ -63,32 +64,60 @@ def dataset_rows(
         and its ``suspect_isotropic_coords`` check catches the *under*-scaled one
         (y and x spanning under a quarter of the volume while z is unscaled) at
         error level once the pattern is global.
+    drop_isolated
+        Omit detections that carry no edge. They can never earn an edge TP, yet
+        they pay the node-count multiplier and can steal a bipartite match from a
+        detection that was correctly linked. Ignored when the video produced no
+        links at all, since every test dataset must still appear in the file.
     """
     uz, uy, ux = upsample
-    # Node ids restart at 1 per dataset, matching sample_submission.csv. The
-    # per-timepoint offsets convert the linker's within-frame indices to them.
-    offsets: list[int] = []
+
+    # Drop detections that ended up with no edge at all. An isolated node cannot
+    # contribute a single edge TP, but it is counted in `num_pred_nodes` so it pays
+    # the node-count multiplier, and it competes in the per-timepoint bipartite
+    # assignment where it can take the match a correctly-linked detection needed --
+    # costing two edges. Measured on our first submission: 3.1-6.9 % of nodes per
+    # dataset were isolated (435/13,900, 3,480/50,561, 426/7,100, 1,299/35,200).
+    #
+    # Guarded, because "emit fewer nodes" has an obvious failure mode: if nothing
+    # linked at all we would emit an empty dataset, and every test dataset must be
+    # present in the submission. With no links we keep every node instead.
+    keep: set[tuple[int, int]] = set()
+    for t, links in enumerate(links_per_t):
+        for i, j, _dist in links:
+            keep.add((t, i))
+            keep.add((t + 1, j))
+    prune = bool(keep) and drop_isolated
+
+    # Node ids restart at 1 per dataset, matching sample_submission.csv. They must
+    # be assigned *after* pruning and stay consecutive, so the index map is built
+    # per timepoint rather than from a flat offset.
+    ids: list[dict[int, int]] = []
     next_id = 1
     for t, coords in enumerate(coords_per_t):
-        offsets.append(next_id)
+        here: dict[int, int] = {}
         for i, c in enumerate(coords):
+            if prune and (t, i) not in keep:
+                continue
+            here[i] = next_id
+            next_id += 1
             yield {
-                "dataset": name, "row_type": "node", "node_id": next_id + i,
+                "dataset": name, "row_type": "node", "node_id": here[i],
                 "t": t,
                 "z": round(float(c[0]) * uz),
                 "y": round(float(c[1]) * uy),
                 "x": round(float(c[2]) * ux),
                 "source_id": _UNUSED, "target_id": _UNUSED,
             }
-        next_id += len(coords)
+        ids.append(here)
 
     for t, links in enumerate(links_per_t):
         for i, j, _dist in links:
             yield {
                 "dataset": name, "row_type": "edge", "node_id": _UNUSED,
                 "t": _UNUSED, "z": _UNUSED, "y": _UNUSED, "x": _UNUSED,
-                "source_id": offsets[t] + i,
-                "target_id": offsets[t + 1] + j,
+                "source_id": ids[t][i],
+                "target_id": ids[t + 1][j],
             }
 
 

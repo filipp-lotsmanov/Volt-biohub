@@ -20,7 +20,12 @@ import numpy as np
 import tracksdata as td
 import zarr
 
-from volt_biohub.detectors import budget_for, detect_dog, detect_from_map
+from volt_biohub.detectors import (
+    budget_for,
+    detect_dog,
+    detect_from_map,
+    predict_n_true,
+)
 from volt_biohub.linking import (
     DIVISION_GATE_UM,
     MOTION_GATE_UM,
@@ -58,9 +63,21 @@ def load_volumes(data_dir: Path, name: str) -> np.ndarray:
 
 
 def read_t_true(data_dir: Path, name: str) -> float:
-    """``estimated_number_of_nodes`` — the node penalty's denominator."""
+    """``estimated_number_of_nodes`` — the node penalty's denominator.
+
+    Only readable in CV: it lives in the ground-truth geff, and the test split
+    ships images alone. Use it for the *scoring* denominator always, and for the
+    *detector budget* only when you deliberately want an oracle upper bound —
+    see ``score_video(predicted_budget=...)``.
+    """
     g = zarr.open_group(str(data_dir / f"{name}.geff"), mode="r")
     return float(g.attrs["geff"]["extra"]["estimated_number_of_nodes"])
+
+
+def read_q90(data_dir: Path, name: str) -> float:
+    """The stored 0.9 intensity quantile — available on train *and* test."""
+    g = zarr.open_group(str(data_dir / f"{name}.zarr"), mode="r")
+    return float(g.attrs["image_statistics"]["quantiles"]["0.9"])
 
 
 def load_gt(data_dir: Path, name: str):
@@ -120,15 +137,31 @@ def score_video(
     gate_um: float = MOTION_GATE_UM,
     division_gate_um: float | None = DIVISION_GATE_UM,
     refine: bool = False,
+    predicted_budget: bool = True,
 ) -> dict:
     """One per-sample metric row, as :func:`metrics.per_sample_metrics` returns.
 
     A fresh graph is built every call: ``metrics.evaluate`` mutates the predicted
     graph in place and warns-and-resets if handed the same object twice.
+
+    *predicted_budget* decides where the detector's node budget comes from, and it
+    defaults to ``True`` because the alternative silently made every CV number in
+    this project optimistic. ``estimated_number_of_nodes`` exists only in the
+    ground-truth geff; the submission path has to predict it from the stored 0.9
+    quantile at 25 % median error. Measured on the four samples whose GT we can
+    check, the predictor lands at **0.54x, 1.54x, 1.12x and 0.50x** of truth — two
+    of four videos were handed half the node budget they should have had. Scoring
+    with the oracle value hid that completely, and CV 0.7366 met LB 0.588.
+
+    Pass ``False`` only to measure the oracle upper bound deliberately.
+
+    Note the asymmetry: the *scoring* denominator below is always the true value,
+    because that is what the leaderboard's own scorer uses. Only the budget moves.
     """
     volumes = load_volumes(data_dir, name)
     t_true = read_t_true(data_dir, name)
-    n_per_frame = budget_for(t_true, len(volumes), budget)
+    budget_base = predict_n_true(read_q90(data_dir, name)) if predicted_budget else t_true
+    n_per_frame = budget_for(budget_base, len(volumes), budget)
 
     coords = detect_video(volumes, n_per_frame, separation_um, model, device, refine)
     links = link_sequence(coords, (ISO_UM, ISO_UM, ISO_UM),
