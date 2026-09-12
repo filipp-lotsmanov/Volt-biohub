@@ -1280,6 +1280,38 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-12 — The division term is NOT worth 0.1 to us, and a learned fork ranker is
+premature.** The plan treated divisions as the largest unclaimed lever, on the
+reasoning that opening the gate finds more real forks but drowns them in false ones,
+so the fix is a better *ranker*. Measured on 14 fold-0 samples that contain divisions,
+taking every fork the linker's second pass proposes and labelling it against GT:
+
+| | |
+|---|---|
+| real forks proposed | **3** |
+| false forks proposed | **1,667** |
+| ratio | **1 : 556** |
+
+| feature | real p25/p50/p75 | false p25/p50/p75 | separable |
+|---|---|---|---|
+| sister separation µm | 7.27 / 8.01 / 8.66 | 6.49 / 7.46 / 8.62 | **overlaps** |
+| symmetry | 0.38 / 0.39 / 0.55 | 0.44 / 0.68 / 0.86 | **overlaps** |
+| far-daughter µm | 5.19 / 5.56 / 5.67 | 4.90 / 5.31 / 5.79 | **overlaps** |
+| near-daughter µm | 2.00 / 2.27 / 3.10 | 2.27 / 3.52 / 4.43 | **overlaps** |
+
+Two conclusions, and the second matters more. A ranker over these geometric features
+cannot work — every distribution overlaps at the quartiles, and the class balance is
+1:556. And **even a perfect ranker is capped by what is proposed**: three real
+divisions across fourteen samples means the division Jaccard ceiling on our current
+detections is around **0.015 of score, not 0.100**. The daughters mostly are not
+detected, so the fork is never a candidate.
+
+So divisions are not an independent lever. They are downstream of detection like
+everything else, and they should be revisited only after node recall moves. Caveat
+worth stating: n=3 real forks is a small sample for the feature comparison, and only
+geometry was tested — appearance features (intensity drop, nuclear shape) are
+untested. But the 1:556 base rate and the proposal ceiling do not depend on that.
+
 **2026-09-12 — Fold choice was distorting every recent comparison, and the numbers are
 far apart.** Detector debugging moved to fold 1 because it trains on the label-rich
 embryo (median 8 annotated nodes per frame against fold 0's 2). That is right for
