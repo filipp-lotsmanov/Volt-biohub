@@ -56,7 +56,17 @@ distance, **max 7.0 µm**, scale `(z, y, x) = (1.625, 0.40625, 0.40625)` µm/vox
 
 ### Five facts that determine the method
 
-1. **Divisions are worth 10%.** Don't optimize mitosis until edges plateau.
+1. **Divisions are worth 10%, and we were scoring ZERO of it.** The old advice here
+   — "don't optimize mitosis until edges plateau" — cost us the entire term: our first
+   leaderboard submission contained **0 forks in 73,130 edges**, because Hungarian
+   assignment is one-to-one and `division_gate_um` was None. The arithmetic that
+   matters: our measured edge ceiling at node recall ≥0.98 is adjJ **0.848**, so
+   `0.848 + 0.1·divJ` gives 0.848 at divJ 0, **0.898 at divJ 0.5** (the leaderboard
+   median is 0.902) and **0.948 at divJ 1.0** (the top-10% line is 0.946). The field's
+   score distribution is *explained* by the division term. It is not a tiebreaker.
+   **But the gate is not the lever** — see the sweep in `linking.py`: opening it from
+   6 µm to 10 µm doubles true divisions found (3→6) and *lowers* the score, drowned by
+   390 false forks. The binding constraint is the **ranking** of fork candidates.
 2. **False positives outside annotated regions are free.** A predicted edge counts
    at all (TP *or* FP) only when `out_valid(matched source) OR in_valid(matched
    target)` — an endpoint matched a GT node that itself has GT edges. Everything
@@ -1269,6 +1279,60 @@ deliberately, since `/root` is the container's ephemeral overlay.
 Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
+
+**2026-09-12 — Phase 0 landed, and three measurements redirect the remaining work.**
+
+**The linker is not the problem, and now we know by how much.** For every GT edge,
+did both endpoints match a prediction, and did we then predict the edge?
+**P(correct link | both matched) = 0.9578** over 10 fold-0 samples — above the
+[0.816, 0.916] range aggregate arithmetic allowed. The edge-FN split is
+**86.3 % missing endpoint / 13.7 % missing link**. Corroborated independently: feeding
+*ground-truth* node coordinates to the unchanged linker scores edge Jaccard **0.9847**
+and a total of **1.0738**. So ILP is worth ~+0.03 (recovering part of that 13.7 %),
+and **detection owns roughly six times more**. Stop proposing learned linkers.
+
+**The detection loss has an exact null space containing what the metric reads.** Not
+"the map is saturated" — that is a sigmoid artifact; in *logit* space the map spans
+−8.4 to +42 and ranks fine, which is why both scorers peak logits. The real mechanism:
+`_top_peaks` keeps a voxel iff it wins a ±3-voxel cube whose **corner is 8.44 µm**
+away, while `ignore_mask` zeroes every bright voxel beyond **7.0 µm** of an annotated
+centroid. 7.0 < 8.44, so **73–79 % of annotated centroids have a zero-gradient voxel
+inside their own deciding neighbourhood**; adding ±5 to logits only in the ignored
+region changes the loss by a **bit-identical zero** while moving node recall
+1.000 → 0.250. `(1-target)**4` silences the rest of the cube, and there is **no
+ordering term anywhere**. Consequence: the map possesses only **332–517 maxima per
+frame** against budgets up to 698. `reports/diagnosis_loss_metric.md` established this
+on 2026-09-07 and was committed and then ignored for four days while the project tuned
+scalars. **Read it before touching the detector.**
+
+**What the 0.94 cluster runs is our own architecture.** The dominant public stack is
+the organizers' baseline we forked — `TemporalUNet3D` → `SimpleNodeTransformer` →
+**`tracksdata` ILP solver** — and we kept the U-Net, deleted the transformer linker and
+never enabled the ILP. Public measurements: greedy → ILP is **+0.04**; every notebook
+above 0.942 uses 8–9-way flip/rot TTA; the top forks blend two independently-seeded
+detectors at α≈0.5; then gap closing by interpolated node insertion, a min-track-length
+filter of 6, and line-fit trajectory smoothing.
+
+**The "metric hack" is dead and was never the node count.** Notebooks titled "metric
+hack" appended a synthetic hub node at `t=−1000, (−10000,−10000,−10000)` merging every
+track into one weakly-connected component plus fake forks, exploiting the old rule that
+a division TP needed only shared-component reachability. Patched 2026-07-17
+(`aa65e90`); `metrics.md` now says "Merely sharing a weakly connected component is not
+sufficient." **Our `division_metrics.py` contains the post-patch
+`_is_strongly_connected_division`, so our CV measures the current metric.** The
+0.946/0.947 clusters (231 + 209 teams) are defanged forks of those notebooks. Also
+note: the widely-forked *offline* metric still uses the pre-patch rule and reports
+division Jaccard **double** — score locally with ours, never theirs.
+
+**There is no node-count exploit.** `m = 1.1 − 0.1·N_pred/N_true` caps at +10 %, and J
+collapses faster than m rises: at 0.4× budget you gain 6 % of multiplier and lose 35 %
+of J. Measured optimum is 0.9–1.0×, where we already sit.
+
+Fixed this session: divisions re-enabled at the swept 6.0 µm gate; `predict_n_true`
+moved to `detectors.py` so CV and submission cannot diverge again, with
+`score_video(predicted_budget=True)` now the default (**−0.0112** against the oracle on
+24 samples — that difference was invisible before and is part of the CV/LB gap);
+isolated nodes pruned from the submission (3.1–6.9 % of what we shipped). 291 tests.
 
 **2026-09-11 — FIRST LEADERBOARD SCORE: 0.588, AND IT INVALIDATES THE PROJECT'S WHOLE
 SENSE OF SCALE.** Submission `56173960` (density switch, model A, gate 8 µm) scored
