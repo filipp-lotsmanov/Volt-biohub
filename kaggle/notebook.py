@@ -65,6 +65,17 @@ WEIGHTS = kaggle_env.find_weights()
 USE_UNET = WEIGHTS is not None and kaggle_env.gpu_is_usable()
 print(f"test {TEST} · weights {WEIGHTS} · "
       f"detector {'unet' if USE_UNET else 'DoG fallback'}", flush=True)
+if WEIGHTS is not None:
+    # Say WHICH checkpoint this is. Every checkpoint of this architecture is the
+    # same 8,357,783 bytes, so a size check cannot tell two runs apart and a stale
+    # volt-weights version would score a different model with no visible sign.
+    # config.json carries the run that produced it.
+    import json as _json
+
+    _c = _json.loads((WEIGHTS.parent / "config.json").read_text())
+    print(f"  checkpoint: method={_c.get('method')} fold={_c.get('fold')} "
+          f"lr={_c.get('lr')} seed={_c.get('seed')} "
+          f"det_neg_weight={_c.get('det_neg_weight')}", flush=True)
 
 # Best configuration measured through the submission path ITSELF, not through a
 # parallel harness -- that mismatch is what produced CV 0.7366 against LB 0.588.
