@@ -76,3 +76,5 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-12T21:30:51,8fd11f3,linux-server,E1_control_subpath,unet,1,10,1.0,,8.0,6.0,0.6077,0.6000,0.5864,0.0769,0.7439,-0.1785,60,is the learned detector actually learning?
 2026-09-12T21:31:44,8fd11f3,linux-server,dog_subpath_10,dog,1,10,1.0,,8.0,6.0,0.5348,0.5348,0.5100,0.0000,0.6024,-0.4483,48,"DoG baseline, matched sample set"
 2026-09-12T21:38:40,3259967,linux-server,dog_subpath_fold0,dog,0,12,1.0,,8.0,6.0,0.6856,0.6808,0.6741,0.0476,0.7850,-0.1094,60,submission path on the heavy fold; prior comparisons were all fold 1
+2026-09-13T01:46:23,819e4f4,linux-server,E4_lr1e4_fold1,unet,1,10,1.0,,8.0,6.0,0.6348,0.6237,0.6099,0.1111,0.7632,-0.1701,61,"best-CV arm, submission path"
+2026-09-13T01:47:40,819e4f4,linux-server,modelA_fold0_subpath,unet,0,10,1.0,,8.0,6.0,0.6923,0.6907,0.6823,0.0156,0.8411,-0.0834,56,"the other fold's model, submission path"

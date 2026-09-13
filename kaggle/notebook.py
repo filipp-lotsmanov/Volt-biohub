@@ -64,15 +64,25 @@ TEST = kaggle_env.find_test_dir()
 WEIGHTS = kaggle_env.find_weights()
 USE_UNET = WEIGHTS is not None and kaggle_env.gpu_is_usable()
 print(f"test {TEST} · weights {WEIGHTS} · "
-      f"detector {'unet + density switch' if USE_UNET else 'DoG fallback'}", flush=True)
+      f"detector {'unet' if USE_UNET else 'DoG fallback'}", flush=True)
 
-# Best configuration measured on LOEO CV; see CLAUDE.md for what each is worth.
-# switch_at must be None without a U-Net: run() refuses a switch it cannot make,
-# so passing 150 unconditionally would turn the DoG fallback into a crash.
+# Best configuration measured through the submission path ITSELF, not through a
+# parallel harness -- that mismatch is what produced CV 0.7366 against LB 0.588.
+# Weighted over both LOEO folds by metric weight: U-Net 0.684, DoG 0.663.
+#
+# No density switch. It was worth +0.058 measured with an ORACLE node budget and a
+# different model per fold, and neither holds at inference: the budget comes from a
+# predictor that lands 0.50x-1.54x of truth, and it routed 1 of the 4 local samples
+# to the wrong detector. Re-measured honestly the U-Net wins on BOTH folds --
+# 0.6923 vs 0.6856 on 6bba and 0.6348 vs 0.5348 on 44b6 -- so there is nothing left
+# to switch to.
+#
+# The division gate is left at its library default (6.0 um) rather than forced to
+# None. Forcing it off is what made the first submission emit 0 forks in 73,130
+# edges and score exactly 0 on a term worth 0.1.
 submit.run(
     TEST, Path("/kaggle/working/submission.csv"),
     weights=WEIGHTS if USE_UNET else None,
     budget=1.0,
     gate_um=8.0,
-    switch_at=150.0 if USE_UNET else None,
 )
