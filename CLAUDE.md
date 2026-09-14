@@ -1280,6 +1280,40 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-14 — SECOND SUBMISSION SCORED 0.578, DOWN FROM 0.588, and the experiment was
+designed badly.** Submission `56230904` bundled **four** changes: model swap
+(`modelA_corrected`, trained on `44b6` → `E4_lr1e4`, trained on `6bba`), density switch
+retired, division gate on (478 forks), isolated nodes pruned. Our CV said each was an
+improvement; the leaderboard says the package is **−0.010**. With four variables and one
+number, **nothing here is attributable** — a direct violation of this file's own
+experiment discipline, on the one measurement where slots are limited to five a day.
+
+What can be said. Divisions (+0.005 on CV) and pruning are small and almost certainly
+not negative, so the loss is most likely the **model swap or the retired switch**. Both
+point the same way: `modelA` was trained on **`44b6`**, the crowded 327-cells/frame
+embryo, and `E4_lr1e4` on `6bba` at 97 — so if the hidden third embryo is crowded,
+`modelA` transfers better and our fold-1 CV cannot see that. The retired switch also put
+DoG on sparse samples, which this pack's own numbers say is not worthless.
+
+**The standing lesson: one variable per submission.** Our CV now tracks the LB in
+*level* (0.5823 CV against 0.588 LB) but has twice failed to rank two configurations
+correctly. Until it ranks, the LB is the only arbiter of a config change, and it is
+rationed.
+
+**2026-09-14 — ONE FULL PASS BEATS EVERY SHORT RUN, first confirmation of the budget
+diagnosis.** `E6_long_fullpass` (fold 1, batch 8, lr 1e-4, `det_neg_weight 1e-2`, no
+`--max-iters`, so an epoch is a real pass of ~1,568 iterations):
+
+| run | iterations in epoch 0 | det loss | CV |
+|---|---|---|---|
+| every E1–E5 arm | 200 | 0.0685–0.0704 | 0.6357–0.6663 |
+| **E6, one full pass** | **~1,568** | **0.0150** | **0.6775** |
+
+A single honest epoch beats the best of nine tuned short runs, at 4.6× the detection
+loss reduction. 44 min/epoch, so 24 epochs is ~17 h. This is the first result in the
+project that improves by *doing the same thing properly* rather than by changing
+something.
+
 **2026-09-14 — WHAT THE FIELD ACTUALLY RUNS, read out of their own artifact rather than
 inferred.** The support pack (`pilkwang/biohub-temporal-unet3d-seed314159-v1`, 340 MB,
 5,995 downloads) ships `repo/`, `weights/`, **`wheels/`** and a full
