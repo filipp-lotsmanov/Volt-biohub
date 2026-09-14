@@ -1280,6 +1280,83 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-14 — WHY THE FIELD IS AT 0.90 AND WE ARE AT 0.588. Answered, and neither half
+is what this file has been chasing.** The public support pack everyone forks
+(`pilkwang/biohub-temporal-unet3d-seed314159-v1`, **5,995 downloads**) ships its
+training manifest. Compared to ours:
+
+| | public pack | ours |
+|---|---|---|
+| `unet_layers` / `unet_out_channels` | `[32,64,128]` / 32 | **identical** |
+| checkpoint bytes | 8,363,159 | 8,357,783 — **the same model** |
+| learning rate | **1e-4** | 1e-4 (found independently, E4) |
+| `det_neg_weight` | **0.01** | 0.1 — *we called 0.01 a defect* |
+| `det_loss_weight` | 1.0 | 1.0 |
+| `epochs_target` | **500** | 12 |
+| `max_iters` | **None** — full passes | **200** |
+| train datasets | **199 (all-train)** | 128 (one LOEO fold) |
+
+**Same architecture, same learning rate, and the `det_neg_weight` this file lists under
+"Known defects" is the value they actually train with.** The difference is the training
+budget: 500 epochs of full passes is roughly **784,000 iterations against our 2,400 —
+about 326x.**
+
+**So the nine experiments in this file measured nothing.** Ignore radius, ordering
+hinge, `det_loss_weight` 1e0/1e1/1e2, lr 1e-4/3e-4/1e-3, 12 vs 30 epochs — every one
+ran at ~0.3 % of a real training budget, and the CV differences between epochs of a
+2,400-iteration run are early-training noise. **The "loss/metric anti-correlation" this
+project treated as its central mystery for a week is most likely that noise**, not a
+loss pathology. E5 supports this: within-embryo (`6bba`→`6bba`) the CV is *flat* across
+12 epochs, neither improving nor degrading — the signature of a run that has not started
+converging. Do not cite the anti-correlation as a fact again until it survives a real
+run.
+
+**But the training budget is only the smaller half of the gap.** Scoring the public
+500-epoch weights through *our* pipeline, fold 1, 10 videos:
+
+| detector in our pipeline | score | edge J | node recall |
+|---|---|---|---|
+| our E4_lr1e4 (2,400 iters, held out) | 0.6348 | 0.6099 | 0.7632 |
+| **public 500-epoch pack** | **0.6955** | 0.6786 | **0.9034** |
+| public DoG notebook, their pipeline | ~0.73 | — | — |
+| **field median, their pipeline** | **0.902** | — | — |
+
+*Contamination caveat, and it matters*: the pack trained on **all 199 samples**, so it
+has seen these videos. 0.6955 is an upper bound, not an honest CV, and the true
+held-out advantage is smaller than +0.06. Only the leaderboard can settle it.
+
+**The decomposition that follows is the important part.** Their detector reaches node
+recall 0.90 and *our* pipeline converts that into 0.6955, while *their* pipeline
+converts the same detector into ~0.94. So roughly:
+
+- **detector training budget: worth ~0.06** (node recall 0.76 → 0.90)
+- **everything after detection: worth ~0.24**
+
+and we deleted or never enabled all of it — the `SimpleNodeTransformer` edge head, the
+**ILP solver** (publicly measured at +0.04), 8-way flip/rot TTA, **one- and two-frame gap
+closing by interpolated node insertion**, a min-track-length filter of 6, and line-fit
+trajectory smoothing.
+
+**This reverses the priority this file has held since 2026-09-11.** "Detection owns 86 %
+of the loss" was measured correctly — 86.3 % of edge FN is a missing endpoint — but the
+conclusion drawn from it was wrong. **Gap closing attacks missing endpoints directly**,
+by inserting an interpolated node where a track breaks, without needing a better
+detector at all. That is the single largest unexploited lever in the project and this
+file has had it filed under "Not implemented at all" since the beginning.
+
+**Revised order:**
+
+1. **Post-detection stack first** — gap closing, min-track-length, ILP, TTA. Worth
+   ~0.24 by the arithmetic above, needs no training, and `pyscipopt`+`ilpy` are
+   confirmed bundleable (cp312 manylinux, 15 MB) so the ILP can ship offline even though
+   tracksdata cannot.
+2. **Use the public pretrained weights** — explicitly legal (pre-trained models are
+   allowed) and worth ~0.06 immediately — while a real 500-epoch run trains.
+3. **A real training run.** `E6_long_fullpass` (24 epochs, full passes, their recipe) is
+   running; even that is only 5 % of their budget.
+4. Everything this file previously called a detector priority is on hold until (1)–(3)
+   land. Knob sweeps at 2,400 iterations are not experiments.
+
 **2026-09-12 — The division term is NOT worth 0.1 to us, and a learned fork ranker is
 premature.** The plan treated divisions as the largest unclaimed lever, on the
 reasoning that opening the gate finds more real forks but drowns them in false ones,
