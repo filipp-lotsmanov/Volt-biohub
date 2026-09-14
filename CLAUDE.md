@@ -1280,6 +1280,66 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-14 — WHAT THE FIELD ACTUALLY RUNS, read out of their own artifact rather than
+inferred.** The support pack (`pilkwang/biohub-temporal-unet3d-seed314159-v1`, 340 MB,
+5,995 downloads) ships `repo/`, `weights/`, **`wheels/`** and a full
+`history.csv`. Four things in it change decisions here.
+
+**1. `tracksdata` CAN ship offline, so our foundational constraint was unnecessary.**
+`wheels/tracksdata-0.1.0rc6.dev3+g980c2d30a-py3-none-any.whl` — they built a wheel from
+the git repo and bundled it, alongside ~80 others (`ilpy`, `pyscipopt`, `rustworkx`,
+`numba`, `llvmlite`, `geff`, `zarr 3.2.1`, `sqlalchemy`). This file has said since the
+beginning "**tracksdata is not on PyPI, so keep the inference path free of
+tracksdata**", and on 2026-09-08 four module-scope imports were removed to satisfy it.
+Not on PyPI is true; unbundleable is not. **The cost of that belief was the ILP solver**,
+which we therefore never enabled and which is publicly worth +0.04. The tracksdata-free
+path is still a fine fallback — it runs with torch absent entirely — but it is a choice,
+not a requirement, and `kaggle/README.md` should stop presenting it as one.
+
+**2. Their checkpoint selection uses the metric this project proved worthless.**
+`history.csv`'s `validation_score` is **exactly `validation_acc × validation_recall`**,
+verified to six decimals on every epoch sampled. `validation_acc` sits at 0.9999 for all
+400 epochs — saturated, carrying no information — so their selection is effectively
+edge-matrix recall, and `best_epoch 381 / best_score 0.978` was chosen by it. We replaced
+that number with the real competition scorer on 2026-09-07 (see Known defects). **So we
+hold a real advantage in checkpoint selection over the pack the whole field forks** —
+worth using once we have a run long enough for selection to matter.
+
+**3. Their history REFUTES the anti-correlation, at real scale.** Over 400 epochs
+detection loss falls monotonically and their validation metric rises monotonically:
+
+| epoch | 1 | 21 | 51 | 101 | 151 | 251 | 351 | 381 | 400 |
+|---|---|---|---|---|---|---|---|---|---|
+| det loss | 0.0198 | 0.0083 | 0.0058 | 0.0043 | 0.0036 | 0.0028 | 0.0025 | 0.0024 | 0.0025 |
+| val score | 0.900 | 0.933 | 0.939 | 0.958 | 0.967 | 0.966 | 0.971 | **0.978** | 0.975 |
+
+**They move together.** No anti-correlation, no best-epoch-0. And the arithmetic that
+settles our own runs: all-train is ~18,933 windows, so at batch 8 **one of their epochs
+is ~2,367 iterations**. Our entire 12 x 200 = **2,400-iteration run is their epoch 1** —
+where their own curve already reads 0.900 and climbs for 380 more epochs. Every
+detector experiment in this file compared noise inside their first epoch.
+
+**4. The budget, and where it flattens.** `history.csv` records **137.8 GPU-hours** for
+400 epochs (~0.34 h/epoch). The curve is steep early and flat late: 0.939 by epoch 51,
+0.958 by 101, **0.967 by 151**, then only +0.011 over the next 230 epochs. So ~150
+epochs ≈ **52 GPU-hours** buys most of it — two days on one A6000, which we have.
+
+**Their inference configuration**, from `PredictConfig` in the pack (ours differs on
+every line that matters):
+
+| knob | theirs | ours |
+|---|---|---|
+| `det_threshold` | **0.5** | 0.99 |
+| `det_tta` | **True** (flip-xy) | off |
+| `pool_kernel_um` | **3.0** | 4.0 sep |
+| `edge_activation` | softmax | n/a (geometric linker) |
+| `use_ilp` | available, weights `edge -1.0 / appearance 0.1 / disappearance 0.1 / division 1.0` | never enabled |
+
+On top of the pack their notebooks add 8-way TTA, a dual-seed logit blend, one- and
+two-frame gap closing, a min-track-length filter of 6, line-fit smoothing and the
+`DeepCenterUNet3D` centre prior (`pilkwang/biohub-deepcenter-unet3d-center-prior-v1`,
+5,390 downloads) as a node-rescue veto.
+
 **2026-09-14 — WHY THE FIELD IS AT 0.90 AND WE ARE AT 0.588. Answered, and neither half
 is what this file has been chasing.** The public support pack everyone forks
 (`pilkwang/biohub-temporal-unet3d-seed314159-v1`, **5,995 downloads**) ships its
