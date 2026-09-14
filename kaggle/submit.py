@@ -65,8 +65,30 @@ micrometre means to every gate downstream, so :func:`load_detector` checks it.
 
 ISO_UM = 1.625
 
-DEFAULT_SEPARATION_UM = 2.0 * DEFAULT_SIGMA_UM
-"""~5.86 um. Hard floor is 2.87 um, the closest observed division sister pair."""
+DEFAULT_SEPARATION_UM = 4.0
+"""Peak suppression radius. **Was 2*sigma = 5.86 um, and that cost 0.08 of score on
+both submissions we have made.**
+
+Every tuned CV number in this repo was measured at 4.0; this default was 5.86; and
+`scripts/score_submission.py` -- the harness written specifically to catch exactly this
+kind of CV/submission divergence -- did not pass the parameter, so it inherited 5.86 too
+and agreed with the leaderboard for the wrong reason. Measured with the public
+400-epoch weights on 8 fold-1 videos through the submission path:
+
+| separation | score | edge J | node recall |
+|------------|-------|--------|-------------|
+| 5.86       | 0.7233 | 0.6996 | 0.9151 |
+| **4.0**    | **0.8041** | 0.7851 | **0.9762** |
+| 3.0        | 0.7751 | 0.7593 | 0.9835 |
+| 2.0        | 0.7751 | 0.7593 | 0.9835 |
+
+Below 4.0 node recall keeps rising and the score falls -- metric fact 3, more matched
+nodes exposing more of the linker's mistakes to scoring. 3.0 and 2.0 are identical
+because `_peak_window` takes `ceil(sep/1.625)`, so both give a 3-voxel window; sweep
+distinct windows, not round numbers.
+
+The 2.87 um sister-separation floor still applies as a hard lower bound.
+"""
 
 
 

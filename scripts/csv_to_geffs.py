@@ -30,7 +30,17 @@ def build_graph_from_rows(
             pl.col("x").cast(pl.Float64),
         ).to_dicts()
     )
-    id_map = dict(zip(node_rows["node_id"].to_list(), assigned, strict=True))
+    csv_ids = node_rows["node_id"].to_list()
+    if len(set(csv_ids)) != len(csv_ids):
+        # dict(zip(...)) keeps the LAST duplicate, so an edge declared from one node
+        # silently starts at another -- a wrong graph that scores without complaint.
+        # strict=True does not catch this; the lengths match, the keys collide.
+        raise ValueError(
+            f"duplicate node_id within one dataset: {len(csv_ids) - len(set(csv_ids))} "
+            "collision(s). Node ids must be unique per dataset or edges resolve to the "
+            "wrong endpoints."
+        )
+    id_map = dict(zip(csv_ids, assigned, strict=True))
 
     if edge_rows.height:
         graph.bulk_add_edges(

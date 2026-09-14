@@ -126,6 +126,22 @@ def detect_video(
     return out
 
 
+def safe_node_recall(pred, gt) -> float:
+    """``metrics.node_recall``, but 0.0 instead of a crash on an edgeless graph.
+
+    ``metrics.evaluate`` returns before matching when the prediction has no edges,
+    so ``MATCHED_NODE_ID`` is never written and ``node_recall`` raises ``KeyError``.
+    That is exactly the graph ``submit.run`` emits for a video where detection found
+    nothing — its one deliberate degradation path — so an unguarded call discards a
+    whole inference run at the last step. The reference harness guards it the same
+    way. Guarded here rather than in ``metrics.py``, whose semantics are frozen.
+    """
+    try:
+        return node_recall(pred, gt)
+    except KeyError:
+        return 0.0
+
+
 def score_video(
     data_dir: Path,
     name: str,
@@ -170,7 +186,7 @@ def score_video(
     gt = load_gt(data_dir, name)
 
     er = score_pair(pred, gt, scale=ORIGINAL_SCALE, max_distance=7.0)
-    row = per_sample_metrics(er, t_true, node_recall(pred, gt))
+    row = per_sample_metrics(er, t_true, safe_node_recall(pred, gt))
     row["name"] = name
     row["n_pred"] = int(sum(len(c) for c in coords))
     row["n_edges_pred"] = int(sum(len(lk) for lk in links))

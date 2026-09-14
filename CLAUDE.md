@@ -1280,6 +1280,110 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-14 — ROOT CAUSE FOUND, AND IT IS OUR OWN REWRITE. `kaggle/submit.py`
+reimplements an inference path that already exists faithfully in this repo, and the
+rewrite loses 0.129.** All arms below use the **same public weights**, the **same 8
+videos**, the **same scorer**. Levels are inflated (those videos are in the checkpoint's
+199-dataset training set) — read the deltas.
+
+| arm | score | node recall | nodes/frame |
+|---|---|---|---|
+| **reference full pipeline** (threshold detector + learned edge head) | **0.8607** | 0.9960 | ~440 |
+| reference detections + **our** Hungarian linker | 0.7880 | 0.9940 | 487 |
+| **our pipeline as the notebook ships it** | **0.7322** | 0.9206 | 306 |
+| ours, separation 4.0 | 0.8098 | 0.9716 | 317 |
+| ours, separation 4.0 + oracle budget | 0.8206 | 0.9781 | 403 |
+
+**Two swaps account for it, and both rest on a claim that was true of our old checkpoint
+and false of the architecture.**
+
+**(1) Deleting the learned edge head: −0.073.** `kaggle/submit.py:17` and
+`detectors.py:8` both assert the transformer "currently emits zero edges". With the
+public weights it emits **25k–68k edges per video** and reaches **J = 1.000** on
+`44b6_0113de3b` where our Hungarian linker gets 0.636. The zero-edge observation came
+from our own 12-epoch checkpoint and was generalised to the architecture; it is what
+removed the strongest component of the reference pipeline. The mechanism it provides is
+an **abstain option**: `softmax` over *sources* means at most one source per target can
+exceed 0.5, and when the model is unsure none do, so the target gets no parent and no
+false-positive edge. `linear_sum_assignment` cannot abstain — every detection inside the
+gate gets linked, and every wrong link lands in the denominator.
+
+**(2) Top-N budget + 7-voxel suppression instead of threshold + 3-voxel: −0.056.**
+- **Suppression radius dominates.** `_peak_window(5.86, 1.625)` = **7**, a 4.875 µm
+  exclusion radius against the reference's 1.625 µm. `separation_um` 5.86 → 4.0 alone is
+  worth **+0.078** and takes node recall 0.914 → 0.965. `DEFAULT_SEPARATION_UM` was
+  `2*sigma` = 5.86 while **every tuned CV number in this repo used 4.0**, and
+  `kaggle/notebook.py` passes only `budget` and `gate_um`, so both submissions ran at
+  5.86. Now 4.0.
+- **The predicted budget is miscalibrated per video and biased against dense ones.**
+  `predict_n_true(q90)/estimated_number_of_nodes` over all 199: median 1.015 but **p10
+  0.519**, and by `N_total` quartile **1.125 / 1.242 / 0.962 / 0.559** (spearman
+  −0.498). In production `44b6_0113de3b` got 13,900 nodes against 25,755 true — **0.54×,
+  capping node recall at 0.54**. The reference needs no budget at all: its threshold
+  lands at 0.94–1.53× of true.
+- **`positive_only=False` pads the budget with negative-logit voxels** —
+  `detectors.py:86` — i.e. voxels the detector explicitly rejected. 8 % of emitted nodes
+  overall, **21–22 % on 2 of 8 videos**. Pure node penalty plus match-stealing.
+
+**The premise behind the budget design is false for these weights.** `detectors.py:10-15`
+justifies a budget over a threshold because "the map is saturated — median sigmoid
+1.0000 at GT centroids, ~6,000 voxels/frame above 0.99". With the public checkpoint only
+**1.59 % of voxels have logit > 0**, and a 3×3×3 local max yields **236 peaks on a 64³
+frame**. Saturation was a property of our undertrained model, not of the detector.
+
+**Ruled out by measurement, so nobody re-investigates them:** normalisation is
+byte-identical across our inference, the reference inference and the reference training
+(same quantiles, same epsilon, same lower clamp, no upper clamp anywhere); the
+fake-pair trick costs **nothing** (node recall 0.9967 real pair vs 0.9973 fake — the
+temporal attention degenerates cleanly on two identical tokens); coordinates are
+correct with no factor of 4 and no axis swap, verified by a scale-axis probe; sliding
+windows are equivalent at W=2.
+
+**And the fix is already in the repo.** `scripts/predict_unet_transformer.py` differs
+from the reference only in added docstrings — `_detect_cells_pooled`,
+`pool_kernel_from_um`, `build_graph` and `_load_frame` are **byte-identical**. We do not
+submit with it solely because it imports tracksdata at module scope, and the public
+pack's `wheels/` proves tracksdata bundles fine. **Stop maintaining the rewrite; ship
+the path that already works.**
+
+**2026-09-14 — EVERY RECENT EXPERIMENT WAS UNDERPOWERED, effective n = 3 to 5.**
+`--limit 8/10` takes the head of a sorted split, and `summarise` weights by
+`w_i = TP+FP+FN ≈ GT edge count`, which ranges 49–1879 per sample. So:
+
+| sample set | effective n | top sample's share of weight |
+|---|---|---|
+| `split1[:8]` | **3.16** | **52.8 %** |
+| `split1[:10]` | 4.78 | 39.5 % |
+| `split0[:30]` | 25.5 | — |
+| `split0` full | 111.3 | — |
+
+With per-sample `adjJ` spread 0.356–0.733, the standard error at effective n≈3 is
+**±0.08–0.10**. The E2 2×2 loss arms, "the loss-shape fix did not work", the budget
+sweeps "flat to four decimals", DoG-vs-U-Net and RANDOM_init were all inside their own
+noise. **Decisive comparisons run on a full split or not at all.**
+
+**The CV/LB agreement was a three-way confound.** "CV 0.5823 vs LB 0.588" compared the
+`44b6` family at effective n=3.16 with a **DoG** detector through the submission path
+against the `6bba` family at n=111 with a **U-Net** through the pipeline path. No
+sample, no detector and no code path in common. The agreement was luck, and it was the
+evidence for "the harness now predicts the leaderboard". It does not, yet.
+
+**Also verified: our `metrics.py` has diverged from the official scorer** — 86 added
+lines (dt≠1 filter, merge collapse, out-degree cap) plus a near-rewritten
+`division_metrics.py` whose FP rule charges cases the reference does not. Proven
+**numerically inert on our actual submission** (bit-identical on all four datasets), but
+it spawned a false belief worth correcting: **the official scorer does NOT delete
+`dt != 1` edges**, so `linking.py:225-227`'s instruction to express gap closing only by
+inserting an interpolated node is wrong. A long edge is one cheap FP; an interpolated
+node costs the node-count penalty *and* can steal a GT match. Restore both files to the
+reference for hygiene.
+
+**And `node_recall` as we report it is macro-averaged and ~0.09 optimistic** (0.7349
+macro vs 0.6498 micro on the shipped submission). It is also not an upper bound on
+anything: adding isolated nodes at exact GT coordinates gives **node recall 1.000 with
+edge Jaccard 0.000**, because the extra nodes win the bipartite match and orphan the
+linked detections. Stop using it as a proxy for achievable edge Jaccard.
+
 **2026-09-14 — SECOND SUBMISSION SCORED 0.578, DOWN FROM 0.588, and the experiment was
 designed badly.** Submission `56230904` bundled **four** changes: model swap
 (`modelA_corrected`, trained on `44b6` → `E4_lr1e4`, trained on `6bba`), density switch

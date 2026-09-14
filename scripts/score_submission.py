@@ -45,8 +45,14 @@ from dataspec import DATASET_PATH
 from score_pipeline import append_experiment, git_sha
 from volt_biohub.linking import DIVISION_GATE_UM, MOTION_GATE_UM
 from volt_biohub.metrics import evaluate as score_pair
-from volt_biohub.metrics import node_recall, per_sample_metrics, summarise
-from volt_biohub.scoring import ORIGINAL_SCALE, load_gt, read_t_true
+from volt_biohub.metrics import per_sample_metrics, summarise
+from volt_biohub.scoring import (
+    ORIGINAL_SCALE,
+    load_gt,
+    read_t_true,
+    safe_node_recall,
+)
+from volt_biohub.submission import SubmissionError
 
 
 def staged_test_dir(data_dir: Path, names: list[str], root: Path) -> Path:
@@ -67,8 +73,16 @@ def staged_test_dir(data_dir: Path, names: list[str], root: Path) -> Path:
     return test_dir
 
 
-def score_csv(csv_path: Path, data_dir: Path) -> list[dict]:
-    """Score a submission CSV against the ground truth, per dataset."""
+def score_csv(csv_path: Path, data_dir: Path, expected: list[str]) -> list[dict]:
+    """Score a submission CSV against the ground truth, per dataset.
+
+    *expected* is reconciled against what the CSV actually contains. Grouping by
+    dataset and scoring whatever turns up silently drops a missing dataset from
+    both the numerator and the denominator, so a run that lost a video reports a
+    clean average over the survivors — the banner prints the requested count and
+    the summary prints a smaller one, with nothing to reconcile them. On the real
+    leaderboard a missing dataset is not averaged away, so this must be loud.
+    """
     df = pl.read_csv(csv_path, columns=[
         "dataset", "row_type", "node_id", "t", "z", "y", "x", "source_id", "target_id"])
     rows: list[dict] = []
@@ -82,11 +96,19 @@ def score_csv(csv_path: Path, data_dir: Path) -> list[dict]:
         pred = build_graph_from_rows(nodes, edges)
         gt = load_gt(data_dir, name)
         er = score_pair(pred, gt, scale=ORIGINAL_SCALE, max_distance=7.0)
-        r = per_sample_metrics(er, read_t_true(data_dir, name), node_recall(pred, gt))
+        r = per_sample_metrics(er, read_t_true(data_dir, name), safe_node_recall(pred, gt))
         r["name"] = name
         r["n_pred"] = nodes.height
         r["n_edges_pred"] = edges.height
         rows.append(r)
+
+    missing = sorted(set(expected) - {r["name"] for r in rows})
+    if missing:
+        raise SubmissionError(
+            f"{len(missing)} requested dataset(s) absent from the CSV: {missing}. "
+            "Every test dataset must appear in a submission, so scoring the rest "
+            "would report a number the leaderboard will not give you."
+        )
     return rows
 
 
@@ -101,6 +123,12 @@ def main(argv=None) -> int:
     p.add_argument("--weights", type=Path, default=None,
                    help="U-Net checkpoint. Omitted -> the classical DoG detector.")
     p.add_argument("--budget", type=float, default=1.0)
+    p.add_argument("--separation-um", type=float, default=None,
+                   help="Peak suppression radius. Default None means submit.py's own "
+                        "DEFAULT_SEPARATION_UM (5.86 um) -- which is NOT the 4.0 every "
+                        "tuned CV number in this repo was measured at. Not passing this "
+                        "is how the harness built to catch CV/submission divergence "
+                        "reproduced it.")
     p.add_argument("--gate-um", type=float, default=MOTION_GATE_UM)
     p.add_argument("--division-gate-um", type=float, default=DIVISION_GATE_UM)
     p.add_argument("--no-divisions", action="store_true")
@@ -132,13 +160,14 @@ def main(argv=None) -> int:
     try:
         test_dir = staged_test_dir(data_dir, names, tmp)
         csv_path = tmp / "submission.csv"
+        extra = {} if args.separation_um is None else {"separation_um": args.separation_um}
         submit.run(
-            test_dir, csv_path,
+            test_dir, csv_path, **extra,
             weights=args.weights, budget=args.budget, gate_um=args.gate_um,
             division_gate_um=None if args.no_divisions else args.division_gate_um,
             refine=args.refine, switch_at=args.switch_at,
         )
-        rows = score_csv(csv_path, data_dir)
+        rows = score_csv(csv_path, data_dir, names)
         if args.keep_csv:
             shutil.copy(csv_path, args.keep_csv)
     finally:

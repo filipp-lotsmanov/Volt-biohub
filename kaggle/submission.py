@@ -89,35 +89,74 @@ def dataset_rows(
             keep.add((t + 1, j))
     prune = bool(keep) and drop_isolated
 
+    # Collapse detections that round onto the SAME original-space voxel. Two nodes
+    # at one position can never both match a ground-truth node -- the assignment is
+    # bipartite -- so the second is pure node-count penalty, and the validator
+    # rejects the file outright.
+    #
+    # This is not hypothetical tidying: it is what made the peak-separation
+    # parameter unreachable. Detection runs on the downsampled 1,4,4 grid and
+    # coordinates are multiplied back by 4, so two peaks two voxels apart survive
+    # suppression and then land on one integer coordinate once `refine` has pulled
+    # their sub-voxel centroids together. At 5.86 um separation that never happens;
+    # at the 3.0 um the reference implementation uses, it happens immediately and
+    # the whole run fails validation.
+    #
+    # The survivor is the earlier (stronger) peak, since detectors return peaks
+    # ordered by response. Edges are remapped onto it rather than dropped, because
+    # a duplicate position genuinely is one node.
+    rounded: dict[int, dict[int, tuple[int, int, int]]] = {}
+    canon: dict[tuple[int, int], int] = {}
+    for t, coords in enumerate(coords_per_t):
+        seen: dict[tuple[int, int, int], int] = {}
+        here: dict[int, tuple[int, int, int]] = {}
+        for i, c in enumerate(coords):
+            key = (round(float(c[0]) * uz), round(float(c[1]) * uy), round(float(c[2]) * ux))
+            if key in seen:
+                canon[(t, i)] = seen[key]
+            else:
+                seen[key] = i
+                here[i] = key
+        rounded[t] = here
+
     # Node ids restart at 1 per dataset, matching sample_submission.csv. They must
     # be assigned *after* pruning and stay consecutive, so the index map is built
     # per timepoint rather than from a flat offset.
+    # An index that was collapsed onto an earlier duplicate must be kept if ITS
+    # survivor carries an edge, so resolve every index through `canon` first.
+    resolve = lambda t, i: canon.get((t, i), i)  # noqa: E731
+    keep = {(t, resolve(t, i)) for (t, i) in keep}
+
     ids: list[dict[int, int]] = []
     next_id = 1
-    for t, coords in enumerate(coords_per_t):
+    for t in range(len(coords_per_t)):
         here: dict[int, int] = {}
-        for i, c in enumerate(coords):
+        for i in rounded[t]:
             if prune and (t, i) not in keep:
                 continue
+            z, y, x = rounded[t][i]
             here[i] = next_id
             next_id += 1
             yield {
                 "dataset": name, "row_type": "node", "node_id": here[i],
-                "t": t,
-                "z": round(float(c[0]) * uz),
-                "y": round(float(c[1]) * uy),
-                "x": round(float(c[2]) * ux),
+                "t": t, "z": z, "y": y, "x": x,
                 "source_id": _UNUSED, "target_id": _UNUSED,
             }
         ids.append(here)
 
+    # Collapsing nodes can collapse two distinct links onto one edge; the scorer
+    # drops merge duplicates silently, so emit each pair once instead.
+    emitted: set[tuple[int, int]] = set()
     for t, links in enumerate(links_per_t):
         for i, j, _dist in links:
+            src, tgt = ids[t].get(resolve(t, i)), ids[t + 1].get(resolve(t + 1, j))
+            if src is None or tgt is None or (src, tgt) in emitted:
+                continue
+            emitted.add((src, tgt))
             yield {
                 "dataset": name, "row_type": "edge", "node_id": _UNUSED,
                 "t": _UNUSED, "z": _UNUSED, "y": _UNUSED, "x": _UNUSED,
-                "source_id": ids[t][i],
-                "target_id": ids[t + 1][j],
+                "source_id": src, "target_id": tgt,
             }
 
 
