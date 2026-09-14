@@ -132,6 +132,8 @@ def main(argv=None) -> int:
     p.add_argument("--gate-um", type=float, default=MOTION_GATE_UM)
     p.add_argument("--division-gate-um", type=float, default=DIVISION_GATE_UM)
     p.add_argument("--no-divisions", action="store_true")
+    p.add_argument("--det-threshold", type=float, default=None,
+                   help="Sigmoid threshold replacing the node budget.")
     p.add_argument("--switch-at", type=float, default=None)
     p.add_argument("--refine", action="store_true", default=True)
     p.add_argument("--keep-csv", type=Path, default=None)
@@ -166,6 +168,7 @@ def main(argv=None) -> int:
             weights=args.weights, budget=args.budget, gate_um=args.gate_um,
             division_gate_um=None if args.no_divisions else args.division_gate_um,
             refine=args.refine, switch_at=args.switch_at,
+            det_threshold=args.det_threshold,
         )
         rows = score_csv(csv_path, data_dir, names)
         if args.keep_csv:

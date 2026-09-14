@@ -42,7 +42,6 @@ import numpy as np
 import zarr
 
 from volt_biohub.detectors import (
-    DEFAULT_SIGMA_UM,
     budget_for,
     detect_dog,
     detect_from_map,
@@ -248,8 +247,15 @@ def detect_video(
     separation_um: float,
     detect_map=None,
     refine: bool = False,
+    threshold: float | None = None,
 ) -> list[np.ndarray]:
-    """Peaks per frame: from the learned head when given one, else from DoG."""
+    """Peaks per frame: from the learned head when given one, else from DoG.
+
+    *threshold* switches the learned path off the node budget — see
+    ``detectors.detect_from_map``. The budget makes detection purely
+    budget-limited, and the predictor behind it is a fit on two embryos applied to
+    an unseen third.
+    """
     if detect_map is None:
         return [
             detect_dog(v, n_per_frame, ISO_UM, min_separation_um=separation_um,
@@ -257,7 +263,8 @@ def detect_video(
             for v in volumes
         ]
     return [
-        detect_from_map(detect_map(v), n_per_frame, ISO_UM, separation_um, refine=refine)
+        detect_from_map(detect_map(v), n_per_frame, ISO_UM, separation_um,
+                        refine=refine, threshold=threshold)
         for v in volumes
     ]
 
@@ -274,6 +281,7 @@ def run(
     refine: bool = False,
     limit: int | None = None,
     switch_at: float | None = None,
+    det_threshold: float | None = None,
 ) -> Path:
     """Predict every video in *test_dir* and write a validated submission."""
     names = list_datasets(test_dir)
@@ -322,7 +330,8 @@ def run(
             crowded = (n_true / max(len(volumes), 1)) >= switch_at
             use_map = detect_map if crowded else None
             picked = "unet" if crowded else "dog"
-        coords = detect_video(volumes, n_per_frame, separation_um, use_map, refine)
+        coords = detect_video(volumes, n_per_frame, separation_um, use_map,
+                              refine, threshold=det_threshold)
         if not any(len(c) for c in coords):
             # Every test dataset must be *present* in the submission, and a
             # dataset that detected nothing emits no rows at all — absent, not
@@ -379,6 +388,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="Second-child gate. Off by default: measured net loss ~0.025.")
     p.add_argument("--refine", action="store_true",
                    help="Response-weighted centroid, for the saturated map's plateaus.")
+    p.add_argument("--det-threshold", type=float, default=None,
+                   help="Sigmoid threshold for the learned detector. Given, it REPLACES "
+                        "the node budget -- which is what caps node recall on samples "
+                        "where predict_n_true under-shoots (0.50x and 0.54x on two of "
+                        "the four test samples). The reference uses 0.5.")
     p.add_argument("--switch-at", type=float, default=None,
                    help="Predicted cells/frame above which to use the U-Net instead of "
                         "DoG (150 is the measured optimum; flat 125-175). Needs "
@@ -396,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         separation_um=args.separation_um, gate_um=args.gate_um,
         division_gate_um=args.division_gate_um, refine=args.refine,
         limit=args.limit, switch_at=args.switch_at,
+        det_threshold=args.det_threshold,
     )
     return 0
 

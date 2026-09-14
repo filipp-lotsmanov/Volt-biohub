@@ -76,15 +76,49 @@ def detect_from_map(
     iso_um: float,
     min_separation_um: float,
     refine: bool = False,
+    threshold: float | None = None,
 ) -> np.ndarray:
     """Peaks of an arbitrary score map — the learned detector's head output.
 
     Takes the map rather than the model so the caller owns batching and device
     placement, and so a cached map can be re-peaked at several budgets without
     re-running the network.
+
+    **Pass *threshold* to escape the node budget, and read this before choosing.**
+    With *threshold* None the map is truncated to the top *n_keep* peaks, where
+    ``n_keep`` comes from ``predict_n_true``. That makes detection *purely*
+    budget-limited: the model decides which nodes, never how many. Measured on the
+    four test samples, emitted-vs-asked was 13900/13851, 50600/50641, 7100/7105 and
+    35200/35168 — **exactly the budget every time** — while the predictor itself
+    landed at 0.54x, 1.54x, 1.12x and 0.50x of the true count. Two of four videos
+    were therefore capped near half the node recall they could have reached, and no
+    detector improvement can lift that cap.
+
+    It is worse on the hidden test set than in CV, because the predictor is a
+    log-linear fit on the *two* training embryos applied to an unseen third, and
+    nothing on that set can check it. This is the most likely reason three
+    submissions scored 0.588 / 0.578 / 0.581 while the detector under them changed
+    from a 2,400-iteration model to a 400-epoch one: the clamp sits downstream of
+    the thing we kept changing.
+
+    A threshold removes ``N_true`` from the inference path entirely, which is what
+    the reference implementation does (sigmoid > 0.5 with a 3-voxel window); its
+    node counts then land at 0.94–1.53x of true by themselves.
     """
-    peaks = _top_peaks(score_map, n_keep, _peak_window(min_separation_um, iso_um),
-                       positive_only=False)
+    window = _peak_window(min_separation_um, iso_um)
+    if threshold is not None:
+        pooled = maximum_filter(score_map, size=window, mode="nearest")
+        # Sigmoid on the logits, matching the reference. Comparing the threshold in
+        # probability space rather than logit space keeps it transferable between
+        # checkpoints whose logit ranges differ.
+        prob = 1.0 / (1.0 + np.exp(-score_map.astype(np.float64)))
+        idx = np.argwhere((score_map >= pooled) & (prob > threshold))
+        if len(idx) == 0:
+            return np.empty((0, 3), dtype=np.int64)
+        peaks = idx.astype(np.int64)
+        return refine_centres(score_map, peaks) if refine else peaks
+
+    peaks = _top_peaks(score_map, n_keep, window, positive_only=False)
     return refine_centres(score_map, peaks) if refine else peaks
 
 
