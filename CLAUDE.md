@@ -371,6 +371,15 @@ expected.
 
 **Cross-platform rules** (each of these has caused real bugs):
 
+- **Never kill by pattern on this box — `pgrep -f`/`pkill -f` match your own shell.**
+  This has now bitten three times: `pkill -f 'method modelA_corrected'` killed its own
+  shell (exit 144), an `until ! pgrep -f 'seq 1 6'` loop matched its own parent and
+  spun for four days, and `for pid in $(pgrep -f watch_training.py); do kill $pid` took
+  the shell out again mid-session while two multi-day training runs were live. The
+  pattern appears in the command line of the very process doing the matching. **Kill by
+  explicit PID**, and when *listing*, bracket the first character so the pattern cannot
+  match itself: `ps -eo pid,cmd | awk '/[w]atch_train/'`. It is luck that the training
+  survived the third one.
 - **`pathlib.Path` everywhere** — no path concatenation, no `\` or `/` literals, no
   drive letters outside a shell profile. Paths enter via `VOLT_DATA_DIR`, CLI args,
   or `dataspec.py`. `os.environ`, never `$env:`, inside Python.
