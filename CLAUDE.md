@@ -1280,6 +1280,42 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-16 — THE LOSS/METRIC ANTI-CORRELATION IS DEAD. It was the selection metric
+all along.** This file has called it "the single most important open problem" since
+2026-09-07 and recorded it as reproducing across three folds. Scored the way it should
+always have been — our own 24-epoch full-pass model (`E6`), candidate epochs scored on
+the **full 71-sample fold** through the **submission path** with the threshold detector:
+
+| checkpoint | score | node recall |
+|---|---|---|
+| epoch 0 — **what `best.pth` selected** | 0.6679 | 0.8648 |
+| epoch 12 | 0.6802 | 0.9169 |
+| **epoch 23** | **0.6852** | 0.9070 |
+
+**More training monotonically improves the real score.** Every "best epoch is 0"
+observation in this file came from `epoch_selection_score` on `--select-videos 8` (6 in
+`E6`) — an effective n of about 2, where the run-to-run spread swamps the signal. The
+selector was reliably picking our *worst* checkpoint of twelve. Combined with the
+reference's own `history.csv` (det loss falls monotonically 0.0198 → 0.0025 while their
+validation metric rises 0.900 → 0.978 over 400 epochs), the conclusion is settled:
+**there is no anti-correlation. There was a broken ruler, twice — once in the gate
+config, once in the sample size.**
+
+Consequences:
+- **Never select a checkpoint on the per-epoch subsample.** `--save-every` and a
+  full-fold score afterwards is the only trustworthy selection. `best.pth` is
+  actively misleading and should be treated as "the epoch the cheap print liked".
+- Every detector conclusion drawn from "best epoch 0" is void, including the ordering
+  hinge and ignore-radius arms and the `det_loss_weight` sweep.
+- **Our own detector is close.** E6 at 24 full-pass epochs scores 0.6852 on fold 1
+  against the public 400-epoch checkpoint's 0.7830 — a 0.098 gap for 16x less training,
+  which is exactly the shape of their curve (0.939 by epoch 51, 0.967 by 151).
+
+`E7_fold1_100ep` and `E7_alltrain_100ep` are now running, 100 full-pass epochs each,
+`--save-every 5`. Split 4 was added as an all-train split (199 samples) matching the
+reference recipe; its `test` list is a subset of train and exists only to feed the cheap
+per-epoch print, which we do not select on.
+
 **2026-09-16 — THE CLAMP IS BROKEN: 0.581 → 0.846 FROM ONE VARIABLE.** Submission
 `56278746` replaced the node budget with a detection threshold (`det_threshold 0.5`),
 changing nothing else against `56233167`. **+0.265.** Rank 3133 → 2625 of 3608.

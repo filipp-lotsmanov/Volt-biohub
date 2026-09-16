@@ -96,3 +96,6 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-14T15:25:58,dd3c84c,linux-server,pub_thresh_0.5_FULL,unet,1,71,1.0,,8.0,6.0,0.7830,0.7819,0.7835,0.0110,0.9808,+0.0424,477,threshold replaces the node budget; removes N_true from inference
 2026-09-14T15:33:44,dd3c84c,linux-server,pub_thresh_0.9_FULL,unet,1,71,1.0,,8.0,6.0,0.7889,0.7878,0.7847,0.0110,0.9805,-0.0250,461,threshold replaces the node budget; removes N_true from inference
 2026-09-16T11:24:26,dd3c84c,linux-server,our_dog_FULLFOLD,dog,1,71,1.0,,8.0,6.0,0.5025,0.5017,0.4854,0.0077,0.6527,-0.3252,364,"our DoG full fold 1, for comparison with Filipp's notebook"
+2026-09-16T15:10:15,afc80ac,linux-server,E6_thresh_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6679,0.6669,0.6633,0.0108,0.8648,-0.0456,447,"our own 24-epoch full-pass model, threshold path, full fold"
+2026-09-16T15:18:43,afc80ac,linux-server,E6_ep023_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6852,0.6839,0.6909,0.0129,0.9070,+0.1337,485,is our selection metric picking the wrong epoch?
+2026-09-16T15:26:45,afc80ac,linux-server,E6_ep012_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6802,0.6792,0.6857,0.0096,0.9169,+0.1390,477,is our selection metric picking the wrong epoch?
