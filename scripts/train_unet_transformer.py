@@ -318,6 +318,7 @@ class FrameWindowDataset(Dataset):
         video_data: list[tuple[VideoMeta, list[FrameWindowData]]],
         max_nodes: int | None = None,
         augmentations: list | None = None,
+        aug_seed: int = 0,
     ):
         all_windows = [w for _, windows in video_data for w in windows]
         if max_nodes is None:
@@ -325,12 +326,37 @@ class FrameWindowDataset(Dataset):
 
         self.max_nodes = max_nodes
         self.augmentations = augmentations or []
+        self.aug_seed = aug_seed
 
         self._data: list[tuple[dict, VideoMeta]] = []
         for video_meta, windows in video_data:
             for window in windows:
                 meta = pad_window(window, max_nodes)
                 self._data.append((meta, video_meta))
+
+    def _aug_rng(self) -> np.random.Generator:
+        """One seeded generator per worker, advanced across items and epochs.
+
+        Was ``np.random.default_rng()`` constructed fresh inside ``__getitem__``,
+        i.e. unseeded OS entropy per window. So ``--seed`` never reached the
+        augmentations at all: ``worker_init_fn`` seeds the legacy ``np.random``
+        global, which ``default_rng`` does not consult. Two runs with identical
+        seeds diverged, which is why E6 and E7 -- same config, same ``--seed 0`` --
+        scored 0.6802 at epoch 12 and 0.6700 at epoch 10. Any ablation on a delta
+        smaller than that gap was measuring the augmentation draw.
+
+        Per *worker* rather than per *item*: seeding from ``(seed, idx)`` would be
+        reproducible too, but would hand a given window the same flip and the same
+        brightness shift in every epoch, which is most of the augmentation's value
+        gone. A persistent per-worker stream keeps the draws varied and stays
+        reproducible because the DataLoader's own shuffle is seeded.
+        """
+        rng = getattr(self, "_rng", None)
+        if rng is None:
+            info = torch.utils.data.get_worker_info()
+            rng = np.random.default_rng((self.aug_seed, 0 if info is None else info.id))
+            self._rng = rng
+        return rng
 
     def __len__(self) -> int:
         return len(self._data)
@@ -355,10 +381,9 @@ class FrameWindowDataset(Dataset):
             )[:, 0]
 
         if self.augmentations:
-            rng = np.random.default_rng()
             c, m = meta["coords"], meta["masks"]
             for aug in self.augmentations:
-                imgs, c, m = aug(imgs, c, m, rng=rng)
+                imgs, c, m = aug(imgs, c, m, rng=self._aug_rng())
             meta = {**meta, "coords": c, "masks": m}
 
         return {
@@ -1316,7 +1341,9 @@ def train(
 
     pos_feat_dim = 4 * _POS_EMBED_DIM
 
-    train_ds = FrameWindowDataset(train_video_data, max_nodes=max_nodes, augmentations=augmentations)
+    train_ds = FrameWindowDataset(train_video_data, max_nodes=max_nodes,
+                              augmentations=augmentations,
+                              aug_seed=0 if seed is None else seed)
     test_ds = FrameWindowDataset(test_video_data, max_nodes=max_nodes)
     g = None
     worker_init_fn = None

@@ -99,3 +99,5 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-16T15:10:15,afc80ac,linux-server,E6_thresh_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6679,0.6669,0.6633,0.0108,0.8648,-0.0456,447,"our own 24-epoch full-pass model, threshold path, full fold"
 2026-09-16T15:18:43,afc80ac,linux-server,E6_ep023_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6852,0.6839,0.6909,0.0129,0.9070,+0.1337,485,is our selection metric picking the wrong epoch?
 2026-09-16T15:26:45,afc80ac,linux-server,E6_ep012_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6802,0.6792,0.6857,0.0096,0.9169,+0.1390,477,is our selection metric picking the wrong epoch?
+2026-09-16T21:41:42,e280b3a,linux-server,E7f1_ep000_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6641,0.6627,0.6600,0.0140,0.8712,-0.0231,471,"E7 progress check, full fold, threshold path"
+2026-09-16T21:50:10,e280b3a,linux-server,E7f1_ep010_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6700,0.6688,0.6715,0.0128,0.8960,+0.0763,502,"E7 progress check, full fold, threshold path"

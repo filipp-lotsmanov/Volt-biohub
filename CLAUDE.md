@@ -825,6 +825,18 @@ Hygiene, each capable of wasting a day:
 - **Three disagreeing defaults per knob.** `det_loss_weight`: `train_epoch` signature
   0.1, `train()` signature 1e1, CLI 1e0 with help text claiming 1e1. Same shape for `lr`
   (1e-3 vs 1e-4) and `num_workers` (4 vs 8 vs help saying 4). Always pass explicitly.
+- ~~**The augmentation RNG ignored `--seed`.**~~ **Fixed 2026-09-16.**
+  `FrameWindowDataset.__getitem__` built `np.random.default_rng()` fresh per window —
+  unseeded OS entropy — because `worker_init_fn` seeds the legacy `np.random` global,
+  which `default_rng` does not consult. So `--seed` never reached brightness or flips,
+  and two runs with identical configs diverged: **E6 and E7, same recipe and same
+  `--seed 0`, scored 0.6802 at epoch 12 and 0.6700 at epoch 10.** Any ablation on a
+  delta smaller than that gap was measuring the augmentation draw. Now one generator
+  per worker, seeded from `(seed, worker_id)` and advanced across items — per-worker
+  rather than per-item deliberately, since `(seed, idx)` would hand each window the
+  same flip and brightness every epoch and throw away most of the augmentation's
+  value. **E6 and E7 themselves are not reproducible**; treat their absolute numbers as
+  one draw each.
 - ~~**No `--seed`.**~~ **Fixed 2026-09-07** — `--seed` now reaches `train()` *and* seeds
   torch, numpy and `random`, not only the DataLoader generator as before. That omission
   is why the gaussian-vs-voxel ablation was uncontrolled: model init, dropout and the
