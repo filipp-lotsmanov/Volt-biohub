@@ -91,9 +91,30 @@ if WEIGHTS is not None:
 # The division gate is left at its library default (6.0 um) rather than forced to
 # None. Forcing it off is what made the first submission emit 0 forks in 73,130
 # edges and score exactly 0 on a term worth 0.1.
+# det_threshold REPLACES the node budget, and that is the point of this run.
+#
+# Four submissions scored 0.588 / 0.578 / 0.581 / 0.575 across four structurally
+# different pipelines -- DoG at two separations, a 2,400-iteration U-Net, and a
+# 400-epoch U-Net trained on all 199 samples -- whose CV node recall spanned 0.65
+# to 0.98. A leaderboard that will not move over that range has a clamp, and the
+# one thing all four shared is `predict_n_true(q0.9)`: every one of them took its
+# node count from the same log-linear fit, so every one emitted the same wrong
+# number of nodes on the hidden embryo no matter how good its detector was.
+#
+# The fit is a compromise between two embryos with opposite biases (44b6 median
+# ratio 1.028 at p10 0.464; 6bba 1.002 at p10 0.617), and the hidden set is a
+# third embryo with nothing to check it against. A threshold removes N_true from
+# the inference path entirely. Measured on the full 71-sample fold with these
+# weights: budget 0.7410, threshold 0.5 0.7830, threshold 0.9 0.7889.
+#
+# 0.5 rather than the marginally better 0.9, deliberately: it is the reference
+# implementation's value, and on an unseen embryo of unknown brightness the
+# permissive side is the safe one -- over-detection is nearly free on the edge
+# term while a missed node costs two edges outright.
 submit.run(
     TEST, Path("/kaggle/working/submission.csv"),
     weights=WEIGHTS if USE_UNET else None,
     budget=1.0,
     gate_um=8.0,
+    det_threshold=0.5 if USE_UNET else None,
 )
