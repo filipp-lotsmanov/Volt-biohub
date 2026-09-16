@@ -1280,6 +1280,58 @@ Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
 
+**2026-09-16 — THE CLAMP IS BROKEN: 0.581 → 0.846 FROM ONE VARIABLE.** Submission
+`56278746` replaced the node budget with a detection threshold (`det_threshold 0.5`),
+changing nothing else against `56233167`. **+0.265.** Rank 3133 → 2625 of 3608.
+
+**What the clamp was.** Four submissions scored 0.588 / 0.578 / 0.581 / 0.575 across
+four structurally different pipelines — DoG at two separations, a 2,400-iteration
+U-Net, and a 400-epoch U-Net trained on all 199 samples — whose CV node recall spanned
+**0.65 to 0.98**. A leaderboard that will not move across that range is not measuring
+the detector. The one thing all four shared was `predict_n_true(q0.9)`: every one took
+its node count from the same log-linear fit, so every one emitted the same wrong count
+on the hidden embryo no matter what sat underneath it. Detection was **purely
+budget-limited** — emitted vs asked on the four visible samples was 13900/13851,
+50600/50641, 7100/7105, 35200/35168, *exactly* the budget every time.
+
+**Why the fit was the problem.** It is a compromise between two embryos with opposite
+biases — `44b6` median ratio 1.028 at **p10 0.464**, `6bba` 1.002 at **p10 0.617** — so
+even in-domain a tenth of samples get half the nodes they need. The hidden set is a
+third embryo and nothing there can check it.
+
+**The detector's own confidence is a better estimator of cell count than the fit.**
+Emitted against the *true* counts once the threshold replaced the budget:
+
+| sample | threshold | budget | true `N` |
+|---|---|---|---|
+| `44b6_0113de3b` | **27,192 (1.06×)** | 13,851 (0.54×) | 25,755 |
+| `44b6_0b24845f` | 41,969 (1.28×) | 50,641 (1.54×) | 32,795 |
+| `6bba_05b6850b` | 7,837 (1.23×) | 7,105 (1.12×) | 6,362 |
+| `6bba_05db0fb1` | **74,994 (1.07×)** | 35,168 (0.50×) | 69,800 |
+
+**So metric fact 4 needs rewriting.** This file has treated `N_true` as a knob to
+predict since the beginning — "the per-sample predicted target is worth 0.993 vs 0.936
+weighted multiplier" — and built `predict_n_true`, the density switch and every budget
+sweep on top of it. The multiplier arithmetic was right and the conclusion was wrong:
+a threshold gets the node count right *for free*, and the entire `N_true` apparatus was
+a workaround for a saturated detector that stopped being saturated. **Do not reintroduce
+a top-N budget.** Full-fold CV confirms the ordering: budget 0.7410, threshold 0.5
+0.7830, threshold 0.9 0.7889.
+
+**Where we now stand, and what is left.** 0.846 is rank ~2625/3608, top 72.8 %. Field
+median is 0.902 (rank 1886), top-25 % is 0.944, top-10 % is 0.947. The remaining known,
+measured items are unchanged by this and still add up:
+
+1. **The learned edge head — −0.073 measured.** Still deleted. `softmax` over sources
+   gives an abstain option the Hungarian linker structurally cannot have.
+2. **8-way flip/rot TTA** — every public notebook above 0.942 uses it; runtime is 0.88 h
+   against a 12 h cap, so it is free.
+3. **Gap closing by interpolated node insertion, min-track-length 6, line-fit
+   smoothing** — the public stack's post-processing, none of it implemented.
+4. **ILP** (`tracksdata` ships as a wheel; `pyscipopt`+`ilpy` confirmed bundleable) —
+   publicly +0.04.
+5. A real training run. `E6` is still only 5 % of the reference's 137.8 GPU-hours.
+
 **2026-09-14 — ROOT CAUSE FOUND, AND IT IS OUR OWN REWRITE. `kaggle/submit.py`
 reimplements an inference path that already exists faithfully in this repo, and the
 rewrite loses 0.129.** All arms below use the **same public weights**, the **same 8
