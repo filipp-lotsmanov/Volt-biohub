@@ -112,3 +112,6 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-18T13:10:48,4f94cc3,linux-server,tta_debug2_real,unet,1,2,1.0,,8.0,6.0,0.8548,0.8548,0.8455,0.0000,0.9804,-0.1131,28,end-to-end through submit.run + CSV readback
 2026-09-18T13:21:26,4f94cc3,linux-server,pub_th965_postproc_FULL,unet,1,71,1.0,,8.0,6.0,0.8687,0.8579,0.8510,0.1077,0.9830,-0.0708,908,"full public post-processing stack: 2-pass relink, gap close, safe divisions, len>=6 filter, smoothing"
 2026-09-18T13:27:24,4f94cc3,linux-server,pub_th965_tta8_FULL,unet,1,71,1.0,,8.0,6.0,0.7916,0.7907,0.7793,0.0088,0.9779,-0.1430,977,"8-view D4 TTA in (y,x), logit-space average; one variable vs pub_th0.965_FULL 0.7931"
+2026-09-18T13:43:59,fbda274,linux-server,pp_th93_FULL,unet,1,71,1.0,,8.0,6.0,0.8649,0.8556,0.8507,0.0938,0.9829,-0.0448,924,postprocess threshold retune without TTA
+2026-09-18T13:52:01,fbda274,linux-server,pp_tta_th93_FULL,unet,1,71,1.0,,8.0,6.0,0.8593,0.8543,0.8449,0.0492,0.9802,-0.1083,1411,postprocess + TTA at a lower threshold: TTA averaging suppresses single-view peaks
+2026-09-18T14:04:34,fbda274,linux-server,pp_tta_th965_FULL,unet,1,71,1.0,,8.0,6.0,0.8609,0.8561,0.8434,0.0484,0.9788,-0.1489,2200,"postprocess + 8-view TTA, one variable vs pp 0.8687"
