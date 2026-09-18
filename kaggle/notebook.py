@@ -91,6 +91,9 @@ if WEIGHTS is not None:
 #   post-processing at threshold 0.93      0.8649   divJ 0.0938
 #   post-processing + TTA at 0.965         0.8609   divJ 0.0484
 #   post-processing + TTA at 0.93          0.8593   divJ 0.0492
+#   + relink learned bonus 15.0            0.8760   divJ 0.1034   <- shipping
+#   ILP over learned candidates            0.8190   divJ 0.0238
+#   finer peak picker, separation 3.0      0.8527   divJ 0.0435
 #
 # THE POST-PROCESSING IS THE CHANGE. It is the shared post-processing cell of the
 # public 0.942-0.948 notebooks, ported in their order (which is load-bearing) --
@@ -145,6 +148,34 @@ if WEIGHTS is not None:
 # The threshold retune without TTA also lost: 0.93 gives 0.8649 against 0.965's
 # 0.8687, so 0.965 is a real interior optimum and not inherited from the public
 # notebooks by assumption.
+# THE LEARNED BONUS is the change over the 0.905 submission, and it is the same
+# transformer edge head this project deleted twice. What changed is how its
+# probabilities are spent. Three ways, all measured on the full fold:
+#
+#   as edges, resolved greedily        0.7830   softmax abstention leaves nodes
+#                                               with no parent, and pruning then
+#                                               deletes them (recall 0.9808->0.9390)
+#   as ILP candidates                  0.8190   the solver deletes marginal nodes
+#                                               for free (recall 0.9419)
+#   as a bonus on the geometric cost   0.8760   neither failure can occur
+#
+# The cost becomes `motion + 0.05*raw - bonus*prob`. Geometry still decides the
+# assignment and the model only reorders candidates within the motion gate, so it
+# cannot abstain a node into deletion and cannot drop one. The reference ships
+# this at 1.0; our optimum is far higher because the bonus is subtracted from a
+# cost in MICROMETRES and median inter-frame motion is 1.82 um, so 1.0 can only
+# break near-ties. adjJ rises monotonically 0.8579 -> 0.8657 over bonus 0 -> 15
+# and then plateaus; at that end the cost has degenerated to Hungarian on learned
+# probabilities within a motion gate, which is the hybrid that beats both extremes.
+#
+# Rejected on measurement, so they do not get retried: the ILP (0.8190; node
+# recall collapses to 0.9419 because ILPSolver's node_weight defaults to 0.0, so
+# deleting a node is free against an edge worth at most 1.0 and a disappearance
+# cost of 2.0 -- the reference is insulated only because its relink runs
+# afterwards and repairs the over-deletion), 8-view TTA (0.8609; it blurs the two
+# daughters into one peak and halves divJ), and the finer peak picker (0.8527;
+# node recall 0.9911, the best measured, but the node-count bonus flips and divJ
+# halves).
 submit.run(
     TEST, Path("/kaggle/working/submission.csv"),
     weights=WEIGHTS if USE_UNET else None,
@@ -152,4 +183,5 @@ submit.run(
     det_threshold=0.965 if USE_UNET else None,
     postprocess=True,
     min_track_len=6,
+    learned_bonus=15.0 if USE_UNET else 0.0,
 )

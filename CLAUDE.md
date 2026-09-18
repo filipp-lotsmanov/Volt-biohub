@@ -1350,6 +1350,36 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-18 — THE LEARNED BONUS: 0.8687 → 0.8760, and it is the transformer we
+deleted twice.** Full 71-sample fold, one variable, reproducible (the 15.0 arm
+repeated on a different GPU model gives a bit-identical 0.8760):
+
+| bonus | 0 | 0.5 | 1.0 | 2.0 | 3.0 | 5.0 | 8.0 | **15.0** | 30.0 | 100.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| score | 0.8687 | 0.8697 | 0.8706 | 0.8706 | 0.8722 | 0.8737 | 0.8753 | **0.8760** | 0.8748 | 0.8738 |
+| adjJ | 0.8579 | 0.8587 | 0.8593 | 0.8609 | 0.8627 | 0.8644 | 0.8658 | 0.8657 | 0.8639 | 0.8630 |
+
+A clean interior optimum at **15.0**, which is **15× the reference's 1.0** — and
+the units say why. The bonus is subtracted from a cost in *micrometres*, and
+median inter-frame motion is 1.82 µm, so a bonus of 1.0 can only break near-ties.
+At 15 the geometric term is nearly vestigial and the cost has degenerated to
+**Hungarian on learned probabilities within a motion gate**. Past that it decays
+again: the gate stops discriminating and wrong-but-confident pairs win.
+
+**This is the third way to spend the edge head's probabilities and the only one
+that works**, which retires two earlier conclusions at once:
+
+| | score | why it fails |
+|---|---|---|
+| as edges, resolved greedily | 0.7830 | softmax abstention leaves a node with no parent; pruning deletes it (recall 0.9808 → 0.9390) |
+| as ILP candidates | 0.8190 | `node_weight` is 0.0, so deleting a node is free (recall 0.9419) |
+| **as a bonus on the geometric cost** | **0.8760** | geometry still assigns; the model only reorders within the gate, so it can neither abstain a node into deletion nor drop one |
+
+So "the learned edge head is worse, drop it" (measured twice, believed twice) was
+a statement about *our two ways of using it*, not about the head. **The general
+lesson: when a component loses, separate the component from the interface before
+concluding it has no signal.**
+
 **2026-09-18 — THE ILP HONESTLY MEASURED: −0.05, and the edge head's
 probabilities pay only as a COST BONUS.** Once the head actually loaded (see the
 measurement error below), the three ways to spend the same probabilities separate
