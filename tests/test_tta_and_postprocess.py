@@ -131,3 +131,44 @@ def test_postprocess_survives_degenerate_videos(label: str, frames: list[int]) -
     out_coords, out_links = run_all(coords, 1.625, shape=(64, 64, 64))
     assert len(out_coords) == len(frames)
     assert len(out_links) == max(0, len(frames) - 1)
+
+
+def test_writer_enforces_degrees_after_the_duplicate_collapse() -> None:
+    """Collapsing duplicate positions can merge two parents into one with four kids.
+
+    The scorer does not reject that -- it truncates out-degree above 2 to the two
+    lowest edge ids and drops merge duplicates keeping the lowest, both in CSV row
+    order. So the choice is made either way; making it here on link distance is
+    the difference between a criterion and an accident. Found when separation 3.0
+    um put detections close enough to collide after rounding, producing an
+    out-degree of 3 that the validator rejected.
+    """
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).parent.parent / "kaggle"))
+    from submission import dataset_rows
+
+    # Two sources one voxel apart in the DOWNSAMPLED grid collapse to the same
+    # original voxel once multiplied by (1, 4, 4) and rounded... so place them at
+    # identical positions directly, which is what the collapse keys on.
+    coords = [
+        np.array([[10.0, 10.0, 10.0], [10.0, 10.0, 10.0]]),   # duplicates
+        np.array([[10.0, 11.0, 10.0], [10.0, 11.0, 14.0],
+                  [10.0, 11.0, 18.0], [10.0, 11.0, 22.0]]),
+    ]
+    # Each source claims two distinct children: four out-edges on one survivor.
+    links = [[(0, 0, 1.0), (0, 1, 2.0), (1, 2, 3.0), (1, 3, 4.0)]]
+
+    rows = list(dataset_rows("ds", coords, links, upsample=(1, 4, 4)))
+    edges = [r for r in rows if r["row_type"] == "edge"]
+    out_deg: dict[int, int] = {}
+    in_deg: dict[int, int] = {}
+    for e in edges:
+        out_deg[e["source_id"]] = out_deg.get(e["source_id"], 0) + 1
+        in_deg[e["target_id"]] = in_deg.get(e["target_id"], 0) + 1
+
+    assert out_deg and max(out_deg.values()) <= 2, f"out-degree not capped: {out_deg}"
+    assert not in_deg or max(in_deg.values()) <= 1, f"merge emitted: {in_deg}"
+    # Shortest links win, so the two kept are the 1.0 and 2.0 edges.
+    kept_targets = {e["target_id"] for e in edges}
+    assert len(kept_targets) == len(edges), "a target was claimed twice"

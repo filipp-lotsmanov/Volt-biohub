@@ -144,15 +144,35 @@ def dataset_rows(
             }
         ids.append(here)
 
-    # Collapsing nodes can collapse two distinct links onto one edge; the scorer
-    # drops merge duplicates silently, so emit each pair once instead.
+    # Collapsing nodes can collapse two distinct links onto one edge, and it can
+    # also merge two *sources* that each had two children into one node with four.
+    # The scorer does not reject either: it drops merge duplicates keeping the
+    # lowest edge id, and truncates out-degree above 2 to the two lowest edge ids
+    # — both insertion-order dependent, i.e. it silently makes the choice for us
+    # in CSV row order. So resolve the degrees here, shortest link first, which is
+    # a real criterion rather than an accident of ordering.
+    #
+    # This is not hypothetical: at separation 3.0 um the finer peak picker put
+    # detections close enough that rounding to original voxel space produced an
+    # out-degree of 3 and the validator rejected the file. Every submission before
+    # this fix also carried ~100 merges per fold, silently collapsed.
     emitted: set[tuple[int, int]] = set()
     for t, links in enumerate(links_per_t):
-        for i, j, _dist in links:
+        resolved: list[tuple[float, int, int]] = []
+        for i, j, dist in links:
             src, tgt = ids[t].get(resolve(t, i)), ids[t + 1].get(resolve(t + 1, j))
             if src is None or tgt is None or (src, tgt) in emitted:
                 continue
             emitted.add((src, tgt))
+            resolved.append((float(dist), src, tgt))
+
+        out_deg: dict[int, int] = {}
+        seen_tgt: set[int] = set()
+        for _d, src, tgt in sorted(resolved):
+            if tgt in seen_tgt or out_deg.get(src, 0) >= 2:
+                continue
+            seen_tgt.add(tgt)
+            out_deg[src] = out_deg.get(src, 0) + 1
             yield {
                 "dataset": name, "row_type": "edge", "node_id": _UNUSED,
                 "t": _UNUSED, "z": _UNUSED, "y": _UNUSED, "x": _UNUSED,
