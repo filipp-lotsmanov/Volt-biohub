@@ -1350,6 +1350,83 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-18 — THE ILP DOES NOT REPRODUCE HERE: −0.008, NOT +0.037. And the
+reason is the metric, not the solver.** The public 0.942 configuration's own clean
+20-volume ablation prices `ILP off (greedy on candidates)` at **−0.0365**, the
+largest single component, and our adjJ of 0.858 sat exactly on their 0.8587 "ILP
+off" arm — so this looked like the whole gap. `src/volt_biohub/ilp_link.py` builds
+the raw candidate graph (all pairs, no distance gate) and solves it with
+`tracksdata`'s `ILPSolver`. Full 71-sample fold, against the shipped 0.8687:
+
+| arm | score | adjJ | divJ | node recall | ratio |
+|---|---|---|---|---|---|
+| **shipped (two-pass relink)** | **0.8687** | 0.8579 | 0.1077 | **0.9830** | −0.071 |
+| ILP, candidate 0.48 (reference) | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
+| ILP, candidate 0.30 | 0.8601 | 0.8516 | 0.0845 | 0.9691 | −0.159 |
+| ILP, candidate 0.10 | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
+| ILP + disappearance 0.5 | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
+| ILP + node_weight −3.0 | 0.8601 | 0.8516 | 0.0845 | 0.9691 | −0.159 |
+| ILP + edge_weight −5.0 | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
+
+**Six cost settings, two distinct outcomes.** That is the finding. The solver is
+working — verified on a fixture (`node_weight −3.0` keeps a 2-frame fragment the
+default drops) and on a real video, where its raw output moves a lot: edges
+4094 → 4513 and nodes-retained 4553 → 5192 out of 5654 across the same four cost
+settings. **Those differences simply do not reach the score**, because the metric
+grades an edge only when an endpoint matched an annotated GT node that itself has
+GT edges — ~3.5 % of cells — and the ILP's decisions land in the unannotated bulk
+where false positives are free (metric fact 2). The solver spends its freedom
+where the metric is blind.
+
+Two further things worth keeping:
+
+- **The reference's candidate threshold of 0.48 gives the solver nothing to
+  decide.** Measured on a real video, the fraction of targets with more than one
+  candidate: **0.48 → 0.0 %**, 0.44 → 0.0 %, 0.30 → 0.9 %, 0.10 → 18.0 %. Softmax
+  over *sources* concentrates the mass, so at most two sources clear 0.48 and in
+  practice one does — the candidate graph is already a perfect matching. Copying
+  the constant reproduces the shape of their pipeline and none of its freedom.
+- **`ILPSolver`'s `node_weight` defaults to 0.0, so deleting a node is free**, and
+  an edge is worth at most 1.0 against a disappearance cost of 2.0. Every marginal
+  node is cheaper to delete than to keep, which is why node recall fell
+  0.9830 → 0.9691. The reference never feels this because its motion relink runs
+  *afterwards* and re-derives edges from geometry, quietly repairing the
+  over-deletion.
+
+**So the earlier reversal was half right.** Dropping the ILP on the reasoning
+"they discard its edge set, so it is not the source of the score" was bad
+reasoning — they discard it via a pass their own ablation prices at −0.011. But
+the conclusion happens to hold on our fold, for a different reason, and that is
+now measured rather than inferred. `--ilp` stays in the tree behind a flag as the
+artefact behind these numbers.
+
+**2026-09-18 — THE FINER PEAK PICKER: +0.008 node recall, −0.016 score, and it
+re-confirms a trade-off this file already recorded.** We diverged from the
+reference by construction and nobody had noticed: their `pool_kernel_from_um` is
+`round(µm/voxel)` forced odd, so `pool_kernel_um` of **3.0, 4.0 and 5.0 all give a
+3-voxel window** (min separation 3.25 µm), while our `_peak_window` is
+`2·ceil(sep/iso) − 1`, so our shipped `separation_um 4.0` gives a **5-voxel**
+window (4.875 µm). We suppress 1.5× more aggressively than the pipeline we forked.
+
+| | shipped, sep 4.0 | sep 3.0 |
+|---|---|---|
+| score | **0.8687** | 0.8527 |
+| adjJ | 0.8579 | 0.8483 |
+| **node recall** | 0.9830 | **0.9911** |
+| node count ratio | −0.071 | **+0.031** |
+| division Jaccard | 0.1077 | **0.0435** |
+
+Node recall 0.9911 is the highest measured in the project, so the mechanism is
+real: at 4.875 µm we were merging peaks the reference keeps, and sister separation
+one frame after a division has p5 5.41 µm. **But it loses on the other two terms
+and the division half was predictable from this file.** "Over-detection is free on
+edges but taxed on divisions" — the fork caps are *fractions* of node and edge
+counts (0.76 % per frame, 0.375 % global), so more nodes admit more false forks,
+and divJ halved. The node-count bonus also flipped from −0.071 to +0.031, worth
+about 0.01 on its own. The lesson is the one in metric fact 3's consequences:
+**detector and linker cannot be swept independently**, and a recall gain has to be
+paid for somewhere.
+
 **2026-09-18 — 0.846 → 0.905 ON THE LEADERBOARD, AND THE HARNESS RANKED IT
 CORRECTLY FOR THE FIRST TIME.** Submission `56332095` (kernel v9, git `0b978aa`)
 scored **0.905 public**, against the field median of 0.902. First time this

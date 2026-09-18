@@ -40,11 +40,24 @@ import numpy as np
 # convention: the solver maximises, so EDGE_WEIGHT multiplies a probability in
 # [0, 1] and the appearance/disappearance/division weights are penalties.
 EDGE_WEIGHT = -1.0
+NODE_WEIGHT = 0.0
 APPEARANCE_WEIGHT = 0.0
 DISAPPEARANCE_WEIGHT = 2.0
 DIVISION_WEIGHT = 1.2
 CANDIDATE_THRESHOLD = 0.48
 
+# Why node_weight is exposed at all, since the reference never sets it: with it
+# at 0.0, keeping a node and deleting one are equally free, so the solver deletes
+# any node whose edges do not pay for themselves. The economics are lopsided --
+# an edge is worth at most 1.0 (edge_weight x a probability in [0, 1]) while
+# ending a track costs disappearance 2.0 -- so a marginal node is always cheaper
+# to drop. Measured on our full fold at the reference costs: node recall
+# 0.9830 -> 0.9691 and node ratio -0.07 -> -0.16 against the geometric linker,
+# for a net 0.8687 -> 0.8605. The reference does not feel this because its motion
+# relink runs afterwards and re-derives edges from geometry, quietly repairing
+# the over-deletion; with the relink off (their own best arm) the cost balance
+# has to carry itself.
+#
 # The retune: disappearance 3.0 + candidate 0.44 measured 0.9066 -> 0.9123 on a
 # dual-seed blend and 0.9355 -> 0.9403 on the shipped pack weights. Kept as named
 # constants rather than folded into the defaults so the two can ship as separate
@@ -98,6 +111,7 @@ def solve(
     iso_um: float,
     *,
     edge_weight: float = EDGE_WEIGHT,
+    node_weight: float = NODE_WEIGHT,
     appearance_weight: float = APPEARANCE_WEIGHT,
     disappearance_weight: float = DISAPPEARANCE_WEIGHT,
     division_weight: float = DIVISION_WEIGHT,
@@ -149,6 +163,7 @@ def solve(
 
     solver = td.solvers.ILPSolver(
         edge_weight=edge_weight * td.EdgeAttr("edge_prob"),
+        node_weight=node_weight,
         appearance_weight=appearance_weight,
         disappearance_weight=disappearance_weight,
         division_weight=division_weight,

@@ -155,6 +155,14 @@ def main(argv=None) -> int:
     p.add_argument("--ilp-appearance", type=float, default=None,
                    help="Cost of a track starting. Reference 0.0; 1.0 measured "
                         "-0.0055 and suppresses divisions.")
+    p.add_argument("--ilp-node", type=float, default=None,
+                   help="Reward for keeping a node (negative rewards, the solver "
+                        "minimises). The reference leaves it 0.0, which makes "
+                        "deleting a node free and costs us node recall.")
+    p.add_argument("--ilp-edge", type=float, default=None,
+                   help="Edge weight multiplying the probability. Reference -1.0, "
+                        "so an edge is worth at most 1.0 against a disappearance "
+                        "cost of 2.0 -- scale it up to make links pay.")
     p.add_argument("--ilp-division", type=float, default=None,
                    help="Cost of a fork. Reference 1.2; 0.8 and 1.6 both lose.")
     p.add_argument("--no-gaps", action="store_true",
@@ -221,6 +229,8 @@ def main(argv=None) -> int:
                 "disappearance_weight": args.ilp_disappearance,
                 "appearance_weight": args.ilp_appearance,
                 "division_weight": args.ilp_division,
+                "node_weight": args.ilp_node,
+                "edge_weight": args.ilp_edge,
             }.items() if v is not None} or None,
             div_kwargs={k: v for k, v in {
                 "symmetry_tau": args.div_symmetry_tau,
