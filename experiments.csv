@@ -115,3 +115,8 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-18T13:43:59,fbda274,linux-server,pp_th93_FULL,unet,1,71,1.0,,8.0,6.0,0.8649,0.8556,0.8507,0.0938,0.9829,-0.0448,924,postprocess threshold retune without TTA
 2026-09-18T13:52:01,fbda274,linux-server,pp_tta_th93_FULL,unet,1,71,1.0,,8.0,6.0,0.8593,0.8543,0.8449,0.0492,0.9802,-0.1083,1411,postprocess + TTA at a lower threshold: TTA averaging suppresses single-view peaks
 2026-09-18T14:04:34,fbda274,linux-server,pp_tta_th965_FULL,unet,1,71,1.0,,8.0,6.0,0.8609,0.8561,0.8434,0.0484,0.9788,-0.1489,2200,"postprocess + 8-view TTA, one variable vs pp 0.8687"
+2026-09-18T14:55:20,0b978aa,linux-server,pp_th965_FULL_keepcsv,unet,1,71,1.0,,8.0,6.0,0.8687,0.8581,0.8512,0.1061,0.9830,-0.0708,818,"repeat of the shipped config, keeping the CSV to decompose the division term TP/FP/FN on the full fold"
+2026-09-18T14:57:22,0b978aa,linux-server,E7f1_ep095_postproc_FULL,unet,1,71,1.0,,8.0,6.0,0.7755,0.7704,0.7736,0.0508,0.9402,+0.0751,1042,"OUR detector, honestly held out (trained 6bba, tested 44b6), same post-processing as the shipped public-checkpoint run 0.8687"
+2026-09-18T15:12:10,0b978aa,linux-server,div_div35_FULL,unet,1,71,1.0,,8.0,6.0,0.8641,0.8578,0.8509,0.0625,0.9828,-0.0714,823,tighten forward divergence 2.25 -> 3.5 um
+2026-09-18T15:13:44,0b978aa,linux-server,div_wider_FULL,unet,1,71,1.0,,8.0,6.0,0.8679,0.8579,0.8510,0.1000,0.9830,-0.0707,910,opposite direction: wider gates to test whether coverage or precision binds
+2026-09-18T15:13:45,0b978aa,linux-server,div_sym075_FULL,unet,1,71,1.0,,8.0,6.0,0.8682,0.8576,0.8507,0.1061,0.9830,-0.0705,926,tighten symmetry: FP was 6x TP so precision may be past optimum

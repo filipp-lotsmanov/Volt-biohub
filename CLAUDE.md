@@ -1350,6 +1350,81 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-18 — 0.846 → 0.905 ON THE LEADERBOARD, AND THE HARNESS RANKED IT
+CORRECTLY FOR THE FIRST TIME.** Submission `56332095` (kernel v9, git `0b978aa`)
+scored **0.905 public**, against the field median of 0.902. First time this
+project has been above the middle of the board.
+
+| | CV fold 1 | LB | gap |
+|---|---|---|---|
+| threshold 0.5, one-pass linker | 0.7830 | 0.846 | +0.063 |
+| **post-processing, threshold 0.965** | **0.8687** | **0.905** | +0.036 |
+
+**This file has twice recorded that our CV tracks the leaderboard in level but
+fails to rank two configurations. It ranked this one.** CV predicted +0.086 and
+the board gave +0.059 — same sign, same order of magnitude, and the config that
+won on CV won on the board. The LB sits *above* CV in both rows because fold 1
+tests on `44b6`, the crowded 0.77 %-annotated embryo that is our worst fold, so a
+fold-1 number is a conservative estimate rather than an optimistic one. That is
+worth knowing before spending a submission slot on confirmation: the harness can
+now carry a ranking decision, and the remaining slots are better spent on
+genuinely uncertain changes.
+
+Progress in context: 0.588 (2026-09-11) → 0.846 (2026-09-16) → **0.905**. The
+top-25 % line is 0.944 and top-10 % is 0.946, so **+0.041 remains.**
+
+**The division term decomposed, and the reference's gates are already at a local
+optimum.** Full fold, shipped config, forks labelled against GT:
+
+| | |
+|---|---|
+| forks emitted | 4,053 |
+| **charged as FP** | **40 (1.0 %)** — the rest fall in unannotated regions and are ignored |
+| TP / FN | 7 / 19 → recall **0.269** |
+| precision | 0.149 |
+
+FP being 6× TP suggested tightening should pay. **It does not** — three arms, all
+at or below the shipped 0.8687:
+
+| arm | score | divJ |
+|---|---|---|
+| **reference defaults** | **0.8687** | 0.1061 |
+| symmetry τ 0.6 → 0.75 | 0.8682 | **0.1061 — identical** |
+| forward divergence 2.25 → 3.5 µm | 0.8641 | 0.0625 |
+| wider gates (parent 11.0, sister 18.0) | 0.8679 | 0.1000 |
+
+Two things to take from it. Tightening a structural gate removes true forks at
+least as fast as false ones, so the average precision of 0.149 does not describe
+the *marginal* candidate. And **the symmetry test is not the active filter** — at
+τ 0.75 it rejected exactly zero candidates, leaving divJ bit-identical, while
+divergence halved it. So do not sweep symmetry again; divergence at 2.25 µm and
+the mutual-nearest-orphan rule are what admit the candidates.
+
+**Consequence: the remaining division loss needs a better ranker or a new
+feature, not a different threshold.** That converges with the 2026-09-12 finding
+that geometric features do not separate real from false forks at the quartiles —
+but that study was run at divJ 0.015 behind a 6 µm gate, and this one is at
+divJ 0.106 with the gate open, so the conclusion now rests on a real operating
+point rather than on 3 proposed forks. Untested and still open: appearance
+features (intensity drop, nuclear shape), which is the one axis that study
+explicitly did not cover.
+
+**Our own detector, measured honestly for the first time against the public one.**
+E7 fold 1 epoch 95 (trained on `6bba`'s 128 samples, tested on `44b6`) through
+the identical post-processing stack:
+
+| detector | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| public 400-epoch pack (trained on **all 199**, so contaminated) | 0.8687 | 0.8579 | 0.1077 | 0.9830 |
+| **ours, E7 epoch 95, honestly held out** | 0.7755 | 0.7704 | 0.0508 | 0.9402 |
+
+The public number is an upper bound — it has seen these 71 videos — but a
+**0.043 node-recall gap** is too large to be only contamination. Our detector is
+genuinely behind, and the public checkpoint stays the submission detector (legal:
+pre-trained models are explicitly allowed). The apples-to-apples test of our
+recipe is `E7_alltrain_100ep`, which trains on the same 199 samples and is
+therefore contaminated the same way; it is at epoch 55/100.
+
 **2026-09-18 — THE POST-DETECTION STACK IS THE GAP, AND IT IS WORTH +0.076.
 Measured on the full 71-sample fold through the submission path, one variable at
 a time, same public checkpoint throughout:**

@@ -140,6 +140,18 @@ def main(argv=None) -> int:
     p.add_argument("--postprocess", action="store_true",
                    help="Full post-detection stack; replaces gate linking.")
     p.add_argument("--min-track-len", type=int, default=6)
+    p.add_argument("--div-symmetry-tau", type=float, default=None,
+                   help="Raise to demand more even splits. Full-fold decomposition "
+                        "at the default 0.6: TP 7, FP 40, FN 19 -- FP is 6x TP, so "
+                        "the precision side may already be past its optimum.")
+    p.add_argument("--div-diverge-um", type=float, default=None,
+                   help="Minimum extra separation of the grandchildren over the "
+                        "sisters. Raise to demand stronger post-mitotic divergence.")
+    p.add_argument("--div-global-frac", type=float, default=None,
+                   help="Cap on forks as a fraction of edges. A blunt count limit: "
+                        "it drops candidates by order, not by quality.")
+    p.add_argument("--div-parent-um", type=float, default=None)
+    p.add_argument("--div-sister-um", type=float, default=None)
     p.add_argument("--tta", action="store_true",
                    help="8-view D4 TTA in (y, x), averaged in logit space.")
     p.add_argument("--switch-at", type=float, default=None)
@@ -182,6 +194,13 @@ def main(argv=None) -> int:
             learned_edges=args.learned_edges,
             edge_threshold=args.edge_threshold,
             tta=args.tta,
+            div_kwargs={k: v for k, v in {
+                "symmetry_tau": args.div_symmetry_tau,
+                "diverge_um": args.div_diverge_um,
+                "global_frac": args.div_global_frac,
+                "parent_um": args.div_parent_um,
+                "sister_um": args.div_sister_um,
+            }.items() if v is not None} or None,
         )
         rows = score_csv(csv_path, data_dir, names)
         if args.keep_csv:

@@ -368,6 +368,7 @@ def run(
     postprocess: bool = False,
     min_track_len: int = 6,
     tta: bool = False,
+    div_kwargs: dict | None = None,
 ) -> Path:
     """Predict every video in *test_dir* and write a validated submission."""
     names = list_datasets(test_dir)
@@ -461,6 +462,7 @@ def run(
                 divisions=division_gate_um is not None,
                 min_track_len=min_track_len,
                 shape=tuple(volumes.shape[1:]),
+                div_kwargs=div_kwargs,
             )
         elif learned_links is not None:
             links = learned_links

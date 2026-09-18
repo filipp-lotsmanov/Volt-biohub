@@ -524,6 +524,7 @@ def run_all(
     min_track_len: int = MIN_TRACK_LEN,
     smooth: bool = True,
     shape: tuple[int, int, int] | None = None,
+    div_kwargs: dict | None = None,
 ):
     """The reference's ordering, which is load-bearing — see each step's docstring.
 
@@ -536,7 +537,8 @@ def run_all(
     links = motion_relink(coords_per_t, iso_um)
     coords, links = close_single_frame_gaps(coords_per_t, links, iso_um)
     if divisions:
-        coords, links = add_safe_divisions(coords, links, iso_um)
+        coords, links = add_safe_divisions(coords, links, iso_um,
+                                           **(div_kwargs or {}))
     coords, links = filter_short_tracks(coords, links, min_len=min_track_len)
     if smooth:
         coords, links = linefit_smooth(coords, links)
