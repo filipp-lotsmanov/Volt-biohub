@@ -140,6 +140,26 @@ def main(argv=None) -> int:
     p.add_argument("--postprocess", action="store_true",
                    help="Full post-detection stack; replaces gate linking.")
     p.add_argument("--min-track-len", type=int, default=6)
+    p.add_argument("--ilp", action="store_true",
+                   help="Solve the RAW learned candidate graph with tracksdata's "
+                        "ILP instead of assigning per frame pair. The reference's "
+                        "own clean-split ablation prices this at +0.037, the "
+                        "largest single component; our adjJ 0.858 sits exactly on "
+                        "their 'ILP off' arm of 0.8587. Needs --weights.")
+    p.add_argument("--candidate-threshold", type=float, default=0.48,
+                   help="Probability above which a pair becomes an ILP candidate. "
+                        "No distance gate. Reference 0.48; 0.44 measured +0.003.")
+    p.add_argument("--ilp-disappearance", type=float, default=None,
+                   help="Cost of a track ending. Reference 2.0; 3.0 measured "
+                        "+0.004 on 18 of 20 volumes.")
+    p.add_argument("--ilp-appearance", type=float, default=None,
+                   help="Cost of a track starting. Reference 0.0; 1.0 measured "
+                        "-0.0055 and suppresses divisions.")
+    p.add_argument("--ilp-division", type=float, default=None,
+                   help="Cost of a fork. Reference 1.2; 0.8 and 1.6 both lose.")
+    p.add_argument("--no-gaps", action="store_true",
+                   help="Skip single-frame gap closing, which the reference's "
+                        "ablation prices at +0.0004 once a solver picks topology.")
     p.add_argument("--div-symmetry-tau", type=float, default=None,
                    help="Raise to demand more even splits. Full-fold decomposition "
                         "at the default 0.6: TP 7, FP 40, FN 19 -- FP is 6x TP, so "
@@ -194,6 +214,14 @@ def main(argv=None) -> int:
             learned_edges=args.learned_edges,
             edge_threshold=args.edge_threshold,
             tta=args.tta,
+            ilp=args.ilp,
+            candidate_threshold=args.candidate_threshold,
+            gaps=not args.no_gaps,
+            ilp_kwargs={k: v for k, v in {
+                "disappearance_weight": args.ilp_disappearance,
+                "appearance_weight": args.ilp_appearance,
+                "division_weight": args.ilp_division,
+            }.items() if v is not None} or None,
             div_kwargs={k: v for k, v in {
                 "symmetry_tau": args.div_symmetry_tau,
                 "diverge_um": args.div_diverge_um,

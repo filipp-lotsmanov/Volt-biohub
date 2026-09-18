@@ -350,6 +350,67 @@ def detect_and_link_learned(
     return coords_per_t, links_per_t
 
 
+def detect_and_candidates(
+    volumes: np.ndarray,
+    detect_map,
+    edge_head,
+    n_per_frame: int,
+    separation_um: float,
+    downsample: tuple[int, int, int],
+    refine: bool = False,
+    threshold: float | None = None,
+    candidate_threshold: float = 0.48,
+) -> tuple[list[np.ndarray], list[tuple[int, int, float, float]]]:
+    """Detect, then emit ILP *candidate* edges instead of resolved links.
+
+    Same interleaved structure and the same memory argument as
+    ``detect_and_link_learned`` — two frames of features live, 67 MB rather than
+    3.4 GB — but it never resolves the probabilities into a topology. That is the
+    whole point: resolving them greedily is what made the edge head score 0.7632
+    against the geometric linker's 0.7830, because an abstention becomes a
+    deleted node. Handed to the solver, the same abstention becomes a
+    disappearance cost it can price against the alternatives.
+
+    Candidates are accumulated sparsely per frame pair rather than by keeping the
+    probability matrices: 770 x 770 float32 per pair is 2.4 MB, so a 100-frame
+    video would hold 235 MB of matrices to extract a few thousand candidates
+    from. The source-softmax means at most two sources clear 0.48 for any target,
+    so the sparse form is 100x smaller with no loss.
+    """
+    from volt_biohub.edge_head import pair_probs
+    from volt_biohub.ilp_link import candidates_from_probs
+
+    window_shape = (2, *volumes.shape[1:])
+    coords_per_t: list[np.ndarray] = []
+    candidates: list[tuple[int, int, float, float]] = []
+    offset = 0
+    prev_feat = None
+
+    for t, frame in enumerate(volumes):
+        logits, feat = detect_map(frame, want_features=True)
+        coords = detect_from_map(logits, n_per_frame, ISO_UM, separation_um,
+                                refine=refine, threshold=threshold)
+        coords_per_t.append(coords)
+        if t > 0:
+            probs = pair_probs(
+                edge_head, prev_feat, feat, coords_per_t[t - 1], coords,
+                t_src=0, window_shape=window_shape, downsample=downsample,
+            )
+            # candidates_from_probs indexes globally, so hand it just this pair
+            # and shift by the running offset rather than re-deriving offsets
+            # over a coords list that is still being built.
+            local = candidates_from_probs(
+                [probs], [coords_per_t[t - 1], coords], ISO_UM,
+                threshold=candidate_threshold,
+            )
+            # `local` is already indexed into [prev, cur] concatenated, so a
+            # single running offset shifts both endpoints into video space.
+            candidates.extend((offset + a, offset + b, p, d) for a, b, p, d in local)
+            offset += len(coords_per_t[t - 1])
+        prev_feat = feat
+    return coords_per_t, candidates
+
+
 def run(
     test_dir: Path,
     out_path: Path,
@@ -369,6 +430,12 @@ def run(
     min_track_len: int = 6,
     tta: bool = False,
     div_kwargs: dict | None = None,
+    ilp: bool = False,
+    candidate_threshold: float = 0.48,
+    ilp_kwargs: dict | None = None,
+    gaps: bool = True,
+    relink_kwargs: dict | None = None,
+    gap_kwargs: dict | None = None,
 ) -> Path:
     """Predict every video in *test_dir* and write a validated submission."""
     names = list_datasets(test_dir)
@@ -430,7 +497,14 @@ def run(
             use_map = detect_map if crowded else None
             picked = "unet" if crowded else "dog"
         learned_links = None
-        if edge_head is not None and use_map is not None:
+        candidates = None
+        if ilp and edge_head is not None and use_map is not None:
+            coords, candidates = detect_and_candidates(
+                volumes, use_map, edge_head, n_per_frame, separation_um,
+                DOWNSAMPLE, refine=refine, threshold=det_threshold,
+                candidate_threshold=candidate_threshold,
+            )
+        elif edge_head is not None and use_map is not None:
             coords, learned_links = detect_and_link_learned(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
                 DOWNSAMPLE, refine=refine, threshold=det_threshold,
@@ -451,6 +525,16 @@ def run(
             centre = np.array([[s // 2 for s in volumes.shape[1:]]], dtype=np.int64)
             coords = [centre] + [np.empty((0, 3), dtype=np.int64)] * (len(volumes) - 1)
 
+        if candidates is not None:
+            # The solver replaces the linker AND selects the node set. It runs
+            # before post-processing so the remaining stages operate on its
+            # topology -- and `relink=False` below is the whole point: the
+            # reference's own ablation prices its two-pass Hungarian at -0.011
+            # precisely because it overwrites these edges.
+            from volt_biohub.ilp_link import solve as ilp_solve
+            coords, links = ilp_solve(coords, candidates, ISO_UM,
+                                      **(ilp_kwargs or {}))
+
         if postprocess:
             # Replaces the one-pass fixed-gate linker entirely: two-pass Hungarian
             # with velocity extrapolation, single-frame gap closing, structurally
@@ -463,6 +547,10 @@ def run(
                 min_track_len=min_track_len,
                 shape=tuple(volumes.shape[1:]),
                 div_kwargs=div_kwargs,
+                links_per_t=links if candidates is not None else None,
+                gaps=gaps,
+                relink_kwargs=relink_kwargs,
+                gap_kwargs=gap_kwargs,
             )
         elif learned_links is not None:
             links = learned_links

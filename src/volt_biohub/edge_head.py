@@ -96,7 +96,7 @@ def load_edge_head(weights, config, device):
     return model
 
 
-def link_pair(
+def pair_probs(
     edge_head,
     feat_src,
     feat_tgt,
@@ -105,17 +105,19 @@ def link_pair(
     t_src: int,
     window_shape: tuple[int, ...],
     downsample: tuple[int, int, int],
-    threshold: float = 0.5,
-    max_parents: int = 1,
-    max_children: int = 2,
-) -> list[tuple[int, int, float]]:
-    """Learned links between two frames, as ``(i, j, distance)`` triples.
+) -> np.ndarray:
+    """The raw ``n_src x n_tgt`` probability matrix, ungated and unresolved.
 
-    Mirrors the reference's edge stage exactly: softmax over the source axis,
-    keep pairs above *threshold*, then take candidates strongest-first subject
-    to at most one parent per child and two children per parent. Those two caps
-    are not stylistic — the scorer silently truncates out-degree above 2 to the
-    two lowest edge ids, so enforcing it here is what keeps the choice ours.
+    Split out of :func:`link_pair` because *how* these probabilities are spent
+    decides whether the head helps or hurts, and we measured both. Resolved
+    greedily into edges (``link_pair``) the head scores **0.7632** on the full
+    fold against the geometric linker's 0.7830: softmax over sources is an
+    abstain mechanism, so when the model is unsure no source clears the
+    threshold, the target keeps no parent, and pruning then deletes it — node
+    recall falls 0.9808 -> 0.9390. Handed to a global solver instead, the same
+    numbers are worth +0.037 in the reference's own ablation, because the solver
+    decides node retention and topology *together* and an abstention becomes a
+    disappearance cost rather than a deleted node.
 
     Time is expressed **window-relative** (``t_src``, ``t_src + 1``) and
     normalised by the window length, not by the absolute frame index, because
@@ -124,7 +126,7 @@ def link_pair(
     import torch
 
     if len(coords_src) == 0 or len(coords_tgt) == 0:
-        return []
+        return np.zeros((len(coords_src), len(coords_tgt)), dtype=np.float32)
 
     dev = feat_src.device
     up = np.asarray(downsample, dtype=np.float32)
@@ -153,6 +155,37 @@ def link_pair(
         # docstring. A sigmoid here would score every pair independently and
         # give back exactly the over-linking the Hungarian linker suffers from.
         probs = torch.softmax(logits, dim=0).float().cpu().numpy()
+    return probs
+
+
+def link_pair(
+    edge_head,
+    feat_src,
+    feat_tgt,
+    coords_src: np.ndarray,
+    coords_tgt: np.ndarray,
+    t_src: int,
+    window_shape: tuple[int, ...],
+    downsample: tuple[int, int, int],
+    threshold: float = 0.5,
+    max_parents: int = 1,
+    max_children: int = 2,
+) -> list[tuple[int, int, float]]:
+    """Learned links between two frames, as ``(i, j, distance)`` triples.
+
+    The reference's edge stage: keep pairs above *threshold*, then take
+    candidates strongest-first subject to at most one parent per child and two
+    children per parent. Those caps are not stylistic — the scorer silently
+    truncates out-degree above 2 to the two lowest edge ids, so enforcing it
+    here is what keeps the choice ours.
+
+    Measured worse than the geometric linker (0.7632 against 0.7830); see
+    :func:`pair_probs` for why, and prefer feeding the probabilities to the ILP.
+    """
+    if len(coords_src) == 0 or len(coords_tgt) == 0:
+        return []
+    probs = pair_probs(edge_head, feat_src, feat_tgt, coords_src, coords_tgt,
+                       t_src, window_shape, downsample)
 
     ii, jj = np.nonzero(probs > threshold)
     cand = sorted(((float(probs[i, j]), int(i), int(j)) for i, j in zip(ii, jj, strict=True)),

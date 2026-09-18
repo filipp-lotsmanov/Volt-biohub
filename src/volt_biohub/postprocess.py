@@ -525,6 +525,11 @@ def run_all(
     smooth: bool = True,
     shape: tuple[int, int, int] | None = None,
     div_kwargs: dict | None = None,
+    links_per_t: list[list[tuple[int, int, float]]] | None = None,
+    gaps: bool = True,
+    relink_kwargs: dict | None = None,
+    gap_kwargs: dict | None = None,
+    smooth_kwargs: dict | None = None,
 ):
     """The reference's ordering, which is load-bearing — see each step's docstring.
 
@@ -533,15 +538,33 @@ def run_all(
     can be joined; divisions must precede it too so the fork exemption protects
     the component they create; smoothing runs last so its neighbourhoods reflect
     the final graph.
+
+    **Pass *links_per_t* to skip the relink entirely**, using the topology a
+    better linker already produced. This is not a convenience: the reference's
+    own clean-split ablation prices its two-pass Hungarian at **-0.011**, because
+    once a global solver has chosen the edges, re-deriving them from geometry
+    overwrites good ones (and, in their measurement, steals division daughters —
+    the division term rose 0.059 -> 0.114 when it was removed). The relink earned
+    its +0.076 here only because it replaced a naive one-pass fixed-gate linker;
+    against the ILP it is expected to be the harmful pass, and this parameter is
+    how that gets measured rather than assumed.
+
+    *gaps* likewise switches off single-frame gap closing, which the same
+    ablation prices at +0.0004 — i.e. nothing — once the solver is choosing
+    topology.
     """
-    links = motion_relink(coords_per_t, iso_um)
-    coords, links = close_single_frame_gaps(coords_per_t, links, iso_um)
+    links = (motion_relink(coords_per_t, iso_um, **(relink_kwargs or {}))
+             if links_per_t is None else links_per_t)
+    coords = coords_per_t
+    if gaps:
+        coords, links = close_single_frame_gaps(coords_per_t, links, iso_um,
+                                               **(gap_kwargs or {}))
     if divisions:
         coords, links = add_safe_divisions(coords, links, iso_um,
                                            **(div_kwargs or {}))
     coords, links = filter_short_tracks(coords, links, min_len=min_track_len)
     if smooth:
-        coords, links = linefit_smooth(coords, links)
+        coords, links = linefit_smooth(coords, links, **(smooth_kwargs or {}))
     links = _enforce_structure(links)
     if shape is not None:
         coords = _clamp_to_grid(coords, shape)
