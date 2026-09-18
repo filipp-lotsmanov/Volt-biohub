@@ -379,7 +379,11 @@ expected.
   pattern appears in the command line of the very process doing the matching. **Kill by
   explicit PID**, and when *listing*, bracket the first character so the pattern cannot
   match itself: `ps -eo pid,cmd | awk '/[w]atch_train/'`. It is luck that the training
-  survived the third one.
+  survived the third one. **And bracketing the matcher is not sufficient** — the fourth
+  occurrence bracketed it correctly and still killed the shell, because the *same
+  command* also contained `git add scripts/watch_training.py`, i.e. the unbracketed
+  literal, elsewhere on the line. The only reliable rule: **capture the PID when you
+  launch, or stop the job through the harness (`TaskStop`), and never search for it.**
 - **`pathlib.Path` everywhere** — no path concatenation, no `\` or `/` literals, no
   drive letters outside a shell profile. Paths enter via `VOLT_DATA_DIR`, CLI args,
   or `dataspec.py`. `os.environ`, never `$env:`, inside Python.

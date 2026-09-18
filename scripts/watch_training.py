@@ -37,7 +37,16 @@ RISE_EPOCHS = 3
 FLAT_EPOCHS = 12       # det loss unchanged to 4dp for this many epochs
 
 
-def tail(path: Path, n: int = 400_000) -> str:
+def tail(path: Path, n: int = 4_000_000) -> str:
+    """Last *n* bytes. Must be large enough to hold several epoch rows.
+
+    These logs are mostly tqdm progress bars -- 11 MB for 89 epochs -- so a small
+    window holds almost no epoch lines. That is survivable now only because
+    progress is tracked by epoch NUMBER rather than by position in this window;
+    an index into a sliding window goes empty the moment the window advances past
+    it, which is how the first version of this watcher went silent after one poll
+    while reporting nothing wrong.
+    """
     try:
         data = path.read_bytes()
     except OSError:
@@ -55,7 +64,7 @@ def main(argv: list[str]) -> int:
     runs = {}
     for spec in argv[1:]:
         method, _, log = spec.partition("=")
-        runs[method] = {"log": Path(log), "seen": 0, "min_det": float("inf"),
+        runs[method] = {"log": Path(log), "last_ep": -1, "min_det": float("inf"),
                         "rising": 0, "flat": 0, "last_det": None, "dead": False}
     print(f"watching {len(runs)} run(s): {', '.join(runs)}", flush=True)
 
@@ -69,8 +78,11 @@ def main(argv: list[str]) -> int:
                 break
 
             rows = EPOCH.findall(txt)
-            for ep, tot, edge, det, cv in rows[st["seen"]:]:
-                st["seen"] += 1
+            # Filter by epoch NUMBER, never by index into the tail window.
+            for ep, tot, edge, det, cv in rows:
+                if int(ep) <= st["last_ep"]:
+                    continue
+                st["last_ep"] = int(ep)
                 if any(v in ("nan", "inf") for v in (edge, det)):
                     print(f"[{method}] DIVERGED at epoch {ep}: edge={edge} det={det}",
                           flush=True)
@@ -103,8 +115,8 @@ def main(argv: list[str]) -> int:
                           flush=True)
 
             if not st["dead"] and not alive(method):
-                done = st["seen"] > 0 and rows and rows[-1][0] == str(int(rows[-1][1]) - 1)
-                print(f"[{method}] PROCESS GONE after {st['seen']} epochs "
+                done = rows and int(rows[-1][0]) >= int(rows[-1][1]) - 1
+                print(f"[{method}] PROCESS GONE at epoch {st['last_ep']} "
                       f"({'finished' if done else 'UNEXPECTED -- likely OOM-killed'})",
                       flush=True)
                 st["dead"] = True
