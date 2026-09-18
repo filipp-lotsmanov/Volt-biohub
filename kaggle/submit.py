@@ -360,7 +360,8 @@ def detect_and_candidates(
     refine: bool = False,
     threshold: float | None = None,
     candidate_threshold: float = 0.48,
-) -> tuple[list[np.ndarray], list[tuple[int, int, float, float]]]:
+    want_probs: bool = False,
+) -> tuple[list[np.ndarray], list[tuple[int, int, float, float]], list | None]:
     """Detect, then emit ILP *candidate* edges instead of resolved links.
 
     Same interleaved structure and the same memory argument as
@@ -383,6 +384,7 @@ def detect_and_candidates(
     window_shape = (2, *volumes.shape[1:])
     coords_per_t: list[np.ndarray] = []
     candidates: list[tuple[int, int, float, float]] = []
+    kept_probs: list[np.ndarray] | None = [] if want_probs else None
     offset = 0
     prev_feat = None
 
@@ -407,8 +409,13 @@ def detect_and_candidates(
             # single running offset shifts both endpoints into video space.
             candidates.extend((offset + a, offset + b, p, d) for a, b, p, d in local)
             offset += len(coords_per_t[t - 1])
+            if kept_probs is not None:
+                # ~36 MB for a 100-frame video at 300 nodes/frame, 235 MB at 770.
+                # Affordable, and the alternative (recomputing per stage) would
+                # run the transformer twice.
+                kept_probs.append(probs)
         prev_feat = feat
-    return coords_per_t, candidates
+    return coords_per_t, candidates, kept_probs
 
 
 def run(
@@ -431,6 +438,7 @@ def run(
     tta: bool = False,
     div_kwargs: dict | None = None,
     ilp: bool = False,
+    learned_bonus: float = 0.0,
     candidate_threshold: float = 0.48,
     ilp_kwargs: dict | None = None,
     gaps: bool = True,
@@ -448,7 +456,13 @@ def run(
         device = resolve_device()
         print(f"detector: unet on {device} ({weights})", flush=True)
         detect_map = load_detector(weights, device, tta=tta)
-        if learned_edges:
+        # The head is needed by three different consumers, not just --learned-edges:
+        # the ILP needs its probabilities as candidate weights, and the relink
+        # needs them as a cost bonus. Gating the load on `learned_edges` alone
+        # silently disabled both -- six "ILP" arms ran with edge_head None and
+        # measured --no-gaps instead, clustering by GPU card rather than by
+        # parameter. Load it whenever a consumer asked for it.
+        if learned_edges or ilp or learned_bonus:
             import json as _json
 
             from volt_biohub.edge_head import load_edge_head
@@ -456,9 +470,15 @@ def run(
             edge_head = load_edge_head(weights, cfg, device)
             # None means the checkpoint has no transformer.* weights, so fall
             # back to the geometric linker rather than dying at hour ten.
-            which = ("learned edge head" if edge_head is not None
-                     else "geometric (no transformer.* in checkpoint)")
-            print(f"linker: {which}", flush=True)
+            wanted = ("learned edge head" if learned_edges else
+                      "ILP candidates" if ilp else "relink cost bonus")
+            if edge_head is None:
+                raise SystemExit(
+                    f"asked for {wanted} but the checkpoint at {weights} has no "
+                    "transformer.* weights. Failing here rather than silently "
+                    "running the geometric linker and reporting it as this arm."
+                )
+            print(f"linker: {wanted}", flush=True)
     else:
         print("detector: dog (no weights)", flush=True)
 
@@ -498,12 +518,16 @@ def run(
             picked = "unet" if crowded else "dog"
         learned_links = None
         candidates = None
-        if ilp and edge_head is not None and use_map is not None:
-            coords, candidates = detect_and_candidates(
+        probs_per_pair = None
+        if (ilp or learned_bonus) and edge_head is not None and use_map is not None:
+            coords, candidates, probs_per_pair = detect_and_candidates(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
                 DOWNSAMPLE, refine=refine, threshold=det_threshold,
                 candidate_threshold=candidate_threshold,
+                want_probs=bool(learned_bonus),
             )
+            if not ilp:
+                candidates = None
         elif edge_head is not None and use_map is not None:
             coords, learned_links = detect_and_link_learned(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
@@ -549,7 +573,12 @@ def run(
                 div_kwargs=div_kwargs,
                 links_per_t=links if candidates is not None else None,
                 gaps=gaps,
-                relink_kwargs=relink_kwargs,
+                relink_kwargs={
+                    **(relink_kwargs or {}),
+                    **({"probs_per_pair": probs_per_pair,
+                        "learned_bonus": learned_bonus}
+                       if probs_per_pair is not None else {}),
+                } or None,
                 gap_kwargs=gap_kwargs,
             )
         elif learned_links is not None:

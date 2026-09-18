@@ -146,6 +146,13 @@ def main(argv=None) -> int:
                         "own clean-split ablation prices this at +0.037, the "
                         "largest single component; our adjJ 0.858 sits exactly on "
                         "their 'ILP off' arm of 0.8587. Needs --weights.")
+    p.add_argument("--learned-bonus", type=float, default=0.0,
+                   help="Subtract this x the edge-head probability from the "
+                        "relink's Hungarian cost, in micrometres. The reference "
+                        "ships 1.0 and we shipped nothing. Geometry still decides "
+                        "the assignment; the model only breaks ties -- which is "
+                        "the one way to spend these probabilities that we have not "
+                        "measured losing (greedy edges 0.7632, ILP 0.8605).")
     p.add_argument("--candidate-threshold", type=float, default=0.48,
                    help="Probability above which a pair becomes an ILP candidate. "
                         "No distance gate. Reference 0.48; 0.44 measured +0.003.")
@@ -223,6 +230,7 @@ def main(argv=None) -> int:
             edge_threshold=args.edge_threshold,
             tta=args.tta,
             ilp=args.ilp,
+            learned_bonus=args.learned_bonus,
             candidate_threshold=args.candidate_threshold,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {

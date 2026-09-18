@@ -1350,55 +1350,36 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
-**2026-09-18 — THE ILP DOES NOT REPRODUCE HERE: −0.008, NOT +0.037. And the
-reason is the metric, not the solver.** The public 0.942 configuration's own clean
-20-volume ablation prices `ILP off (greedy on candidates)` at **−0.0365**, the
-largest single component, and our adjJ of 0.858 sat exactly on their 0.8587 "ILP
-off" arm — so this looked like the whole gap. `src/volt_biohub/ilp_link.py` builds
-the raw candidate graph (all pairs, no distance gate) and solves it with
-`tracksdata`'s `ILPSolver`. Full 71-sample fold, against the shipped 0.8687:
+**2026-09-18 — A MEASUREMENT ERROR WORTH MORE THAN THE RESULT: six "ILP" arms
+ran with no edge head and measured something else entirely.** `submit.run` loaded
+the transformer edge head only `if learned_edges`, and the ILP arms did not pass
+that flag — so `edge_head` was `None`, the guard `ilp and edge_head is not None`
+was False, and **the ILP never ran**. What those arms actually varied was
+`--no-gaps`, which they all carried.
 
-| arm | score | adjJ | divJ | node recall | ratio |
-|---|---|---|---|---|---|
-| **shipped (two-pass relink)** | **0.8687** | 0.8579 | 0.1077 | **0.9830** | −0.071 |
-| ILP, candidate 0.48 (reference) | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
-| ILP, candidate 0.30 | 0.8601 | 0.8516 | 0.0845 | 0.9691 | −0.159 |
-| ILP, candidate 0.10 | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
-| ILP + disappearance 0.5 | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
-| ILP + node_weight −3.0 | 0.8601 | 0.8516 | 0.0845 | 0.9691 | −0.159 |
-| ILP + edge_weight −5.0 | 0.8605 | 0.8517 | 0.0882 | 0.9691 | −0.160 |
+**The tell was in the numbers and I missed it.** The six arms produced exactly two
+distinct outcomes, and they cluster by **GPU card** (cards 0 and 7 → 0.8605,
+card 3 → 0.8601), not by parameter. Six different cost settings collapsing onto
+two values is the signature of a parameter that is not reaching the code; the
+cross-card noise floor established the same day (±0.0002) is what the two clusters
+actually measure. **Rule: when an arm is insensitive to its own parameter, check
+that the parameter arrives before explaining why it does not matter.** I wrote a
+mechanism for the null result instead — that the solver spends its freedom in the
+unannotated 96.5 % the metric ignores — which is plausible, may even be true, and
+was not what those runs showed.
 
-**Six cost settings, two distinct outcomes.** That is the finding. The solver is
-working — verified on a fixture (`node_weight −3.0` keeps a 2-frame fragment the
-default drops) and on a real video, where its raw output moves a lot: edges
-4094 → 4513 and nodes-retained 4553 → 5192 out of 5654 across the same four cost
-settings. **Those differences simply do not reach the score**, because the metric
-grades an edge only when an endpoint matched an annotated GT node that itself has
-GT edges — ~3.5 % of cells — and the ILP's decisions land in the unannotated bulk
-where false positives are free (metric fact 2). The solver spends its freedom
-where the metric is blind.
+Fixed two ways: the head now loads whenever *any* consumer asks for it
+(`learned_edges or ilp or learned_bonus`), and a checkpoint with no `transformer.*`
+weights now **raises** instead of silently degrading to the geometric linker and
+reporting the result as that arm.
 
-Two further things worth keeping:
-
-- **The reference's candidate threshold of 0.48 gives the solver nothing to
-  decide.** Measured on a real video, the fraction of targets with more than one
-  candidate: **0.48 → 0.0 %**, 0.44 → 0.0 %, 0.30 → 0.9 %, 0.10 → 18.0 %. Softmax
-  over *sources* concentrates the mass, so at most two sources clear 0.48 and in
-  practice one does — the candidate graph is already a perfect matching. Copying
-  the constant reproduces the shape of their pipeline and none of its freedom.
-- **`ILPSolver`'s `node_weight` defaults to 0.0, so deleting a node is free**, and
-  an edge is worth at most 1.0 against a disappearance cost of 2.0. Every marginal
-  node is cheaper to delete than to keep, which is why node recall fell
-  0.9830 → 0.9691. The reference never feels this because its motion relink runs
-  *afterwards* and re-derives edges from geometry, quietly repairing the
-  over-deletion.
-
-**So the earlier reversal was half right.** Dropping the ILP on the reasoning
-"they discard its edge set, so it is not the source of the score" was bad
-reasoning — they discard it via a pass their own ablation prices at −0.011. But
-the conclusion happens to hold on our fold, for a different reason, and that is
-now measured rather than inferred. `--ilp` stays in the tree behind a flag as the
-artefact behind these numbers.
+**The real finding from those runs, correctly labelled: gap closing is worth
++0.008 here.** 0.8687 with it, 0.8605 without, on the full fold. That contradicts
+the reference's own clean-split ablation, which prices gap closing at **+0.0004**
+— and the difference is explicable: their pipeline has the ILP choosing topology,
+so a gap is usually already bridged, while ours relies on the relink and needs the
+repair. Another instance of the standing lesson that their component deltas are
+measured at their operating point, not ours.
 
 **2026-09-18 — THE FINER PEAK PICKER: +0.008 node recall, −0.016 score, and it
 re-confirms a trade-off this file already recorded.** We diverged from the
