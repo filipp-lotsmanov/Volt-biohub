@@ -52,6 +52,59 @@ DEFAULT_SIGMA_UM = NUCLEUS_FWHM_UM / 2.3548
 """Sigma of a Gaussian with the measured FWHM (2.3548 = 2*sqrt(2*ln2)); ~2.93 µm."""
 
 DEFAULT_IGNORE_RADIUS_UM = 7.0
+"""Radius inside which a bright voxel is a *near miss*, not an unlabeled cell.
+
+**Kept at 7.0 because the theoretically-motivated 8.45 was MEASURED WORSE.** The
+argument for raising it is genuine and mechanical: peak survival is decided by a
+7-voxel cube whose corner sits ``3 * 1.625 * sqrt(3) = 8.44 um`` away, so at 7.0 the
+shell between them is bright, zero-gradient, and inside the cube that decides whether
+the annotated centroid survives. 73-79 % of centroids have such a voxel, and adding
++-5 to logits only in the ignored region changes this loss by a bit-identical zero
+while moving node recall 1.000 -> 0.250.
+
+All of that is true and it still did not help. Fold 1, 12 epochs, seed 0, one variable,
+scored through the submission path on 10 held-out videos:
+
+| ignore radius | score | edge J | node recall |
+|---------------|-------|--------|-------------|
+| **7.0**       | **0.6077** | 0.5864 | **0.7439** |
+| 8.45          | 0.5989 | 0.5723 | 0.7217 |
+
+The gap is small enough to be noise at n=1, so this is "not supported" rather than
+"refuted" -- but the diagnosis predicted +0.06 to +0.13 of node recall and delivered
+-0.02. **A mechanism being real does not make the knob that closes it useful.**
+Reachable as ``--det-ignore-radius-um`` if someone wants to sweep it against a
+different loss.
+"""
+
+ORDERING_WINDOW = 7
+"""NMS cube side used by the ordering hinge. Must match ``detectors._peak_window``."""
+
+DEFAULT_ORDERING_MARGIN = 1.0
+"""Logit margin by which a centroid should beat its neighbourhood."""
+
+DEFAULT_ORDERING_WEIGHT = 0.0
+"""Off, and **measured harmful** at the one scale tested -- do not switch it on blind.
+
+Fold 1, 12 epochs, seed 0, scored through the submission path on 10 held-out videos:
+
+| ignore radius | hinge | score | edge J | node recall |
+|---------------|-------|-------|--------|-------------|
+| 7.0           | 0.00  | **0.6077** | 0.5864 | **0.7439** |
+| 8.45          | 0.00  | 0.5989 | 0.5723 | 0.7217 |
+| 7.0           | 0.05  | 0.5793 | 0.5635 | 0.6513 |
+| 8.45          | 0.05  | 0.5525 | 0.5370 | 0.6347 |
+
+Monotone and well outside noise: the hinge costs ~0.09 of node recall. It also
+destabilises training badly -- the selection score swings 0.2236 epoch to epoch
+against the control's 0.0676.
+
+The reasoning behind it still looks right (the rest of the loss is pointwise
+calibration and cannot express the local winner-take-all contest the peak finder
+runs), which is precisely why the measurement matters. Untested variations: a smaller
+margin, a schedule that introduces it after the BCE has converged, or applying it only
+to centroids that are currently losing. None of them are evidence yet.
+"""
 """Beyond this, a bright voxel is treated as an unlabeled cell rather than
 background. Chosen where the measured radial profile flattens."""
 
@@ -257,6 +310,62 @@ PENALTY_REDUCTION_BETA = 4.0
 """Exponent suppressing the negative term near a centroid, as in CenterNet."""
 
 
+def ordering_hinge(
+    logits: torch.Tensor,
+    coords: torch.Tensor,
+    mask: torch.Tensor,
+    window: int = ORDERING_WINDOW,
+    margin: float = DEFAULT_ORDERING_MARGIN,
+) -> torch.Tensor:
+    """Penalise an annotated centroid that does not win its own NMS neighbourhood.
+
+    This is the only term here that expresses the contest the metric actually runs.
+    Everything else in :func:`detection_loss` is pointwise calibration — it asks
+    "is this voxel a cell?" — while the score is decided by *ranking*: a centroid
+    scores only if it is the strict maximum of a ``window``-sided cube. Those are
+    different questions, and a loss can be driven to near zero while losing the
+    second one, which is what has been happening.
+
+    ``max_pool3d`` over the cube gives each voxel its neighbourhood maximum, so
+    ``pooled[c] - logits[c]`` is zero exactly when the centroid already wins and
+    positive by the amount it is losing by. The hinge asks for a *margin* on top,
+    because winning by 1e-6 is a tie that the peak finder breaks arbitrarily and
+    that a different cuDNN algorithm can flip — the mechanism behind the same
+    checkpoint emitting 50,561 nodes on an A6000 and 34,837 on a T4.
+
+    Returns the mean over annotated centroids, so a frame with two nodes and a frame
+    with sixteen contribute per-node rather than per-frame.
+    """
+    centre, ok = _snap_centres(coords, mask, tuple(logits.shape[1:]))
+    if not bool(ok.any()):
+        return logits.sum() * 0.0
+
+    b = torch.arange(logits.shape[0], device=logits.device).unsqueeze(1).expand_as(ok)
+    z, y, x = centre[..., 0], centre[..., 1], centre[..., 2]
+    bi, zi, yi, xi = b[ok], z[ok], y[ok], x[ok]
+
+    # The neighbourhood max must EXCLUDE the centroid, or a clear winner still
+    # pays the margin (max_pool3d over a cube centred on c includes c itself, so
+    # pooled[c] == logits[c] exactly when the centroid is already winning).
+    #
+    # Every annotated centroid is masked out, not just the one being scored. When
+    # two annotated cells fall inside one cube only one can survive NMS, so asking
+    # each to strictly outrank the other is asking for the impossible; that is a
+    # genuine recall loss the hinge cannot fix and should not chase. Masking them
+    # keeps the term honest about what it can win.
+    masked = logits.masked_fill(
+        torch.zeros_like(logits, dtype=torch.bool).index_put_(
+            (bi, zi, yi, xi), torch.ones_like(bi, dtype=torch.bool)
+        ),
+        torch.finfo(logits.dtype).min,
+    )
+    pooled = F.max_pool3d(
+        masked.unsqueeze(1), kernel_size=window, stride=1, padding=window // 2
+    ).squeeze(1)
+
+    return F.relu(pooled[bi, zi, yi, xi] - logits[bi, zi, yi, xi] + margin).mean()
+
+
 def detection_loss(
     det_logits: torch.Tensor,
     coords: torch.Tensor,
@@ -268,6 +377,8 @@ def detection_loss(
     bright_threshold: float = DEFAULT_BRIGHT_THRESHOLD,
     ignore_radius_um: float = DEFAULT_IGNORE_RADIUS_UM,
     beta: float = PENALTY_REDUCTION_BETA,
+    ordering_weight: float = DEFAULT_ORDERING_WEIGHT,
+    ordering_margin: float = DEFAULT_ORDERING_MARGIN,
 ) -> torch.Tensor:
     """Penalty-reduced BCE: hard positive at each centroid, softened around it.
 
@@ -311,6 +422,12 @@ def detection_loss(
         See :func:`gaussian_targets` and :func:`ignore_mask`.
     beta : float
         Penalty-reduction exponent for near-centroid negatives.
+    ordering_weight : float
+        Weight on :func:`ordering_hinge`. Zero disables it, which is the control
+        arm — the rest of this loss is pointwise calibration and cannot express
+        the local winner-take-all contest the peak finder runs.
+    ordering_margin : float
+        Logit margin the hinge asks for. See :func:`ordering_hinge`.
 
     Returns
     -------
@@ -344,9 +461,14 @@ def detection_loss(
         is_pos, w_pos, torch.where(keep_neg, w_neg, torch.zeros((), device=target.device))
     )
     hard_target = is_pos.to(target.dtype)
-    return F.binary_cross_entropy_with_logits(
+    loss = F.binary_cross_entropy_with_logits(
         logits, hard_target, weight=weight, reduction="sum"
     ) / B
+    if ordering_weight > 0.0:
+        loss = loss + ordering_weight * ordering_hinge(
+            logits, coords, mask, margin=ordering_margin
+        )
+    return loss
 
 
 # =============================================================================

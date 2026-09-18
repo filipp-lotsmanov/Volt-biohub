@@ -37,6 +37,10 @@ from tqdm import tqdm
 from augmentations import brightness_augment, flip_augment
 from dataspec import WEIGHTS_PATH
 from volt_biohub.detection_targets import (
+    DEFAULT_BRIGHT_THRESHOLD,
+    DEFAULT_IGNORE_RADIUS_UM,
+    DEFAULT_ORDERING_MARGIN,
+    DEFAULT_ORDERING_WEIGHT,
     DEFAULT_SIGMA_UM,
     detection_loss,
     detection_loss_with_pseudo,
@@ -314,6 +318,7 @@ class FrameWindowDataset(Dataset):
         video_data: list[tuple[VideoMeta, list[FrameWindowData]]],
         max_nodes: int | None = None,
         augmentations: list | None = None,
+        aug_seed: int = 0,
     ):
         all_windows = [w for _, windows in video_data for w in windows]
         if max_nodes is None:
@@ -321,12 +326,37 @@ class FrameWindowDataset(Dataset):
 
         self.max_nodes = max_nodes
         self.augmentations = augmentations or []
+        self.aug_seed = aug_seed
 
         self._data: list[tuple[dict, VideoMeta]] = []
         for video_meta, windows in video_data:
             for window in windows:
                 meta = pad_window(window, max_nodes)
                 self._data.append((meta, video_meta))
+
+    def _aug_rng(self) -> np.random.Generator:
+        """One seeded generator per worker, advanced across items and epochs.
+
+        Was ``np.random.default_rng()`` constructed fresh inside ``__getitem__``,
+        i.e. unseeded OS entropy per window. So ``--seed`` never reached the
+        augmentations at all: ``worker_init_fn`` seeds the legacy ``np.random``
+        global, which ``default_rng`` does not consult. Two runs with identical
+        seeds diverged, which is why E6 and E7 -- same config, same ``--seed 0`` --
+        scored 0.6802 at epoch 12 and 0.6700 at epoch 10. Any ablation on a delta
+        smaller than that gap was measuring the augmentation draw.
+
+        Per *worker* rather than per *item*: seeding from ``(seed, idx)`` would be
+        reproducible too, but would hand a given window the same flip and the same
+        brightness shift in every epoch, which is most of the augmentation's value
+        gone. A persistent per-worker stream keeps the draws varied and stays
+        reproducible because the DataLoader's own shuffle is seeded.
+        """
+        rng = getattr(self, "_rng", None)
+        if rng is None:
+            info = torch.utils.data.get_worker_info()
+            rng = np.random.default_rng((self.aug_seed, 0 if info is None else info.id))
+            self._rng = rng
+        return rng
 
     def __len__(self) -> int:
         return len(self._data)
@@ -351,10 +381,9 @@ class FrameWindowDataset(Dataset):
             )[:, 0]
 
         if self.augmentations:
-            rng = np.random.default_rng()
             c, m = meta["coords"], meta["masks"]
             for aug in self.augmentations:
-                imgs, c, m = aug(imgs, c, m, rng=rng)
+                imgs, c, m = aug(imgs, c, m, rng=self._aug_rng())
             meta = {**meta, "coords": c, "masks": m}
 
         return {
@@ -613,6 +642,10 @@ def build_detection_loss(
     images: torch.Tensor | None = None,
     sigma_um: float = DEFAULT_SIGMA_UM,
     pseudo_weight: float = 0.0,
+    bright_threshold: float = DEFAULT_BRIGHT_THRESHOLD,
+    ignore_radius_um: float = DEFAULT_IGNORE_RADIUS_UM,
+    ordering_weight: float = DEFAULT_ORDERING_WEIGHT,
+    ordering_margin: float = DEFAULT_ORDERING_MARGIN,
 ) -> torch.Tensor:
     """Detection loss, dispatching between the Gaussian and legacy single-voxel forms.
 
@@ -621,6 +654,12 @@ def build_detection_loss(
     :mod:`volt_biohub.detection_targets` for why the default moved off it.
     *images* enables positive-unlabeled masking; pass None to disable it while
     keeping Gaussian targets, which separates the two effects.
+
+    ``bright_threshold``, ``ignore_radius_um`` and the two ordering arguments were
+    previously unreachable: this function did not declare them, so the call below
+    could not forward them and they sat pinned at their library defaults. They are
+    the knobs the loss diagnosis points at, so sweeping them required editing the
+    library. Now they are arguments.
     """
     if target == "voxel":
         return compute_detection_loss(det_logits, coords, mask, neg_weight)
@@ -638,6 +677,8 @@ def build_detection_loss(
     return detection_loss(
         det_logits, coords, mask, tuple(voxel_size[:3]),
         images=images, neg_weight=neg_weight, sigma_um=sigma_um,
+        bright_threshold=bright_threshold, ignore_radius_um=ignore_radius_um,
+        ordering_weight=ordering_weight, ordering_margin=ordering_margin,
     )
 
 
@@ -864,6 +905,10 @@ def train_epoch(
     det_pu_mask: bool = True,
     det_sigma_um: float = DEFAULT_SIGMA_UM,
     det_pseudo_weight: float = 0.0,
+    det_bright_threshold: float = DEFAULT_BRIGHT_THRESHOLD,
+    det_ignore_radius_um: float = DEFAULT_IGNORE_RADIUS_UM,
+    det_ordering_weight: float = DEFAULT_ORDERING_WEIGHT,
+    det_ordering_margin: float = DEFAULT_ORDERING_MARGIN,
 ) -> tuple[float, float]:
     """Train for one epoch, return (avg edge loss, avg detection loss).
 
@@ -923,6 +968,10 @@ def train_epoch(
                 images=imgs[:, i] if det_pu_mask else None,
                 pseudo_weight=det_pseudo_weight,
                 sigma_um=det_sigma_um,
+                bright_threshold=det_bright_threshold,
+                ignore_radius_um=det_ignore_radius_um,
+                ordering_weight=det_ordering_weight,
+                ordering_margin=det_ordering_margin,
             )
             for i in range(W)
         ]
@@ -1152,6 +1201,10 @@ def train(
     det_pu_mask: bool = True,
     det_sigma_um: float = DEFAULT_SIGMA_UM,
     det_pseudo_weight: float = 0.0,
+    det_bright_threshold: float = DEFAULT_BRIGHT_THRESHOLD,
+    det_ignore_radius_um: float = DEFAULT_IGNORE_RADIUS_UM,
+    det_ordering_weight: float = DEFAULT_ORDERING_WEIGHT,
+    det_ordering_margin: float = DEFAULT_ORDERING_MARGIN,
     max_iters: int | None = None,
     debug_video: Path | None = None,
     seed: int | None = None,
@@ -1219,6 +1272,16 @@ def train(
         "det_target": det_target,
         "det_pu_mask": det_pu_mask,
         "det_sigma_um": det_sigma_um,
+        # Loss-shape knobs. These were unreachable from the CLI until they were
+        # plumbed through, so runs before that could not record which values they
+        # used -- and both are load-bearing: an ignore radius under the 8.44 um
+        # NMS cube corner leaves bright zero-gradient voxels competing with the
+        # centroid, and the ordering hinge is the only term that expresses the
+        # contest the peak finder runs.
+        "det_bright_threshold": det_bright_threshold,
+        "det_ignore_radius_um": det_ignore_radius_um,
+        "det_ordering_weight": det_ordering_weight,
+        "det_ordering_margin": det_ordering_margin,
         # The rest is the experiment record.
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "method": method,
@@ -1278,7 +1341,9 @@ def train(
 
     pos_feat_dim = 4 * _POS_EMBED_DIM
 
-    train_ds = FrameWindowDataset(train_video_data, max_nodes=max_nodes, augmentations=augmentations)
+    train_ds = FrameWindowDataset(train_video_data, max_nodes=max_nodes,
+                              augmentations=augmentations,
+                              aug_seed=0 if seed is None else seed)
     test_ds = FrameWindowDataset(test_video_data, max_nodes=max_nodes)
     g = None
     worker_init_fn = None
@@ -1383,6 +1448,10 @@ def train(
             max_iters=max_iters, pool_kernel_um=pool_kernel_um,
             det_target=det_target, det_pu_mask=det_pu_mask, det_sigma_um=det_sigma_um,
             det_pseudo_weight=det_pseudo_weight,
+            det_bright_threshold=det_bright_threshold,
+            det_ignore_radius_um=det_ignore_radius_um,
+            det_ordering_weight=det_ordering_weight,
+            det_ordering_margin=det_ordering_margin,
         )
         train_time = time.monotonic() - t0
 
@@ -1492,6 +1561,31 @@ def main() -> None:
     parser.add_argument("--det-sigma-um", type=float, default=DEFAULT_SIGMA_UM,
                         help=f"Gaussian target sigma in microns (default {DEFAULT_SIGMA_UM:.2f}, "
                              f"from the measured 6.9 um nucleus FWHM).")
+    parser.add_argument("--det-bright-threshold", type=float,
+                        default=DEFAULT_BRIGHT_THRESHOLD,
+                        help=f"Normalised intensity above which a voxel far from any "
+                             f"annotation is treated as an unlabeled cell and dropped "
+                             f"from the negative term (default {DEFAULT_BRIGHT_THRESHOLD}). "
+                             f"Measured to over-mask by 4.5x at the median against implied "
+                             f"cell occupancy, so the expected direction is up.")
+    parser.add_argument("--det-ignore-radius-um", type=float,
+                        default=DEFAULT_IGNORE_RADIUS_UM,
+                        help=f"Radius inside which a bright voxel counts as a near miss "
+                             f"rather than an unlabeled cell (default "
+                             f"{DEFAULT_IGNORE_RADIUS_UM}). Must cover the NMS cube corner "
+                             f"of 8.44 um or bright zero-gradient voxels compete with the "
+                             f"centroid the loss is trying to promote.")
+    parser.add_argument("--det-ordering-weight", type=float,
+                        default=DEFAULT_ORDERING_WEIGHT,
+                        help=f"Weight on the local-ordering hinge (default "
+                             f"{DEFAULT_ORDERING_WEIGHT}, i.e. off). Penalises an annotated "
+                             f"centroid that is not the strict maximum of its own NMS cube "
+                             f"-- the contest the metric actually runs, which the pointwise "
+                             f"BCE cannot express.")
+    parser.add_argument("--det-ordering-margin", type=float,
+                        default=DEFAULT_ORDERING_MARGIN,
+                        help=f"Logit margin the ordering hinge asks for (default "
+                             f"{DEFAULT_ORDERING_MARGIN}).")
     parser.add_argument("--no-det-pu-mask", dest="det_pu_mask", action="store_false",
                         help="Disable positive-unlabeled masking, i.e. let bright voxels "
                              "far from any annotation count as negatives. GT is ~3.5%% "
@@ -1580,6 +1674,10 @@ def main() -> None:
             det_target=args.det_target,
             det_pu_mask=args.det_pu_mask,
             det_sigma_um=args.det_sigma_um,
+            det_bright_threshold=args.det_bright_threshold,
+            det_ignore_radius_um=args.det_ignore_radius_um,
+            det_ordering_weight=args.det_ordering_weight,
+            det_ordering_margin=args.det_ordering_margin,
             max_iters=args.max_iters,
             debug_video=debug_video,
             window_size=args.window_size,

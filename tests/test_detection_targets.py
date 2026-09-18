@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import torch
 
+from volt_biohub import detection_targets
 from volt_biohub.detection_targets import (
     DEFAULT_BRIGHT_THRESHOLD,
     DEFAULT_IGNORE_RADIUS_UM,
@@ -356,3 +357,108 @@ def test_pseudo_weight_zero_leaves_the_positive_term_alone():
     logits = torch.randn(1, 1, 32, 32, 32)
     zero = detection_loss_with_pseudo(logits, coords, mask, ISO, img, pseudo_weight=0.0)
     assert torch.isfinite(zero)
+
+
+class TestOrderingHinge:
+    """The only term that expresses the contest the peak finder actually runs.
+
+    `detectors._top_peaks` keeps a voxel iff it is the maximum of a 7-voxel cube.
+    Everything else in `detection_loss` is pointwise calibration and is blind to
+    that ordering -- which is how the loss fell 4.4x while node recall did not.
+    """
+
+    @staticmethod
+    def _one_node(zyx=(8, 8, 8), shape=(16, 16, 16)):
+        logits = torch.zeros((1, *shape))
+        coords = torch.tensor([[list(zyx)]], dtype=torch.float32)
+        mask = torch.ones((1, 1), dtype=torch.bool)
+        return logits, coords, mask
+
+    def test_clear_winner_incurs_no_penalty(self):
+        logits, coords, mask = self._one_node()
+        logits[0, 8, 8, 8] = 10.0
+        loss = detection_targets.ordering_hinge(logits, coords, mask, margin=1.0)
+        assert loss.item() == pytest.approx(0.0)
+
+    def test_losing_to_a_neighbour_is_penalised_by_the_deficit(self):
+        """A neighbour inside the cube outranks the centroid -- exactly the failure."""
+        logits, coords, mask = self._one_node()
+        logits[0, 8, 8, 8] = 1.0
+        logits[0, 8, 8, 10] = 4.0          # 2 voxels away, inside the 7-cube
+        loss = detection_targets.ordering_hinge(logits, coords, mask, margin=1.0)
+        assert loss.item() == pytest.approx(4.0 - 1.0 + 1.0)
+
+    def test_a_bare_win_still_costs_the_margin(self):
+        """Winning by 1e-6 is a tie the peak finder breaks arbitrarily.
+
+        That is the mechanism behind the same checkpoint emitting 50,561 nodes on
+        an A6000 and 34,837 on a T4, so the hinge asks for real separation.
+        """
+        logits, coords, mask = self._one_node()
+        logits[0, 8, 8, 8] = 1.0
+        logits[0, 8, 8, 10] = 0.999
+        loss = detection_targets.ordering_hinge(logits, coords, mask, margin=1.0)
+        assert loss.item() > 0.9
+
+    def test_a_voxel_outside_the_cube_is_irrelevant(self):
+        logits, coords, mask = self._one_node()
+        logits[0, 8, 8, 8] = 1.0
+        logits[0, 8, 8, 15] = 99.0         # 7 voxels away, outside the 7-cube
+        loss = detection_targets.ordering_hinge(logits, coords, mask, margin=0.0)
+        assert loss.item() == pytest.approx(0.0)
+
+    def test_gradient_pushes_the_centroid_up(self):
+        logits, coords, mask = self._one_node()
+        logits[0, 8, 8, 10] = 4.0
+        logits = logits.clone().requires_grad_(True)
+        detection_targets.ordering_hinge(logits, coords, mask, margin=1.0).backward()
+        assert logits.grad[0, 8, 8, 8] < 0, "centroid should be pushed up"
+
+    def test_padded_masked_nodes_are_ignored(self):
+        logits = torch.zeros((1, 16, 16, 16))
+        logits[0, 8, 8, 8] = 10.0
+        coords = torch.tensor([[[8.0, 8, 8], [0, 0, 0]]])
+        mask = torch.tensor([[True, False]])
+        loss = detection_targets.ordering_hinge(logits, coords, mask, margin=1.0)
+        assert loss.item() == pytest.approx(0.0)
+
+    def test_no_annotated_nodes_gives_zero_not_nan(self):
+        logits = torch.zeros((1, 16, 16, 16), requires_grad=True)
+        coords = torch.zeros((1, 1, 3))
+        mask = torch.zeros((1, 1), dtype=torch.bool)
+        loss = detection_targets.ordering_hinge(logits, coords, mask)
+        assert loss.item() == 0.0 and torch.isfinite(loss)
+
+    def test_detection_loss_adds_the_hinge_only_when_weighted(self):
+        logits = torch.zeros((1, 1, 16, 16, 16))
+        logits[0, 0, 8, 8, 10] = 6.0       # a neighbour outranks the centroid
+        coords = torch.tensor([[[8.0, 8, 8]]])
+        mask = torch.ones((1, 1), dtype=torch.bool)
+        vs = (1.625, 1.625, 1.625)
+        off = detection_targets.detection_loss(logits, coords, mask, vs, ordering_weight=0.0)
+        on = detection_targets.detection_loss(logits, coords, mask, vs, ordering_weight=1.0)
+        assert on.item() > off.item()
+
+
+def test_ignore_radius_sits_below_the_nms_cube_corner_deliberately():
+    """The geometry is real; closing it was measured worse. Both facts are load-bearing.
+
+    `_top_peaks` uses a 7-voxel window on the 1.625 um isotropic grid, so the cube
+    corner is 3 * 1.625 * sqrt(3) = 8.44 um from the centre, while the ignore radius
+    is 7.0. The shell between them is bright, zero-gradient and inside the cube that
+    decides whether the annotated centroid survives -- a genuine null space, and
+    73-79 % of centroids have a voxel in it.
+
+    Raising the radius to 8.45 to close it scored 0.5989 against 0.6077, with node
+    recall 0.7217 against 0.7439. So the gap stays, on measurement rather than on
+    theory. This test exists to stop the next reader "fixing" it from first
+    principles; sweep --det-ignore-radius-um against CV instead.
+    """
+    import math
+
+    corner_um = (detection_targets.ORDERING_WINDOW // 2) * 1.625 * math.sqrt(3)
+    assert corner_um == pytest.approx(8.4437, abs=1e-3)
+    assert detection_targets.DEFAULT_IGNORE_RADIUS_UM < corner_um
+    assert detection_targets.DEFAULT_ORDERING_WEIGHT == 0.0, (
+        "the ordering hinge measured -0.09 node recall; keep it opt-in"
+    )

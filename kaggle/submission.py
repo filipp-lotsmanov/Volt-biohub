@@ -40,6 +40,7 @@ def dataset_rows(
     coords_per_t: Sequence[Sequence[Sequence[float]]],
     links_per_t: Sequence[Sequence[tuple[int, int, float]]],
     upsample: tuple[int, int, int] = (1, 1, 1),
+    drop_isolated: bool = True,
 ) -> Iterator[dict]:
     """Flatten one video's detections and links into submission rows.
 
@@ -63,32 +64,99 @@ def dataset_rows(
         and its ``suspect_isotropic_coords`` check catches the *under*-scaled one
         (y and x spanning under a quarter of the volume while z is unscaled) at
         error level once the pattern is global.
+    drop_isolated
+        Omit detections that carry no edge. They can never earn an edge TP, yet
+        they pay the node-count multiplier and can steal a bipartite match from a
+        detection that was correctly linked. Ignored when the video produced no
+        links at all, since every test dataset must still appear in the file.
     """
     uz, uy, ux = upsample
-    # Node ids restart at 1 per dataset, matching sample_submission.csv. The
-    # per-timepoint offsets convert the linker's within-frame indices to them.
-    offsets: list[int] = []
-    next_id = 1
-    for t, coords in enumerate(coords_per_t):
-        offsets.append(next_id)
-        for i, c in enumerate(coords):
-            yield {
-                "dataset": name, "row_type": "node", "node_id": next_id + i,
-                "t": t,
-                "z": round(float(c[0]) * uz),
-                "y": round(float(c[1]) * uy),
-                "x": round(float(c[2]) * ux),
-                "source_id": _UNUSED, "target_id": _UNUSED,
-            }
-        next_id += len(coords)
 
+    # Drop detections that ended up with no edge at all. An isolated node cannot
+    # contribute a single edge TP, but it is counted in `num_pred_nodes` so it pays
+    # the node-count multiplier, and it competes in the per-timepoint bipartite
+    # assignment where it can take the match a correctly-linked detection needed --
+    # costing two edges. Measured on our first submission: 3.1-6.9 % of nodes per
+    # dataset were isolated (435/13,900, 3,480/50,561, 426/7,100, 1,299/35,200).
+    #
+    # Guarded, because "emit fewer nodes" has an obvious failure mode: if nothing
+    # linked at all we would emit an empty dataset, and every test dataset must be
+    # present in the submission. With no links we keep every node instead.
+    keep: set[tuple[int, int]] = set()
     for t, links in enumerate(links_per_t):
         for i, j, _dist in links:
+            keep.add((t, i))
+            keep.add((t + 1, j))
+    prune = bool(keep) and drop_isolated
+
+    # Collapse detections that round onto the SAME original-space voxel. Two nodes
+    # at one position can never both match a ground-truth node -- the assignment is
+    # bipartite -- so the second is pure node-count penalty, and the validator
+    # rejects the file outright.
+    #
+    # This is not hypothetical tidying: it is what made the peak-separation
+    # parameter unreachable. Detection runs on the downsampled 1,4,4 grid and
+    # coordinates are multiplied back by 4, so two peaks two voxels apart survive
+    # suppression and then land on one integer coordinate once `refine` has pulled
+    # their sub-voxel centroids together. At 5.86 um separation that never happens;
+    # at the 3.0 um the reference implementation uses, it happens immediately and
+    # the whole run fails validation.
+    #
+    # The survivor is the earlier (stronger) peak, since detectors return peaks
+    # ordered by response. Edges are remapped onto it rather than dropped, because
+    # a duplicate position genuinely is one node.
+    rounded: dict[int, dict[int, tuple[int, int, int]]] = {}
+    canon: dict[tuple[int, int], int] = {}
+    for t, coords in enumerate(coords_per_t):
+        seen: dict[tuple[int, int, int], int] = {}
+        here: dict[int, tuple[int, int, int]] = {}
+        for i, c in enumerate(coords):
+            key = (round(float(c[0]) * uz), round(float(c[1]) * uy), round(float(c[2]) * ux))
+            if key in seen:
+                canon[(t, i)] = seen[key]
+            else:
+                seen[key] = i
+                here[i] = key
+        rounded[t] = here
+
+    # Node ids restart at 1 per dataset, matching sample_submission.csv. They must
+    # be assigned *after* pruning and stay consecutive, so the index map is built
+    # per timepoint rather than from a flat offset.
+    # An index that was collapsed onto an earlier duplicate must be kept if ITS
+    # survivor carries an edge, so resolve every index through `canon` first.
+    resolve = lambda t, i: canon.get((t, i), i)  # noqa: E731
+    keep = {(t, resolve(t, i)) for (t, i) in keep}
+
+    ids: list[dict[int, int]] = []
+    next_id = 1
+    for t in range(len(coords_per_t)):
+        here: dict[int, int] = {}
+        for i in rounded[t]:
+            if prune and (t, i) not in keep:
+                continue
+            z, y, x = rounded[t][i]
+            here[i] = next_id
+            next_id += 1
+            yield {
+                "dataset": name, "row_type": "node", "node_id": here[i],
+                "t": t, "z": z, "y": y, "x": x,
+                "source_id": _UNUSED, "target_id": _UNUSED,
+            }
+        ids.append(here)
+
+    # Collapsing nodes can collapse two distinct links onto one edge; the scorer
+    # drops merge duplicates silently, so emit each pair once instead.
+    emitted: set[tuple[int, int]] = set()
+    for t, links in enumerate(links_per_t):
+        for i, j, _dist in links:
+            src, tgt = ids[t].get(resolve(t, i)), ids[t + 1].get(resolve(t + 1, j))
+            if src is None or tgt is None or (src, tgt) in emitted:
+                continue
+            emitted.add((src, tgt))
             yield {
                 "dataset": name, "row_type": "edge", "node_id": _UNUSED,
                 "t": _UNUSED, "z": _UNUSED, "y": _UNUSED, "x": _UNUSED,
-                "source_id": offsets[t] + i,
-                "target_id": offsets[t + 1] + j,
+                "source_id": src, "target_id": tgt,
             }
 
 

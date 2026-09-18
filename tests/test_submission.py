@@ -17,6 +17,9 @@ import pytest
 import zarr
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+# kaggle/ holds the offline submission writer; like scripts/ it is not a
+# package, so it is reached by path insertion rather than import.
+sys.path.insert(0, str(Path(__file__).parent.parent / "kaggle"))
 
 from volt_biohub.submission import (
     COLUMNS,
@@ -774,3 +777,52 @@ def test_duplicate_id_reports_every_offending_row(tmp_path: Path, test_dir: Path
     dup = next(p for p in report.errors if p.code == "duplicate_id")
     assert dup.count == 4
     assert dup.examples == ("id=0", "id=1")
+
+
+def test_isolated_nodes_are_pruned_and_ids_stay_consecutive():
+    """Detections with no edge cost score and can never earn it.
+
+    They are counted in `num_pred_nodes`, so they pay the node-count multiplier,
+    and they compete in the per-timepoint bipartite assignment where one can take
+    the match a correctly-linked detection needed -- costing two edges. Our first
+    submission carried 3.1-6.9 % of them per dataset.
+    """
+    from submission import dataset_rows
+
+    coords = [[(0, 0, 0), (1, 1, 1), (2, 2, 2)],   # index 1 is isolated
+              [(0, 0, 1), (1, 1, 2), (2, 2, 3)]]   # index 1 is isolated
+    links = [[(0, 0, 0.5), (2, 2, 0.5)]]
+
+    rows = list(dataset_rows("emb_x", coords, links))
+    nodes = [r for r in rows if r["row_type"] == "node"]
+    edges = [r for r in rows if r["row_type"] == "edge"]
+
+    assert len(nodes) == 4, "the two isolated detections should be gone"
+    assert [n["node_id"] for n in nodes] == [1, 2, 3, 4], "ids must stay consecutive from 1"
+
+    ids = {n["node_id"] for n in nodes}
+    for e in edges:
+        assert e["source_id"] in ids and e["target_id"] in ids, "edge lost its endpoint"
+    # The surviving t=1 detections are the originals at index 0 and 2.
+    assert sorted((n["t"], n["x"]) for n in nodes) == [(0, 0), (0, 2), (1, 1), (1, 3)]
+
+
+def test_pruning_is_skipped_when_nothing_linked():
+    """Every test dataset must appear in the submission, even a hopeless one.
+
+    With no links at all, pruning isolated nodes would delete the dataset
+    entirely -- turning a bad score into a rejected file.
+    """
+    from submission import dataset_rows
+
+    rows = list(dataset_rows("emb_x", [[(0, 0, 0), (1, 1, 1)]], [[]]))
+    assert len([r for r in rows if r["row_type"] == "node"]) == 2
+
+
+def test_pruning_can_be_turned_off():
+    from submission import dataset_rows
+
+    coords = [[(0, 0, 0), (1, 1, 1)], [(0, 0, 1), (1, 1, 2)]]
+    links = [[(0, 0, 0.5)]]
+    rows = list(dataset_rows("emb_x", coords, links, drop_isolated=False))
+    assert len([r for r in rows if r["row_type"] == "node"]) == 4

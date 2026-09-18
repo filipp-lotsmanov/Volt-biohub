@@ -56,7 +56,24 @@ distance, **max 7.0 µm**, scale `(z, y, x) = (1.625, 0.40625, 0.40625)` µm/vox
 
 ### Five facts that determine the method
 
-1. **Divisions are worth 10%.** Don't optimize mitosis until edges plateau.
+1. **Divisions are worth 10%, and we were scoring ZERO of it.** The old advice here
+   — "don't optimize mitosis until edges plateau" — cost us the entire term: our first
+   leaderboard submission contained **0 forks in 73,130 edges**, because Hungarian
+   assignment is one-to-one and `division_gate_um` was None. The arithmetic that
+   matters: our measured edge ceiling at node recall ≥0.98 is adjJ **0.848**, so
+   `0.848 + 0.1·divJ` gives 0.848 at divJ 0, **0.898 at divJ 0.5** (the leaderboard
+   median is 0.902) and **0.948 at divJ 1.0** (the top-10% line is 0.946). The field's
+   score distribution is *explained* by the division term. It is not a tiebreaker.
+   **The gate alone is not the lever, but it WAS blocking the candidates** — opening
+   it from 6 µm to 10 µm in `linking.py` doubles true divisions found (3→6) and *lowers*
+   the score, drowned by 390 false forks, so the binding constraint is the **ranking**
+   of fork candidates. That conclusion stands and is incomplete: at a 6 µm gate against
+   a measured GT sister separation of **median 10.4 µm**, most real divisions were never
+   proposed at all, so the 1:556 base rate measured on 2026-09-12 was partly an artefact
+   of the gate. `postprocess.add_safe_divisions` opens the gates (parent 9.0, sister
+   14.0) *and* replaces the geometric ranker with structural admission — mutual-nearest
+   orphans, forward divergence, a symmetry test, hard per-frame and global caps — and
+   reaches **divJ 0.1077** on the full fold against 0.0110. Both halves were needed.
 2. **False positives outside annotated regions are free.** A predicted edge counts
    at all (TP *or* FP) only when `out_valid(matched source) OR in_valid(matched
    target)` — an endpoint matched a GT node that itself has GT edges. Everything
@@ -235,8 +252,10 @@ are a free luxury; a large *model* is not. Measure full test-set timing on Kaggl
 week 2, not from one video in week 4.
 
 **Windows dev box (this machine).** PowerShell 7 — *assume PowerShell syntax*. `uv`
-for Python, `.python-version` pinned to **3.11** to match the Kaggle image; don't
-bump it. The 5070 is Blackwell (`sm_120`) and needs CUDA ≥ 12.8, but PyPI's Windows
+for Python, `.python-version` pinned to **3.11**. That pin used to be justified as
+"matches the Kaggle image" and **that is no longer true — the image is Python
+3.12.13** (measured 2026-09-11 by probe kernel). Our source is clean on both, so the
+pin itself is harmless; the offline wheels are what must track the image. The 5070 is Blackwell (`sm_120`) and needs CUDA ≥ 12.8, but PyPI's Windows
 torch wheels are CPU-only, so `pyproject.toml` routes torch to the **cu130** index
 on `sys_platform == 'win32'` (cu128 wheels stop at torch 2.11; cu126 has no
 `sm_120`). After any dependency change:
@@ -307,14 +326,51 @@ retired `kaggle.json` pair — and `KAGGLE_CONFIG_DIR` does **not** apply to it:
 be accepted in the browser or the API returns 403. Data is CC0, so university storage
 is fine.
 
-**Kaggle notebook.** Internet **disabled**, ≤12 h, output `submission.csv`.
+**How a code competition is actually submitted** (researched 2026-09-11; we had been
+reasoning from the competition page alone and were wrong three ways). You submit a
+**notebook version**, and Kaggle re-executes it privately with the competition data
+**replaced by the hidden set**, then extracts and scores the file it wrote.
+`competitions submit -f submission.csv` names *the kernel's output file* — the local
+CSV is never uploaded, though the flag is spelled exactly like the upload flag for
+ordinary competitions. The run you watch after `kernels push` uses the four visible
+placeholders, so **timing must always be extrapolated**, and **the graded rerun's log is
+not visible at all**. Crucially, **errored submissions still count against the daily
+limit** (five/day) — Kaggle does this so a failure cannot be used to probe the hidden
+data, which makes a one-minute probe kernel much cheaper than a guess. Full procedure,
+the four failure modes and the checklist: `kaggle/README.md` → *How code competitions
+actually work*.
+
+**Kaggle notebook — four facts measured on the real image 2026-09-11, three of which
+contradicted what this file stated.** Python is **3.12.13**, not 3.11. The competition
+mounts at **`/kaggle/input/competitions/<slug>/test`**, not `/kaggle/input/<slug>/test`
+— the one-level glob matched nothing and killed the first kernel run on
+`StopIteration` in its opening seconds. Preinstalled: torch 2.10.0+cu128, numpy 2.0.2,
+scipy 1.16.3, polars 1.35.2, and **no zarr**, which is what the wheels dataset is for.
+
+**And the one that would have cost a whole submission cycle: `enable_gpu: true` hands
+out a Tesla P100 at compute capability `sm_60`, while the image's torch ships cubins
+for `sm_70` upward.** `torch.cuda.is_available()` returns **True** there and every
+convolution then raises "no kernel image is available for execution on the device".
+An availability check is not merely insufficient here, it is *confidently wrong* — the
+same trap as `open_dataset(device="cuda")`, one level deeper. Two defences, both
+needed: request `"machine_shape": "NvidiaTeslaT4"` (sm_75) in `kernel-metadata.json`,
+**and** keep `notebook.py::gpu_is_usable()`, which executes one real `conv3d` and
+degrades to DoG if it raises — Kaggle substitutes hardware when a shape is
+unavailable, so the request alone is not a guarantee. **Probe the image before
+trusting a run**: `kaggle/README.md` → *Probing the image* has the throwaway kernel,
+it costs a minute, and it settled all four.
+
+Internet **disabled**, ≤12 h, output `submission.csv`.
 `tracksdata` is **not on PyPI**, so **keep the inference path free of tracksdata** —
 numpy/scipy/torch/zarr plus our own CSV writer — and use tracksdata only locally for
 GT parsing and scoring. Since `.geff` is plain Zarr v3 (see Data), this costs little.
 That removes the largest single submission-failure risk. If ILP is needed at inference,
 `ilpy` + `pyscipopt` ship manylinux wheels and bundle fine. Offline install:
 `pip download <pkgs> -d wheels --only-binary=:all: --platform manylinux2014_x86_64
---python-version 3.11`, then `pip install --no-index --find-links=/kaggle/input/<ds>`.
+--python-version 3.12`, then `pip install --no-index --find-links=/kaggle/input/<ds>`.
+**3.12, not 3.11**: wheels built for 3.11 carry `cp311` ABI tags, `pip --no-index`
+then finds no candidate, and the run dies at minute one. (`cp310-abi3` is *not* a
+wrong tag — abi3 is the stable ABI and is forward-compatible.)
 Three Kaggle Datasets — **wheels**, **code** (this repo, versioned per push with the git
 SHA in the message so an LB entry traces to a commit), **weights**; the notebook is ~30
 lines of glue, all logic lives in the repo. 20 GB output storage fills faster than
@@ -322,6 +378,19 @@ expected.
 
 **Cross-platform rules** (each of these has caused real bugs):
 
+- **Never kill by pattern on this box — `pgrep -f`/`pkill -f` match your own shell.**
+  This has now bitten three times: `pkill -f 'method modelA_corrected'` killed its own
+  shell (exit 144), an `until ! pgrep -f 'seq 1 6'` loop matched its own parent and
+  spun for four days, and `for pid in $(pgrep -f watch_training.py); do kill $pid` took
+  the shell out again mid-session while two multi-day training runs were live. The
+  pattern appears in the command line of the very process doing the matching. **Kill by
+  explicit PID**, and when *listing*, bracket the first character so the pattern cannot
+  match itself: `ps -eo pid,cmd | awk '/[w]atch_train/'`. It is luck that the training
+  survived the third one. **And bracketing the matcher is not sufficient** — the fourth
+  occurrence bracketed it correctly and still killed the shell, because the *same
+  command* also contained `git add scripts/watch_training.py`, i.e. the unbracketed
+  literal, elsewhere on the line. The only reliable rule: **capture the PID when you
+  launch, or stop the job through the harness (`TaskStop`), and never search for it.**
 - **`pathlib.Path` everywhere** — no path concatenation, no `\` or `/` literals, no
   drive letters outside a shell profile. Paths enter via `VOLT_DATA_DIR`, CLI args,
   or `dataspec.py`. `os.environ`, never `$env:`, inside Python.
@@ -625,9 +694,13 @@ than silently extracting nothing.
 | `src/volt_biohub/detection_targets.py` | 452 | Gaussian targets, PU mask, pseudo-labels, detection loss | ours; keep |
 | `src/volt_biohub/linking.py` | 195 | Hungarian linking in µm, ≤2 children, graph build | ours; keep |
 | `src/volt_biohub/detectors.py` | 132 | DoG and score-map front-ends behind one signature | ours; keep |
+| `src/volt_biohub/postprocess.py` | 546 | two-pass relink, gap closing, safe divisions, filter, smoothing | **+0.076; the score lives here** |
+| `src/volt_biohub/edge_head.py` | 174 | tracksdata-free port of the transformer edge linker | measured worse; kept as the artefact |
 | `src/volt_biohub/scoring.py` | 165 | video-level detect→link→score, shared by train and CLI | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
+| `kaggle/notebook.py` | 80 | the kernel: bootstrap + one `submit.run` call | glue only |
+| `kaggle/kaggle_env.py` | 121 | Kaggle mount / test-dir / weights / GPU discovery | ours; keep |
 | `scripts/dataspec.py` | 40 | path resolution | keep |
 | `scripts/fetch_data.py` | 757 | Kaggle downloader: bulk archive + per-file, resumable | ours; keep |
 | `scripts/train_unet_transformer.py` | 1294 | joint training | rework or replace |
@@ -765,6 +838,18 @@ Hygiene, each capable of wasting a day:
 - **Three disagreeing defaults per knob.** `det_loss_weight`: `train_epoch` signature
   0.1, `train()` signature 1e1, CLI 1e0 with help text claiming 1e1. Same shape for `lr`
   (1e-3 vs 1e-4) and `num_workers` (4 vs 8 vs help saying 4). Always pass explicitly.
+- ~~**The augmentation RNG ignored `--seed`.**~~ **Fixed 2026-09-16.**
+  `FrameWindowDataset.__getitem__` built `np.random.default_rng()` fresh per window —
+  unseeded OS entropy — because `worker_init_fn` seeds the legacy `np.random` global,
+  which `default_rng` does not consult. So `--seed` never reached brightness or flips,
+  and two runs with identical configs diverged: **E6 and E7, same recipe and same
+  `--seed 0`, scored 0.6802 at epoch 12 and 0.6700 at epoch 10.** Any ablation on a
+  delta smaller than that gap was measuring the augmentation draw. Now one generator
+  per worker, seeded from `(seed, worker_id)` and advanced across items — per-worker
+  rather than per-item deliberately, since `(seed, idx)` would hand each window the
+  same flip and brightness every epoch and throw away most of the augmentation's
+  value. **E6 and E7 themselves are not reproducible**; treat their absolute numbers as
+  one draw each.
 - ~~**No `--seed`.**~~ **Fixed 2026-09-07** — `--seed` now reaches `train()` *and* seeds
   torch, numpy and `random`, not only the DataLoader generator as before. That omission
   is why the gaussian-vs-voxel ablation was uncontrolled: model init, dropout and the
@@ -1228,6 +1313,700 @@ deliberately, since `/root` is the container's ephemeral overlay.
 Not done: `scripts/make_splits.py` as a committed script (a deliberate
 `dataset_splits.json` now exists beside the data, but from a throwaway script), any
 modelling with a CV number attached, Kaggle team.
+
+**2026-09-16 — THE LOSS/METRIC ANTI-CORRELATION IS DEAD. It was the selection metric
+all along.** This file has called it "the single most important open problem" since
+2026-09-07 and recorded it as reproducing across three folds. Scored the way it should
+always have been — our own 24-epoch full-pass model (`E6`), candidate epochs scored on
+the **full 71-sample fold** through the **submission path** with the threshold detector:
+
+| checkpoint | score | node recall |
+|---|---|---|
+| epoch 0 — **what `best.pth` selected** | 0.6679 | 0.8648 |
+| epoch 12 | 0.6802 | 0.9169 |
+| **epoch 23** | **0.6852** | 0.9070 |
+
+**More training monotonically improves the real score.** Every "best epoch is 0"
+observation in this file came from `epoch_selection_score` on `--select-videos 8` (6 in
+`E6`) — an effective n of about 2, where the run-to-run spread swamps the signal. The
+selector was reliably picking our *worst* checkpoint of twelve. Combined with the
+reference's own `history.csv` (det loss falls monotonically 0.0198 → 0.0025 while their
+validation metric rises 0.900 → 0.978 over 400 epochs), the conclusion is settled:
+**there is no anti-correlation. There was a broken ruler, twice — once in the gate
+config, once in the sample size.**
+
+Consequences:
+- **Never select a checkpoint on the per-epoch subsample.** `--save-every` and a
+  full-fold score afterwards is the only trustworthy selection. `best.pth` is
+  actively misleading and should be treated as "the epoch the cheap print liked".
+- Every detector conclusion drawn from "best epoch 0" is void, including the ordering
+  hinge and ignore-radius arms and the `det_loss_weight` sweep.
+- **Our own detector is close.** E6 at 24 full-pass epochs scores 0.6852 on fold 1
+  against the public 400-epoch checkpoint's 0.7830 — a 0.098 gap for 16x less training,
+  which is exactly the shape of their curve (0.939 by epoch 51, 0.967 by 151).
+
+`E7_fold1_100ep` and `E7_alltrain_100ep` are now running, 100 full-pass epochs each,
+`--save-every 5`. Split 4 was added as an all-train split (199 samples) matching the
+reference recipe; its `test` list is a subset of train and exists only to feed the cheap
+per-epoch print, which we do not select on.
+
+**2026-09-18 — THE POST-DETECTION STACK IS THE GAP, AND IT IS WORTH +0.076.
+Measured on the full 71-sample fold through the submission path, one variable at
+a time, same public checkpoint throughout:**
+
+| arm | score | adjJ | divJ | node recall | node ratio |
+|---|---|---|---|---|---|
+| threshold 0.5, one-pass gate 8 µm | 0.7830 | 0.7819 | 0.0110 | 0.9808 | +0.0424 |
+| threshold 0.965 | 0.7931 | 0.7920 | 0.0110 | 0.9805 | −0.0635 |
+| **+ full post-processing** | **0.8687** | **0.8579** | **0.1077** | 0.9830 | −0.0708 |
+| 8-view D4 TTA alone, threshold 0.965 | 0.7916 | 0.7907 | 0.0088 | 0.9779 | −0.1430 |
+| learned transformer edge head | 0.7632 | 0.7614 | 0.0178 | 0.9390 | −0.2232 |
+
+`src/volt_biohub/postprocess.py` is the public 0.942–0.948 notebooks' shared
+post-processing cell, ported in their order (which is load-bearing): two-pass
+Hungarian with velocity extrapolation → single-frame gap closing → structurally
+gated divisions → short-track filter → line-fit smoothing.
+
+**The division term finally moved, and the reason our gate was wrong is
+embarrassing.** divJ has sat at ~0.01 since the first submission against a term
+worth 0.1. Our `DIVISION_GATE_UM` is 6.0 µm; measured GT sister separation one
+frame after a division has a **median of 10.4 µm** (p90 13.0). We were rejecting
+most real divisions by construction, which is also why the 2026-09-12 fork-ranker
+study found only 3 real forks proposed in 14 samples — **the proposal ceiling that
+study measured was an artefact of the gate, not a property of the detections.**
+The reference opens the gates (parent 9.0, sister 14.0) and defends precision
+structurally instead: mutual-nearest orphans, forward divergence ≥2.25 µm, a
+symmetry test at τ 0.6, and hard per-frame (0.76 %) and global (0.375 %) caps.
+That combination gives divJ 0.1077 where opening our gate alone gave 390 false
+forks and lost score. **Ranking was the right diagnosis; the gate was still
+blocking the candidates.**
+
+**Two components are deliberately NOT in it, and both were measured rather than
+assumed.** The ILP: those notebooks run it and then **discard its edge set
+wholesale**, keeping only per-pair probabilities as a small additive bonus in the
+Hungarian cost, so their shipped edges come from the two-pass Hungarian. Task #17
+is therefore dropped, not deferred. The learned transformer edge head: 0.7632
+against Hungarian's 0.7830 on the same fold. It emits 25–27k edges/video, so the
+old "emits zero edges" claim was false, but abstaining leaves isolated nodes that
+pruning then deletes and node recall falls 0.9808 → 0.9390. The +0.073 recorded
+for it on 2026-09-14 came from 8 contaminated videos at effective n ≈ 3. Kept
+behind `--learned-edges` as the artefact behind the number.
+
+**8-view TTA is flat, and the reason is the operating point, not the map.** Every
+public notebook above 0.942 uses it, so a flat result wants explaining: averaging
+logits over the D4 group suppresses peaks that only one view fired on, so at a
+*fixed* threshold it emits fewer nodes (ratio −0.143 against −0.064) rather than
+ranking better. It needs the threshold retuned underneath it, which is measuring
+now. Runtime is not the obstacle — 12.0 s/video, **0.66 h for a train-sized test
+set** against the 12 h cap.
+
+**Two bugs in the new stack, both caught by `validate_submission` rather than by
+the score** — which is the argument for the validator earning its place in the
+scoring harness and not only at the save site. Line-fit smoothing pulls a border
+node marginally outside the grid, and a z/y/x of −0.3 becomes **−1** once the
+writer multiplies by the downsample factor: 11 nodes in two videos, and the file
+is rejected outright. And gap closing and the division pass each add edges under
+their own local guard, so neither sees that the other has claimed a node — the
+scorer does **not** error on a merge, it silently collapses the duplicates and
+keeps the lowest edge id, so an in-degree of 2 is a free false positive with no
+visible failure. In-degree is now capped at 1 and out-degree at 2, longest links
+dropped first.
+
+`tests/test_tta_and_postprocess.py` pins the TTA inverse transforms by the one
+property that holds for *any* model: a full-group symmetry average is exactly
+equivariant, so rotating the input must rotate the output. A "does it run" test
+passes with the inverses omitted, which is precisely the bug that silently
+destroys a detection map by averaging misaligned views.
+
+**2026-09-16 — THE CLAMP IS BROKEN: 0.581 → 0.846 FROM ONE VARIABLE.** Submission
+`56278746` replaced the node budget with a detection threshold (`det_threshold 0.5`),
+changing nothing else against `56233167`. **+0.265.** Rank 3133 → 2625 of 3608.
+
+**What the clamp was.** Four submissions scored 0.588 / 0.578 / 0.581 / 0.575 across
+four structurally different pipelines — DoG at two separations, a 2,400-iteration
+U-Net, and a 400-epoch U-Net trained on all 199 samples — whose CV node recall spanned
+**0.65 to 0.98**. A leaderboard that will not move across that range is not measuring
+the detector. The one thing all four shared was `predict_n_true(q0.9)`: every one took
+its node count from the same log-linear fit, so every one emitted the same wrong count
+on the hidden embryo no matter what sat underneath it. Detection was **purely
+budget-limited** — emitted vs asked on the four visible samples was 13900/13851,
+50600/50641, 7100/7105, 35200/35168, *exactly* the budget every time.
+
+**Why the fit was the problem.** It is a compromise between two embryos with opposite
+biases — `44b6` median ratio 1.028 at **p10 0.464**, `6bba` 1.002 at **p10 0.617** — so
+even in-domain a tenth of samples get half the nodes they need. The hidden set is a
+third embryo and nothing there can check it.
+
+**The detector's own confidence is a better estimator of cell count than the fit.**
+Emitted against the *true* counts once the threshold replaced the budget:
+
+| sample | threshold | budget | true `N` |
+|---|---|---|---|
+| `44b6_0113de3b` | **27,192 (1.06×)** | 13,851 (0.54×) | 25,755 |
+| `44b6_0b24845f` | 41,969 (1.28×) | 50,641 (1.54×) | 32,795 |
+| `6bba_05b6850b` | 7,837 (1.23×) | 7,105 (1.12×) | 6,362 |
+| `6bba_05db0fb1` | **74,994 (1.07×)** | 35,168 (0.50×) | 69,800 |
+
+**So metric fact 4 needs rewriting.** This file has treated `N_true` as a knob to
+predict since the beginning — "the per-sample predicted target is worth 0.993 vs 0.936
+weighted multiplier" — and built `predict_n_true`, the density switch and every budget
+sweep on top of it. The multiplier arithmetic was right and the conclusion was wrong:
+a threshold gets the node count right *for free*, and the entire `N_true` apparatus was
+a workaround for a saturated detector that stopped being saturated. **Do not reintroduce
+a top-N budget.** Full-fold CV confirms the ordering: budget 0.7410, threshold 0.5
+0.7830, threshold 0.9 0.7889.
+
+**Where we now stand, and what is left.** 0.846 is rank ~2625/3608, top 72.8 %. Field
+median is 0.902 (rank 1886), top-25 % is 0.944, top-10 % is 0.947. The remaining known,
+measured items are unchanged by this and still add up:
+
+1. **The learned edge head — −0.073 measured.** Still deleted. `softmax` over sources
+   gives an abstain option the Hungarian linker structurally cannot have.
+2. **8-way flip/rot TTA** — every public notebook above 0.942 uses it; runtime is 0.88 h
+   against a 12 h cap, so it is free.
+3. **Gap closing by interpolated node insertion, min-track-length 6, line-fit
+   smoothing** — the public stack's post-processing, none of it implemented.
+4. **ILP** (`tracksdata` ships as a wheel; `pyscipopt`+`ilpy` confirmed bundleable) —
+   publicly +0.04.
+5. A real training run. `E6` is still only 5 % of the reference's 137.8 GPU-hours.
+
+**2026-09-14 — ROOT CAUSE FOUND, AND IT IS OUR OWN REWRITE. `kaggle/submit.py`
+reimplements an inference path that already exists faithfully in this repo, and the
+rewrite loses 0.129.** All arms below use the **same public weights**, the **same 8
+videos**, the **same scorer**. Levels are inflated (those videos are in the checkpoint's
+199-dataset training set) — read the deltas.
+
+| arm | score | node recall | nodes/frame |
+|---|---|---|---|
+| **reference full pipeline** (threshold detector + learned edge head) | **0.8607** | 0.9960 | ~440 |
+| reference detections + **our** Hungarian linker | 0.7880 | 0.9940 | 487 |
+| **our pipeline as the notebook ships it** | **0.7322** | 0.9206 | 306 |
+| ours, separation 4.0 | 0.8098 | 0.9716 | 317 |
+| ours, separation 4.0 + oracle budget | 0.8206 | 0.9781 | 403 |
+
+**Two swaps account for it, and both rest on a claim that was true of our old checkpoint
+and false of the architecture.**
+
+**(1) Deleting the learned edge head: −0.073.** `kaggle/submit.py:17` and
+`detectors.py:8` both assert the transformer "currently emits zero edges". With the
+public weights it emits **25k–68k edges per video** and reaches **J = 1.000** on
+`44b6_0113de3b` where our Hungarian linker gets 0.636. The zero-edge observation came
+from our own 12-epoch checkpoint and was generalised to the architecture; it is what
+removed the strongest component of the reference pipeline. The mechanism it provides is
+an **abstain option**: `softmax` over *sources* means at most one source per target can
+exceed 0.5, and when the model is unsure none do, so the target gets no parent and no
+false-positive edge. `linear_sum_assignment` cannot abstain — every detection inside the
+gate gets linked, and every wrong link lands in the denominator.
+
+**(2) Top-N budget + 7-voxel suppression instead of threshold + 3-voxel: −0.056.**
+- **Suppression radius dominates.** `_peak_window(5.86, 1.625)` = **7**, a 4.875 µm
+  exclusion radius against the reference's 1.625 µm. `separation_um` 5.86 → 4.0 alone is
+  worth **+0.078** and takes node recall 0.914 → 0.965. `DEFAULT_SEPARATION_UM` was
+  `2*sigma` = 5.86 while **every tuned CV number in this repo used 4.0**, and
+  `kaggle/notebook.py` passes only `budget` and `gate_um`, so both submissions ran at
+  5.86. Now 4.0.
+- **The predicted budget is miscalibrated per video and biased against dense ones.**
+  `predict_n_true(q90)/estimated_number_of_nodes` over all 199: median 1.015 but **p10
+  0.519**, and by `N_total` quartile **1.125 / 1.242 / 0.962 / 0.559** (spearman
+  −0.498). In production `44b6_0113de3b` got 13,900 nodes against 25,755 true — **0.54×,
+  capping node recall at 0.54**. The reference needs no budget at all: its threshold
+  lands at 0.94–1.53× of true.
+- **`positive_only=False` pads the budget with negative-logit voxels** —
+  `detectors.py:86` — i.e. voxels the detector explicitly rejected. 8 % of emitted nodes
+  overall, **21–22 % on 2 of 8 videos**. Pure node penalty plus match-stealing.
+
+**The premise behind the budget design is false for these weights.** `detectors.py:10-15`
+justifies a budget over a threshold because "the map is saturated — median sigmoid
+1.0000 at GT centroids, ~6,000 voxels/frame above 0.99". With the public checkpoint only
+**1.59 % of voxels have logit > 0**, and a 3×3×3 local max yields **236 peaks on a 64³
+frame**. Saturation was a property of our undertrained model, not of the detector.
+
+**Ruled out by measurement, so nobody re-investigates them:** normalisation is
+byte-identical across our inference, the reference inference and the reference training
+(same quantiles, same epsilon, same lower clamp, no upper clamp anywhere); the
+fake-pair trick costs **nothing** (node recall 0.9967 real pair vs 0.9973 fake — the
+temporal attention degenerates cleanly on two identical tokens); coordinates are
+correct with no factor of 4 and no axis swap, verified by a scale-axis probe; sliding
+windows are equivalent at W=2.
+
+**And the fix is already in the repo.** `scripts/predict_unet_transformer.py` differs
+from the reference only in added docstrings — `_detect_cells_pooled`,
+`pool_kernel_from_um`, `build_graph` and `_load_frame` are **byte-identical**. We do not
+submit with it solely because it imports tracksdata at module scope, and the public
+pack's `wheels/` proves tracksdata bundles fine. **Stop maintaining the rewrite; ship
+the path that already works.**
+
+**2026-09-14 — EVERY RECENT EXPERIMENT WAS UNDERPOWERED, effective n = 3 to 5.**
+`--limit 8/10` takes the head of a sorted split, and `summarise` weights by
+`w_i = TP+FP+FN ≈ GT edge count`, which ranges 49–1879 per sample. So:
+
+| sample set | effective n | top sample's share of weight |
+|---|---|---|
+| `split1[:8]` | **3.16** | **52.8 %** |
+| `split1[:10]` | 4.78 | 39.5 % |
+| `split0[:30]` | 25.5 | — |
+| `split0` full | 111.3 | — |
+
+With per-sample `adjJ` spread 0.356–0.733, the standard error at effective n≈3 is
+**±0.08–0.10**. The E2 2×2 loss arms, "the loss-shape fix did not work", the budget
+sweeps "flat to four decimals", DoG-vs-U-Net and RANDOM_init were all inside their own
+noise. **Decisive comparisons run on a full split or not at all.**
+
+**The CV/LB agreement was a three-way confound.** "CV 0.5823 vs LB 0.588" compared the
+`44b6` family at effective n=3.16 with a **DoG** detector through the submission path
+against the `6bba` family at n=111 with a **U-Net** through the pipeline path. No
+sample, no detector and no code path in common. The agreement was luck, and it was the
+evidence for "the harness now predicts the leaderboard". It does not, yet.
+
+**Also verified: our `metrics.py` has diverged from the official scorer** — 86 added
+lines (dt≠1 filter, merge collapse, out-degree cap) plus a near-rewritten
+`division_metrics.py` whose FP rule charges cases the reference does not. Proven
+**numerically inert on our actual submission** (bit-identical on all four datasets), but
+it spawned a false belief worth correcting: **the official scorer does NOT delete
+`dt != 1` edges**, so `linking.py:225-227`'s instruction to express gap closing only by
+inserting an interpolated node is wrong. A long edge is one cheap FP; an interpolated
+node costs the node-count penalty *and* can steal a GT match. Restore both files to the
+reference for hygiene.
+
+**And `node_recall` as we report it is macro-averaged and ~0.09 optimistic** (0.7349
+macro vs 0.6498 micro on the shipped submission). It is also not an upper bound on
+anything: adding isolated nodes at exact GT coordinates gives **node recall 1.000 with
+edge Jaccard 0.000**, because the extra nodes win the bipartite match and orphan the
+linked detections. Stop using it as a proxy for achievable edge Jaccard.
+
+**2026-09-14 — SECOND SUBMISSION SCORED 0.578, DOWN FROM 0.588, and the experiment was
+designed badly.** Submission `56230904` bundled **four** changes: model swap
+(`modelA_corrected`, trained on `44b6` → `E4_lr1e4`, trained on `6bba`), density switch
+retired, division gate on (478 forks), isolated nodes pruned. Our CV said each was an
+improvement; the leaderboard says the package is **−0.010**. With four variables and one
+number, **nothing here is attributable** — a direct violation of this file's own
+experiment discipline, on the one measurement where slots are limited to five a day.
+
+What can be said. Divisions (+0.005 on CV) and pruning are small and almost certainly
+not negative, so the loss is most likely the **model swap or the retired switch**. Both
+point the same way: `modelA` was trained on **`44b6`**, the crowded 327-cells/frame
+embryo, and `E4_lr1e4` on `6bba` at 97 — so if the hidden third embryo is crowded,
+`modelA` transfers better and our fold-1 CV cannot see that. The retired switch also put
+DoG on sparse samples, which this pack's own numbers say is not worthless.
+
+**The standing lesson: one variable per submission.** Our CV now tracks the LB in
+*level* (0.5823 CV against 0.588 LB) but has twice failed to rank two configurations
+correctly. Until it ranks, the LB is the only arbiter of a config change, and it is
+rationed.
+
+**2026-09-14 — ONE FULL PASS BEATS EVERY SHORT RUN, first confirmation of the budget
+diagnosis.** `E6_long_fullpass` (fold 1, batch 8, lr 1e-4, `det_neg_weight 1e-2`, no
+`--max-iters`, so an epoch is a real pass of ~1,568 iterations):
+
+| run | iterations in epoch 0 | det loss | CV |
+|---|---|---|---|
+| every E1–E5 arm | 200 | 0.0685–0.0704 | 0.6357–0.6663 |
+| **E6, one full pass** | **~1,568** | **0.0150** | **0.6775** |
+
+A single honest epoch beats the best of nine tuned short runs, at 4.6× the detection
+loss reduction. 44 min/epoch, so 24 epochs is ~17 h. This is the first result in the
+project that improves by *doing the same thing properly* rather than by changing
+something.
+
+**2026-09-14 — WHAT THE FIELD ACTUALLY RUNS, read out of their own artifact rather than
+inferred.** The support pack (`pilkwang/biohub-temporal-unet3d-seed314159-v1`, 340 MB,
+5,995 downloads) ships `repo/`, `weights/`, **`wheels/`** and a full
+`history.csv`. Four things in it change decisions here.
+
+**1. `tracksdata` CAN ship offline, so our foundational constraint was unnecessary.**
+`wheels/tracksdata-0.1.0rc6.dev3+g980c2d30a-py3-none-any.whl` — they built a wheel from
+the git repo and bundled it, alongside ~80 others (`ilpy`, `pyscipopt`, `rustworkx`,
+`numba`, `llvmlite`, `geff`, `zarr 3.2.1`, `sqlalchemy`). This file has said since the
+beginning "**tracksdata is not on PyPI, so keep the inference path free of
+tracksdata**", and on 2026-09-08 four module-scope imports were removed to satisfy it.
+Not on PyPI is true; unbundleable is not. **The cost of that belief was the ILP solver**,
+which we therefore never enabled and which is publicly worth +0.04. The tracksdata-free
+path is still a fine fallback — it runs with torch absent entirely — but it is a choice,
+not a requirement, and `kaggle/README.md` should stop presenting it as one.
+
+**2. Their checkpoint selection uses the metric this project proved worthless.**
+`history.csv`'s `validation_score` is **exactly `validation_acc × validation_recall`**,
+verified to six decimals on every epoch sampled. `validation_acc` sits at 0.9999 for all
+400 epochs — saturated, carrying no information — so their selection is effectively
+edge-matrix recall, and `best_epoch 381 / best_score 0.978` was chosen by it. We replaced
+that number with the real competition scorer on 2026-09-07 (see Known defects). **So we
+hold a real advantage in checkpoint selection over the pack the whole field forks** —
+worth using once we have a run long enough for selection to matter.
+
+**3. Their history REFUTES the anti-correlation, at real scale.** Over 400 epochs
+detection loss falls monotonically and their validation metric rises monotonically:
+
+| epoch | 1 | 21 | 51 | 101 | 151 | 251 | 351 | 381 | 400 |
+|---|---|---|---|---|---|---|---|---|---|
+| det loss | 0.0198 | 0.0083 | 0.0058 | 0.0043 | 0.0036 | 0.0028 | 0.0025 | 0.0024 | 0.0025 |
+| val score | 0.900 | 0.933 | 0.939 | 0.958 | 0.967 | 0.966 | 0.971 | **0.978** | 0.975 |
+
+**They move together.** No anti-correlation, no best-epoch-0. And the arithmetic that
+settles our own runs: all-train is ~18,933 windows, so at batch 8 **one of their epochs
+is ~2,367 iterations**. Our entire 12 x 200 = **2,400-iteration run is their epoch 1** —
+where their own curve already reads 0.900 and climbs for 380 more epochs. Every
+detector experiment in this file compared noise inside their first epoch.
+
+**4. The budget, and where it flattens.** `history.csv` records **137.8 GPU-hours** for
+400 epochs (~0.34 h/epoch). The curve is steep early and flat late: 0.939 by epoch 51,
+0.958 by 101, **0.967 by 151**, then only +0.011 over the next 230 epochs. So ~150
+epochs ≈ **52 GPU-hours** buys most of it — two days on one A6000, which we have.
+
+**Their inference configuration**, from `PredictConfig` in the pack (ours differs on
+every line that matters):
+
+| knob | theirs | ours |
+|---|---|---|
+| `det_threshold` | **0.5** | 0.99 |
+| `det_tta` | **True** (flip-xy) | off |
+| `pool_kernel_um` | **3.0** | 4.0 sep |
+| `edge_activation` | softmax | n/a (geometric linker) |
+| `use_ilp` | available, weights `edge -1.0 / appearance 0.1 / disappearance 0.1 / division 1.0` | never enabled |
+
+On top of the pack their notebooks add 8-way TTA, a dual-seed logit blend, one- and
+two-frame gap closing, a min-track-length filter of 6, line-fit smoothing and the
+`DeepCenterUNet3D` centre prior (`pilkwang/biohub-deepcenter-unet3d-center-prior-v1`,
+5,390 downloads) as a node-rescue veto.
+
+**2026-09-14 — WHY THE FIELD IS AT 0.90 AND WE ARE AT 0.588. Answered, and neither half
+is what this file has been chasing.** The public support pack everyone forks
+(`pilkwang/biohub-temporal-unet3d-seed314159-v1`, **5,995 downloads**) ships its
+training manifest. Compared to ours:
+
+| | public pack | ours |
+|---|---|---|
+| `unet_layers` / `unet_out_channels` | `[32,64,128]` / 32 | **identical** |
+| checkpoint bytes | 8,363,159 | 8,357,783 — **the same model** |
+| learning rate | **1e-4** | 1e-4 (found independently, E4) |
+| `det_neg_weight` | **0.01** | 0.1 — *we called 0.01 a defect* |
+| `det_loss_weight` | 1.0 | 1.0 |
+| `epochs_target` | **500** | 12 |
+| `max_iters` | **None** — full passes | **200** |
+| train datasets | **199 (all-train)** | 128 (one LOEO fold) |
+
+**Same architecture, same learning rate, and the `det_neg_weight` this file lists under
+"Known defects" is the value they actually train with.** The difference is the training
+budget: 500 epochs of full passes is roughly **784,000 iterations against our 2,400 —
+about 326x.**
+
+**So the nine experiments in this file measured nothing.** Ignore radius, ordering
+hinge, `det_loss_weight` 1e0/1e1/1e2, lr 1e-4/3e-4/1e-3, 12 vs 30 epochs — every one
+ran at ~0.3 % of a real training budget, and the CV differences between epochs of a
+2,400-iteration run are early-training noise. **The "loss/metric anti-correlation" this
+project treated as its central mystery for a week is most likely that noise**, not a
+loss pathology. E5 supports this: within-embryo (`6bba`→`6bba`) the CV is *flat* across
+12 epochs, neither improving nor degrading — the signature of a run that has not started
+converging. Do not cite the anti-correlation as a fact again until it survives a real
+run.
+
+**But the training budget is only the smaller half of the gap.** Scoring the public
+500-epoch weights through *our* pipeline, fold 1, 10 videos:
+
+| detector in our pipeline | score | edge J | node recall |
+|---|---|---|---|
+| our E4_lr1e4 (2,400 iters, held out) | 0.6348 | 0.6099 | 0.7632 |
+| **public 500-epoch pack** | **0.6955** | 0.6786 | **0.9034** |
+| public DoG notebook, their pipeline | ~0.73 | — | — |
+| **field median, their pipeline** | **0.902** | — | — |
+
+*Contamination caveat, and it matters*: the pack trained on **all 199 samples**, so it
+has seen these videos. 0.6955 is an upper bound, not an honest CV, and the true
+held-out advantage is smaller than +0.06. Only the leaderboard can settle it.
+
+**The decomposition that follows is the important part.** Their detector reaches node
+recall 0.90 and *our* pipeline converts that into 0.6955, while *their* pipeline
+converts the same detector into ~0.94. So roughly:
+
+- **detector training budget: worth ~0.06** (node recall 0.76 → 0.90)
+- **everything after detection: worth ~0.24**
+
+and we deleted or never enabled all of it — the `SimpleNodeTransformer` edge head, the
+**ILP solver** (publicly measured at +0.04), 8-way flip/rot TTA, **one- and two-frame gap
+closing by interpolated node insertion**, a min-track-length filter of 6, and line-fit
+trajectory smoothing.
+
+**This reverses the priority this file has held since 2026-09-11.** "Detection owns 86 %
+of the loss" was measured correctly — 86.3 % of edge FN is a missing endpoint — but the
+conclusion drawn from it was wrong. **Gap closing attacks missing endpoints directly**,
+by inserting an interpolated node where a track breaks, without needing a better
+detector at all. That is the single largest unexploited lever in the project and this
+file has had it filed under "Not implemented at all" since the beginning.
+
+**Revised order:**
+
+1. **Post-detection stack first** — gap closing, min-track-length, ILP, TTA. Worth
+   ~0.24 by the arithmetic above, needs no training, and `pyscipopt`+`ilpy` are
+   confirmed bundleable (cp312 manylinux, 15 MB) so the ILP can ship offline even though
+   tracksdata cannot.
+2. **Use the public pretrained weights** — explicitly legal (pre-trained models are
+   allowed) and worth ~0.06 immediately — while a real 500-epoch run trains.
+3. **A real training run.** `E6_long_fullpass` (24 epochs, full passes, their recipe) is
+   running; even that is only 5 % of their budget.
+4. Everything this file previously called a detector priority is on hold until (1)–(3)
+   land. Knob sweeps at 2,400 iterations are not experiments.
+
+**2026-09-12 — The division term is NOT worth 0.1 to us, and a learned fork ranker is
+premature.** The plan treated divisions as the largest unclaimed lever, on the
+reasoning that opening the gate finds more real forks but drowns them in false ones,
+so the fix is a better *ranker*. Measured on 14 fold-0 samples that contain divisions,
+taking every fork the linker's second pass proposes and labelling it against GT:
+
+| | |
+|---|---|
+| real forks proposed | **3** |
+| false forks proposed | **1,667** |
+| ratio | **1 : 556** |
+
+| feature | real p25/p50/p75 | false p25/p50/p75 | separable |
+|---|---|---|---|
+| sister separation µm | 7.27 / 8.01 / 8.66 | 6.49 / 7.46 / 8.62 | **overlaps** |
+| symmetry | 0.38 / 0.39 / 0.55 | 0.44 / 0.68 / 0.86 | **overlaps** |
+| far-daughter µm | 5.19 / 5.56 / 5.67 | 4.90 / 5.31 / 5.79 | **overlaps** |
+| near-daughter µm | 2.00 / 2.27 / 3.10 | 2.27 / 3.52 / 4.43 | **overlaps** |
+
+Two conclusions, and the second matters more. A ranker over these geometric features
+cannot work — every distribution overlaps at the quartiles, and the class balance is
+1:556. And **even a perfect ranker is capped by what is proposed**: three real
+divisions across fourteen samples means the division Jaccard ceiling on our current
+detections is around **0.015 of score, not 0.100**. The daughters mostly are not
+detected, so the fork is never a candidate.
+
+So divisions are not an independent lever. They are downstream of detection like
+everything else, and they should be revisited only after node recall moves. Caveat
+worth stating: n=3 real forks is a small sample for the feature comparison, and only
+geometry was tested — appearance features (intensity drop, nuclear shape) are
+untested. But the 1:556 base rate and the proposal ceiling do not depend on that.
+
+**2026-09-12 — Fold choice was distorting every recent comparison, and the numbers are
+far apart.** Detector debugging moved to fold 1 because it trains on the label-rich
+embryo (median 8 annotated nodes per frame against fold 0's 2). That is right for
+*training* and wrong for *scoring*: fold 1 tests on `44b6`, which is the crowded,
+0.77 %-annotated embryo carrying only **15 % of the metric weight**. Through the
+submission path:
+
+| fold | tests on | share of metric weight | DoG score | node recall |
+|---|---|---|---|---|
+| 1 | `44b6` (71 samples) | 15 % | 0.5348 | 0.6024 |
+| 0 | `6bba` (128 samples) | **85 %** | **0.6856** | 0.7850 |
+
+Weighted, the shipped classical config is worth roughly **0.663**, not the 0.53 the
+fold-1 runs suggested. **Train on fold 1, report on both, and never quote a fold-1
+number as the result.**
+
+**The organizers' starter detector does not transfer, measured not assumed.** Their
+60-line notebook thresholds a smoothed volume at the 90th percentile and takes
+connected-component centroids rather than top-N DoG maxima. On 10 fold-1 videos it
+scores **0.1440** at pct 90 and **0.2952** at its best setting (pct 99, gate 8),
+against our DoG's 0.5348 — because on a crowded embryo a percentile threshold merges
+adjacent nuclei into single blobs, yielding 54–77 nodes/frame where ~260–330 are
+needed, and node recall caps at 0.38. Whatever reaches ~0.73 publicly, it is not this.
+
+**2026-09-12 — The learned detector IS real, and everything it learns happens in the
+first 200 iterations.** Seven runs now peak at epoch 0, which raised the obvious
+question nobody had asked: does training do anything at all? Scored through the
+**submission path** on the same 10 fold-1 videos:
+
+| detector | score | edge J | node recall |
+|---|---|---|---|
+| randomly initialised U-Net | 0.3523 | 0.3381 | 0.5015 |
+| **trained U-Net (epoch 0)** | **0.6077** | 0.5864 | **0.7439** |
+| classical DoG | 0.5348 | 0.5100 | 0.6024 |
+
+**Training is worth +0.255 over random init, and the U-Net beats DoG by +0.073 on
+matched samples.** So the learned path is not an illusion and should not be abandoned
+— but 200 iterations of batch 16 captures all of it, and every epoch after makes it
+worse. Note also that DoG at 0.5348 is well below the ~0.73 a public DoG notebook
+reaches, so our classical arm is weak too.
+
+**Two explanations tested and eliminated.** Closing the loss's null space (ignore
+radius, ordering hinge) made it worse, monotonically. Rebalancing the trunk's
+objectives did essentially nothing: `det_loss_weight` 1e0 / 1e1 / 1e2 gave best CV
+0.6541 / 0.6591 / 0.6662, **all at epoch 0**. So the detection head being a
+33-parameter probe on a trunk shared with the edge task is not the binding problem
+either.
+
+**What that leaves, and it is embarrassing in a useful way:** `train()` builds
+`AdamW(model.parameters(), lr=lr)` with **no scheduler, no warmup and no weight decay
+tuning** (`train_unet_transformer.py:1391`), and runs a constant 1e-3 for the whole
+run. A model that reaches a good region in 200 steps and then degrades under a
+constant, fairly high LR is the textbook symptom. That is now the live hypothesis and
+it is being tested at 1e-4 and 3e-4.
+
+**2026-09-12 — E1: the loss/metric divergence is REAL, not a bent ruler.** This was the
+project's leading excuse for not fixing the loss, and it is now refuted. The
+`reports/diagnosis_loss_metric.md` H1 hypothesis said the "det loss falls 4.4x while CV
+falls" observation might be an artefact of scoring at gate 12 µm with the division pass
+on — the one linker configuration where a *better* detector scores *worse*. Re-run on
+**fold 1** (the label-rich embryo, 4x the positives), `det_neg_weight 1e-1`, selection
+at the tuned gate with divisions on:
+
+| epoch | 0 | 1 | 3 | 5 | 7 | 9 | 11 |
+|---|---|---|---|---|---|---|---|
+| det loss | 0.0685 | 0.0451 | 0.0371 | 0.0338 | 0.0328 | 0.0310 | **0.0295** |
+| CV | **0.6541** | 0.6465 | 0.6452 | 0.6269 | 0.6427 | 0.6087 | 0.6360 |
+
+**Detection loss falls 2.3x, CV is best at epoch 0, and the ruler is not the
+explanation.** Three folds, three configurations, same shape. Training this loss longer
+makes the detector worse, and no amount of gate tuning changes that.
+
+**A methodology error worth recording, because it cost a run.** The paired arm changed
+*two* variables at once — ignore radius 7.0→8.45 **and** ordering hinge 0→1.0 — so it
+could attribute nothing. It also revealed a scale problem: the hinge contributed ~1.10
+against a BCE of ~0.03, a **40x imbalance**, so that arm was almost purely the hinge.
+Relaunched as a proper 2x2 at `ordering_weight 0.05`. One variable at a time, and check
+the *magnitudes* of a summed loss's terms before trusting the sum.
+
+Worth watching in the rerun: the hinge arm's CV was **rising** (0.475 → 0.562 over six
+epochs) while the control's fell. Lower absolute level, opposite direction, and it had
+not converged when another tenant's process filled the card and OOM'd it. That is the
+first training dynamic in this project that improves with epochs.
+
+**2026-09-12 — Phase 0 landed, and three measurements redirect the remaining work.**
+
+**The linker is not the problem, and now we know by how much.** For every GT edge,
+did both endpoints match a prediction, and did we then predict the edge?
+**P(correct link | both matched) = 0.9578** over 10 fold-0 samples — above the
+[0.816, 0.916] range aggregate arithmetic allowed. The edge-FN split is
+**86.3 % missing endpoint / 13.7 % missing link**. Corroborated independently: feeding
+*ground-truth* node coordinates to the unchanged linker scores edge Jaccard **0.9847**
+and a total of **1.0738**. So ILP is worth ~+0.03 (recovering part of that 13.7 %),
+and **detection owns roughly six times more**. Stop proposing learned linkers.
+
+**The detection loss has an exact null space containing what the metric reads.** Not
+"the map is saturated" — that is a sigmoid artifact; in *logit* space the map spans
+−8.4 to +42 and ranks fine, which is why both scorers peak logits. The real mechanism:
+`_top_peaks` keeps a voxel iff it wins a ±3-voxel cube whose **corner is 8.44 µm**
+away, while `ignore_mask` zeroes every bright voxel beyond **7.0 µm** of an annotated
+centroid. 7.0 < 8.44, so **73–79 % of annotated centroids have a zero-gradient voxel
+inside their own deciding neighbourhood**; adding ±5 to logits only in the ignored
+region changes the loss by a **bit-identical zero** while moving node recall
+1.000 → 0.250. `(1-target)**4` silences the rest of the cube, and there is **no
+ordering term anywhere**. Consequence: the map possesses only **332–517 maxima per
+frame** against budgets up to 698. `reports/diagnosis_loss_metric.md` established this
+on 2026-09-07 and was committed and then ignored for four days while the project tuned
+scalars. **Read it before touching the detector.**
+
+**What the 0.94 cluster runs is our own architecture.** The dominant public stack is
+the organizers' baseline we forked — `TemporalUNet3D` → `SimpleNodeTransformer` →
+**`tracksdata` ILP solver** — and we kept the U-Net, deleted the transformer linker and
+never enabled the ILP. Public measurements: greedy → ILP is **+0.04**; every notebook
+above 0.942 uses 8–9-way flip/rot TTA; the top forks blend two independently-seeded
+detectors at α≈0.5; then gap closing by interpolated node insertion, a min-track-length
+filter of 6, and line-fit trajectory smoothing.
+
+**The "metric hack" is dead and was never the node count.** Notebooks titled "metric
+hack" appended a synthetic hub node at `t=−1000, (−10000,−10000,−10000)` merging every
+track into one weakly-connected component plus fake forks, exploiting the old rule that
+a division TP needed only shared-component reachability. Patched 2026-07-17
+(`aa65e90`); `metrics.md` now says "Merely sharing a weakly connected component is not
+sufficient." **Our `division_metrics.py` contains the post-patch
+`_is_strongly_connected_division`, so our CV measures the current metric.** The
+0.946/0.947 clusters (231 + 209 teams) are defanged forks of those notebooks. Also
+note: the widely-forked *offline* metric still uses the pre-patch rule and reports
+division Jaccard **double** — score locally with ours, never theirs.
+
+**There is no node-count exploit.** `m = 1.1 − 0.1·N_pred/N_true` caps at +10 %, and J
+collapses faster than m rises: at 0.4× budget you gain 6 % of multiplier and lose 35 %
+of J. Measured optimum is 0.9–1.0×, where we already sit.
+
+Fixed this session: divisions re-enabled at the swept 6.0 µm gate; `predict_n_true`
+moved to `detectors.py` so CV and submission cannot diverge again, with
+`score_video(predicted_budget=True)` now the default (**−0.0112** against the oracle on
+24 samples — that difference was invisible before and is part of the CV/LB gap);
+isolated nodes pruned from the submission (3.1–6.9 % of what we shipped). 291 tests.
+
+**2026-09-11 — FIRST LEADERBOARD SCORE: 0.588, AND IT INVALIDATES THE PROJECT'S WHOLE
+SENSE OF SCALE.** Submission `56173960` (density switch, model A, gate 8 µm) scored
+**0.588 public** against a CV of 0.7366. The CV/LB gap is real and worth chasing — but
+it is the *second* most important thing in this result. The first is the field:
+
+| | score |
+|---|---|
+| leaderboard max | **0.970** |
+| 7th place (prize cutoff) | **0.958** |
+| **median of 3,402 teams** | **0.902** |
+| teams ≥ 0.90 | **1,812** |
+| teams ≥ 0.70 | **2,797** |
+| **us** | **0.588 — rank ~2932 / 3402** |
+
+**Half the field is above 0.90 and we are in the bottom 14 %.** Every internal
+comparison in this file was made against our own previous numbers, so "the biggest
+score gain in the project, +0.058" was measured on a scale where the gap to a *median*
+competitor is **+0.31**. Tuning four scalars bought 0.068; we need roughly five times
+that just to reach the middle of the board. **Stop treating knob sweeps as the main
+line of work.**
+
+**What the field's scores imply about the method.** A score of 0.90 is essentially a
+weighted adjusted edge Jaccard of 0.90, which requires near-complete detection — our
+node recall is 0.86–0.89 and our edge Jaccard 0.69. Linking is not the gap (geometry
+already solves it, and the margin analysis holds). **The detector is the entire gap**,
+and this file already documents it as broken on four independent counts: the map is
+saturated (median sigmoid 1.0000 at GT centroids), the detection loss is
+*anti-correlated* with the score, the best epoch is 0, and `det_neg_weight` runs 10×
+weaker than designed. We knew the detector was broken and spent the effort tuning
+around it. The leaderboard says that was the wrong call.
+
+**Revised priorities, replacing step 5's ordering:**
+
+1. **Find out what a 0.90 actually takes before building anything.** The public
+   notebooks and discussion are visible now and are the cheapest information in the
+   project. 1,812 teams are doing something we are not.
+2. **Score the unmodified upstream baseline.** We forked `royerlab/kaggle-cell-tracking-competition`
+   and replaced its learned linker with a geometric one after finding it emitted zero
+   edges. If the baseline as shipped scores ~0.9, we broke something rather than
+   improved it, and that is a one-run question.
+3. **Fix detection properly, not around the edges** — `det_neg_weight`,
+   `bright_threshold`, and the loss/metric divergence, in that order. Or replace it:
+   **Spotiflow trains natively from point labels and is explicitly legal here.** This
+   file listed it as a fallback; at 0.588 it is a primary candidate.
+4. The node-budget and switch work stands, but it is worth ~0.06 on a 0.38 gap.
+
+**Do not read the CV/LB gap as the main problem.** Even a perfect CV→LB transfer would
+have put us at 0.7366, which is still rank ~2800. The harness is not what is wrong.
+
+**2026-09-11 — THE CHAIN IS CLOSED: first real submission made, from the server, by
+CLI.** `kaggle competitions submit -k <notebook> -v <version>`; no browser and no MCP
+server needed. Submission is by **notebook**, and `-f submission.csv` names *the
+kernel's output file*, not a file to upload — the local CSV is never sent, and Kaggle
+reruns the notebook against the hidden test set. Full procedure in `kaggle/README.md`
+→ *Submitting*.
+
+**It took four kernel runs to get there, and every failure was an environment
+assumption this file had recorded as fact.** Worth reading as a group, because the
+shape repeats: each was invisible locally, each produced a plausible-looking error
+somewhere other than its cause, and a one-minute throwaway probe kernel would have
+caught all four at once.
+
+| run | died on | actual cause |
+|---|---|---|
+| 1 | `StopIteration` | competition mounts at `competitions/<slug>/test`, not `<slug>/test` |
+| 2 | missing `requirements-offline.txt` | pushed while the dataset **version was still processing** — `datasets status` says `ready` about the *dataset*, not the pending version |
+| 3 | same error again | same race; the fix is to diff `datasets files` sizes against local, not to poll status |
+| 4 | — | **completed, validated, submitted** |
+
+Latent behind run 1, and never reached: the wheels were built `--python-version 3.11`
+against an image that is **3.12.13**, so five of twelve carried `cp311` tags and
+`pip --no-index` would have found no candidate one line later.
+
+**The runtime worry was unfounded, by 24x.** Measured on the real T4 kernel: DoG 3.8–4.0
+s/video, U-Net 13.3 s/video, **8.9 s/video mixed under the density switch → 0.49 h for a
+train-sized 199-video test set**, against the 12 h cap. The 16.5 h figure was a CPU
+extrapolation off this box and does not survive contact with a GPU notebook. So the cap
+is *not* a design constraint: flip TTA, a larger model, or running both detectors on
+every sample are all affordable now, and that reopens options step 5 had closed.
+
+**A new and genuinely awkward finding: node count is not reproducible across GPUs.**
+Same checkpoint, same config, same input — `44b6_0b24845f` gave **50,561** nodes on this
+box's A6000 and **34,837** on Kaggle's T4, 31 % short of a budget it filled locally. Not
+precision (`load_detector` is fp32 on both). It is the saturated map again:
+`_top_peaks` marks `field >= pooled`, so on a plateau every voxel tied with the window
+maximum counts as a peak, and *how many compare exactly equal* depends on the cuDNN
+algorithm, which differs by card. Three consequences, and the third is the one that
+costs time if forgotten: the node-budget calibration in metric fact 4 was measured on
+hardware the submission does not run on; it is a second independent argument for fixing
+saturation (`det_neg_weight`, `bright_threshold`) rather than tuning around it; and
+**any CV-vs-LB gap on this submission is partly this**, so rule it out before hunting a
+scoring bug.
 
 ## Plan
 

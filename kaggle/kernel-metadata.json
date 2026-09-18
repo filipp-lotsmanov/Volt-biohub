@@ -1,5 +1,5 @@
 {
-  "id": "USERNAME/volt-biohub-submission",
+  "id": "oleksiikrasnoshtanov/volt-biohub-submission",
   "title": "volt-biohub-submission",
   "code_file": "notebook.py",
   "language": "python",
@@ -9,12 +9,13 @@
   "enable_tpu": false,
   "enable_internet": false,
   "dataset_sources": [
-    "USERNAME/volt-wheels",
-    "USERNAME/volt-code",
-    "USERNAME/volt-weights"
+    "oleksiikrasnoshtanov/volt-wheels",
+    "oleksiikrasnoshtanov/volt-code",
+    "oleksiikrasnoshtanov/volt-weights"
   ],
   "competition_sources": [
     "biohub-cell-tracking-during-development"
   ],
-  "kernel_sources": []
+  "kernel_sources": [],
+  "machine_shape": "NvidiaTeslaT4"
 }

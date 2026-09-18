@@ -92,9 +92,17 @@ the datasets, in the commands *and* in `kernel-metadata.json`.
 ### 1. `volt-wheels`
 
 `requirements-offline.txt` explains why each package is or is not in the list.
-`--platform manylinux2014_x86_64` and `--python-version 3.11` target the Kaggle
+`--platform manylinux2014_x86_64` and `--python-version 3.12` target the Kaggle
 image, not this box, so the wheels are correct even though they are downloaded
 here.
+
+**3.12, not 3.11 — measured on the image 2026-09-11.** `.python-version` in this
+repo pins 3.11 and used to claim it matched Kaggle; the image is now
+**3.12.13**. Wheels built for 3.11 carry `cp311` ABI tags, and `pip install
+--no-index` then finds no candidate and fails the whole run at minute one. Our
+own source is 3.11/3.12-clean either way, so the repo pin is unaffected — but
+the `--python-version` on this command is load-bearing and must track the image.
+Re-probe it before each competition (see *Probing the image*).
 
 `--no-deps` is not optional: the list in `requirements-offline.txt` is already
 complete, and without the flag pip resolves zarr's `numpy>=...` and drops a numpy
@@ -118,6 +126,10 @@ uv run --with pip python -m pip download \
 # wheel means --no-deps was dropped.
 ls /tmp/volt-wheels | grep -v '\.whl$' && echo "NON-WHEEL PRESENT — fix before uploading"
 ls /tmp/volt-wheels | grep -i '^numpy' && echo "NUMPY PRESENT — remove it, see above"
+# Wrong-ABI check. cp311/cp310 wheels will not install on the image's 3.12.
+# `cp310-abi3` is NOT a hit: abi3 is the stable ABI and is forward-compatible,
+# which is why polars_runtime_32 legitimately ships as cp310-abi3.
+ls /tmp/volt-wheels | grep -E 'cp3(9|10|11)-cp3' && echo "WRONG ABI — rebuild with the right --python-version"
 
 cat > /tmp/volt-wheels/dataset-metadata.json <<'EOF'
 {"title": "volt-wheels", "id": "USERNAME/volt-wheels", "licenses": [{"name": "other"}]}
@@ -163,10 +175,183 @@ EOF
 uv run kaggle datasets create -p /tmp/volt-weights -r zip
 ```
 
-`notebook.py` expects `/kaggle/input/volt-weights/split_0/edge_predictor_best.pth`,
-so keep the `split_0/` level.
+**What Kaggle's unzip actually does — measured on the real upload 2026-09-11,
+and it is not consistent.** `-r zip` sends each top-level subdirectory as
+`<name>.zip`. Kaggle then extracts them, and whether the directory level
+survives depends on how many there were:
+
+| dataset | uploaded | mounted as |
+|---|---|---|
+| `volt-code` | `kaggle.zip`, `src.zip` | `kaggle/...`, `src/...` — level **kept** |
+| `volt-weights` | `split_0.zip` | `config.json`, `edge_predictor_best.pth` at the **root** — level **dropped** |
+
+So the `split_0/` this file used to tell you to keep does **not** exist on the
+mount, and `notebook.py`'s old hardcoded path resolved to nothing. That failure
+is silent by construction: `HAVE_WEIGHTS` goes False, the DoG fallback engages,
+the run completes and validates, and the submission is quietly worth 0.6753
+instead of 0.7366. `notebook.py` now calls `find_weights()`, which searches the
+mount for `edge_predictor_best.pth` beside a `config.json`, so either layout
+works and a future re-upload cannot reintroduce this.
+
+**Verify the mount rather than trusting the upload**, whatever you change:
+
+```bash
+uv run kaggle datasets files oleksiikrasnoshtanov/volt-weights
+```
 
 ---
+
+---
+
+---
+
+## How code competitions actually work
+
+Researched 2026-09-11 against Kaggle's own docs and the community write-ups
+linked at the bottom, because we had been reasoning from the competition page
+alone and three of our assumptions were wrong.
+
+**The rerun is the submission.** You submit a *notebook version*, not a file.
+Kaggle then privately re-executes that notebook end to end with the competition
+dataset **replaced by a hidden version**, validates the execution against the
+competition's constraints, extracts the submission file from its output
+directory, and scores that. Consequences we had not internalised:
+
+* **The local `submission.csv` in the repo root is not submittable and never
+  was.** `kaggle competitions submit -f submission.csv` names *the file the
+  kernel produces*, not a file to upload. The flag looks identical to the
+  regular-competition upload flag and does something completely different.
+* **The run you watch after `kernels push` is not the graded run.** It executes
+  against the four visible placeholder samples. Its only jobs are to prove the
+  code runs and to give you a per-video timing to extrapolate from.
+* **The hidden set can be larger, smaller or otherwise different.** Ours is
+  "approximately the size of the training set" — 199 videos — against 4 visible.
+  So timing must always be extrapolated, never read off the visible run.
+
+**Errored submissions still count against the daily limit.** This is deliberate:
+otherwise a failing submission would be a free probe of the hidden data. With
+five per day, a blind guess costs a fifth of a day's budget, which is why the
+probe-kernel habit below is worth its minute. Ours cost three of them before
+this was understood.
+
+**The four failure modes, and what each actually means:**
+
+| shown | means |
+|---|---|
+| Notebook Threw Exception | your code raised. The log is visible; read it. |
+| Submission CSV Not Found | the rerun finished but no file was at the expected path — usually an upstream error that halted execution before the write |
+| Notebook Timeout | exceeded the competition's runtime limit *on the hidden set*, which is the one you never measured directly |
+| Submission Scoring Error | the file exists but is malformed: wrong columns, wrong row count, empty values, bad dtypes, invalid values |
+
+The last one is the argument for `validate_submission()` running before every
+save, which it now does — a scoring error is indistinguishable from a modelling
+failure on the leaderboard, and costs a slot either way.
+
+**You cannot see the rerun.** Its log is not exposed. So everything you want to
+know about the environment has to be established by a *visible* run — hence
+*Probing the image* above. Establish it once, cheaply, and write it down.
+
+**Shipping code: three options, and why we use the one we do.**
+
+| method | good for | why not here |
+|---|---|---|
+| Utility Script (attach a kernel as a module) | one file of helpers | ours is a package, `src/volt_biohub/...`, not a single module |
+| **Dataset of `.py` files + `sys.path`** | **a whole repo at a known commit** | **what we do** |
+| import another notebook's `/kaggle/working` | chaining train → infer | adds a second kernel to keep in sync for no gain |
+
+The Dataset route also gives the property we most want: the version message
+carries the git SHA, so a leaderboard entry traces back to a commit.
+
+**Why a `.py` script kernel rather than a `.ipynb`.** `kaggle kernels push`
+accepts a plain `.py` when `kernel_type` is `script`, and it produces the same
+graded `submission.csv`. A notebook is JSON with embedded outputs, so it diffs
+unreadably and cannot be reviewed in a PR. Since this file is glue by design,
+the notebook format would add only noise. It still runs top to bottom if pasted
+into the Kaggle editor.
+
+**Checklist before spending a submission**
+
+1. `uv run python kaggle/check_offline.py` — imports and runs with tracksdata hidden.
+2. `kaggle datasets files <each>` — sizes match local, so you know the *version*
+   you think is mounted is the one that is.
+3. `kaggle kernels push` → `status` → `output`, and **read the log**: the
+   detector actually chosen, the test dir actually found, the per-video timing.
+4. Extrapolate that timing to the hidden set's size and compare to the cap.
+5. Only then `competitions submit -k … -v …`.
+
+Sources: [Kaggle — Code Competitions, Errors & Debugging Tips](https://www.kaggle.com/code-competition-debugging),
+[Kaggle — Competitions Documentation](https://www.kaggle.com/docs/competitions),
+[Kaggle — Notebooks Documentation](https://www.kaggle.com/docs/notebooks),
+[Guide on Submitting Offline Kernels to a Kaggle Competition](https://medium.com/data-science/submitting-model-predictions-to-kaggle-competition-ccb64b17132e),
+[Organizing Code, Experiments, and Research for Kaggle Competitions](https://towardsdatascience.com/organizing-code-experiments-and-research-for-kaggle-competitions/).
+
+---
+
+## Probing the image
+
+**Do this before trusting any run, and re-do it when Kaggle updates the image.**
+Three of the assumptions this file used to state as fact were wrong, and each
+would have cost a full submission cycle. A throwaway script kernel with the
+competition attached and no datasets settles all of them in about a minute:
+
+```python
+import sys
+from pathlib import Path
+print("PYTHON", sys.version)
+for p in sorted(Path("/kaggle/input").iterdir()):
+    print("== MOUNT", p.name)
+    for q in sorted(p.rglob("*")):
+        if len(q.relative_to(p).parts) <= 2:
+            print("   ", q.relative_to(p))
+import torch
+print("CUDA", torch.cuda.is_available(), torch.cuda.get_device_name(0))
+```
+
+Measured 2026-09-11:
+
+| question | assumed | actual |
+|---|---|---|
+| Python | 3.11 | **3.12.13** |
+| competition mount | `/kaggle/input/<slug>/test` | **`/kaggle/input/competitions/<slug>/test`** |
+| GPU under `enable_gpu` | "a GPU" | **Tesla P100, sm_60** |
+| preinstalled | — | torch 2.10.0+cu128, numpy 2.0.2, scipy 1.16.3, polars 1.35.2; **no zarr** |
+
+**The GPU one is the dangerous one.** `enable_gpu: true` hands out a P100 at
+compute capability **sm_60**, and the image's torch 2.10.0+cu128 ships cubins
+for sm_70 upward only. `torch.cuda.is_available()` returns **True** on that
+machine and then every convolution raises "no kernel image is available for
+execution on the device" — an availability check is not merely insufficient
+here, it is confidently wrong. Two defences, both needed:
+
+* `"machine_shape": "NvidiaTeslaT4"` in `kernel-metadata.json` asks for sm_75,
+  which this torch supports. Valid values are `NvidiaTeslaT4`,
+  `NvidiaTeslaP100`, `Tpu1VmV38` (`kagglesdk` `machine_shape`); the CLI also
+  takes `--accelerator`. Kaggle substitutes hardware when a shape is short, so
+  this is a request, not a guarantee.
+* `notebook.py::gpu_is_usable()` runs one real `conv3d` and falls back to DoG if
+  it raises. Execute, never infer — the same rule that settled `sm_89` on the
+  training box.
+
+---
+
+## Wait for `ready` before pushing the kernel
+
+`kaggle datasets version` returns as soon as the **upload** finishes, but Kaggle
+then processes the version asynchronously — and a kernel pushed into that window
+mounts the *previous* content. That cost a run: the kernel died on
+`No such file or directory: /kaggle/input/volt-code/kaggle/requirements-offline.txt`
+while a probe minutes later showed the file present and the tree exactly right.
+Nothing in the failure points at a race; it reads as a wrong path, which is what
+makes it worth a line here.
+
+```bash
+for d in volt-wheels volt-code volt-weights; do
+  until [ "$(uv run kaggle datasets status oleksiikrasnoshtanov/$d)" = "ready" ]; do
+    sleep 10
+  done
+done
+uv run kaggle kernels push -p kaggle
+```
 
 ## Push and run the kernel
 
@@ -266,7 +451,16 @@ Measured on the Linux box, 100-frame videos, extrapolated to a hidden test set
 |---|---|---|---|
 | DoG | CPU, 4 threads | 5.9 s | **0.32 h** |
 | U-Net | CPU, 8 threads | ~299 s (3.0 s/frame) | **16.5 h — over the cap** |
-| U-Net | T4 / P100 | not yet measured | **must be measured** |
+| U-Net | **Kaggle T4** | **13.3 s** | **0.74 h** |
+| **switch, mixed** | **Kaggle T4** | **8.9 s** | **0.49 h** |
+
+Measured on the real kernel 2026-09-11, not extrapolated from this box: the
+four-sample visible test set ran DoG at 3.8–4.0 s and the U-Net at 13.3 s per
+video, for 8.9 s/video mixed. **The cap is not the constraint it was feared to
+be — 0.49 h against 12 h.** That is 24x headroom, which is worth knowing in the
+other direction: the budget is nowhere near binding, so a *more* expensive
+detector, flip TTA, or a second model are all affordable. The 12 h worry came
+from CPU numbers on this box and does not survive contact with a GPU kernel.
 
 Two conclusions:
 
@@ -281,8 +475,27 @@ Two conclusions:
   half-built weights dataset degrades to a scoring submission rather than to no
   submission.
 
-Still open: the U-Net's per-frame cost on an actual T4/P100. Run this on the box
-once a GPU frees up, and record the number here —
+**Open, and newly discovered: node count is not reproducible across GPUs.** The
+same checkpoint, config and input produced **50,561** nodes for
+`44b6_0b24845f` on this box's A6000 and **34,837** on Kaggle's T4 — 31 % short
+of a budget it filled locally. Not precision: `load_detector` is fp32 on both
+and never calls `.half()`. The mechanism is the saturated map's *plateaus*.
+`detectors._top_peaks` marks `field >= pooled`, so on a plateau where many
+voxels are exactly equal to the window maximum, every one of them is a "peak" —
+and how many compare exactly equal depends on the cuDNN convolution algorithm,
+which differs between an A6000 and a T4. Consequences:
+
+* **Our CV node-count calibration was measured on hardware the submission does
+  not run on.** The node-count penalty is a function of `N_pred/N_true`, so a
+  31 % shortfall moves the multiplier — favourably here, since under-predicting
+  multiplies J *above* 1.0, but it costs edges outright at two per missed node.
+* It is a second, independent argument for fixing the saturation itself
+  (`det_neg_weight`, `bright_threshold`) rather than tuning around it: a
+  detector whose output has real dynamic range would not have ties to break.
+* Until then, treat any CV-vs-LB gap on this submission as *partly* this, and
+  do not spend a day hunting a scoring bug before ruling it out.
+
+Also still useful to record here —
 
 ```bash
 CUDA_VISIBLE_DEVICES=$(volt_gpu) uv run python kaggle/submit.py \
@@ -313,6 +526,47 @@ It is a weak *per-sample* predictor — on the four local placeholders it lands
 between 0.50× and 1.54× of truth — but the penalty is soft in both directions
 (±10 % relative), so being roughly right per sample beats being exactly wrong
 everywhere.
+
+---
+
+---
+
+## Submitting — the actual procedure
+
+Submission is by **notebook**, not by CSV upload. `kaggle competitions submit
+-f submission.csv` names *the output file the kernel produces*; the local CSV in
+the repo root is never uploaded and cannot be submitted. Kaggle **reruns** the
+notebook against the hidden test set when you submit — the run you watch after
+`kernels push` only touches the four visible placeholder samples.
+
+The CLI does all of it; the Kaggle MCP server is not needed and adds a browser
+OAuth step for nothing. Auth here is the `KGAT_` token at
+`$KAGGLE_API_TOKEN` (`/home/y2a/.kaggle/access_token`, on the persistent
+volume).
+
+```bash
+# 1. datasets  (see "Build the three datasets")
+uv run kaggle datasets version -p /tmp/volt-code -m "$(git rev-parse --short HEAD)" -r zip
+
+# 2. confirm the new version is actually mounted — NOT `datasets status`,
+#    which says "ready" about the dataset while a version is still processing
+uv run kaggle datasets files oleksiikrasnoshtanov/volt-code   # sizes must match local
+
+# 3. push, run, read the log
+uv run kaggle kernels push -p kaggle
+uv run kaggle kernels status oleksiikrasnoshtanov/volt-biohub-submission
+uv run kaggle kernels output oleksiikrasnoshtanov/volt-biohub-submission -p /tmp/out
+
+# 4. submit that kernel VERSION (-v), with -f naming the kernel's output file
+uv run kaggle competitions submit biohub-cell-tracking-during-development \
+    -k oleksiikrasnoshtanov/volt-biohub-submission -v 4 \
+    -f submission.csv -m "<git sha> <what changed>"
+uv run kaggle competitions submissions biohub-cell-tracking-during-development
+```
+
+Read the kernel log before submitting, every time. It prints the detector
+actually chosen, the test directory actually found and the per-video timing —
+the three things that have each silently been wrong once.
 
 ---
 
