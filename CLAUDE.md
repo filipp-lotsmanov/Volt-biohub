@@ -1356,9 +1356,12 @@ a time, same public checkpoint throughout:**
 
 | arm | score | adjJ | divJ | node recall | node ratio |
 |---|---|---|---|---|---|
-| threshold 0.5, one-pass gate 8 µm | 0.7830 | 0.7819 | 0.0110 | 0.9808 | +0.0424 |
+| threshold 0.5, one-pass gate 8 µm (**scored 0.846 on LB**) | 0.7830 | 0.7819 | 0.0110 | 0.9808 | +0.0424 |
 | threshold 0.965 | 0.7931 | 0.7920 | 0.0110 | 0.9805 | −0.0635 |
-| **+ full post-processing** | **0.8687** | **0.8579** | **0.1077** | 0.9830 | −0.0708 |
+| **+ full post-processing — SHIPPED** | **0.8687** | **0.8579** | **0.1077** | 0.9830 | −0.0708 |
+| post-processing, threshold 0.93 | 0.8649 | 0.8556 | 0.0938 | 0.9829 | −0.0448 |
+| post-processing + 8-view TTA, threshold 0.965 | 0.8609 | 0.8561 | 0.0484 | 0.9788 | −0.1489 |
+| post-processing + 8-view TTA, threshold 0.93 | 0.8593 | 0.8543 | 0.0492 | 0.9802 | −0.1083 |
 | 8-view D4 TTA alone, threshold 0.965 | 0.7916 | 0.7907 | 0.0088 | 0.9779 | −0.1430 |
 | learned transformer edge head | 0.7632 | 0.7614 | 0.0178 | 0.9390 | −0.2232 |
 
@@ -1392,13 +1395,34 @@ pruning then deletes and node recall falls 0.9808 → 0.9390. The +0.073 recorde
 for it on 2026-09-14 came from 8 contaminated videos at effective n ≈ 3. Kept
 behind `--learned-edges` as the artefact behind the number.
 
-**8-view TTA is flat, and the reason is the operating point, not the map.** Every
-public notebook above 0.942 uses it, so a flat result wants explaining: averaging
-logits over the D4 group suppresses peaks that only one view fired on, so at a
-*fixed* threshold it emits fewer nodes (ratio −0.143 against −0.064) rather than
-ranking better. It needs the threshold retuned underneath it, which is measuring
-now. Runtime is not the obstacle — 12.0 s/video, **0.66 h for a train-sized test
-set** against the 12 h cap.
+**8-view TTA LOSES, and the mechanism matters because every public notebook above
+0.942 uses it.** Three arms: alone it is flat (0.7916 vs 0.7931), and on top of
+post-processing it costs 0.008 at threshold 0.965 and 0.009 at 0.93. **The damage
+is concentrated entirely in the division term** — divJ 0.1077 → 0.0484/0.0492,
+i.e. it halves — while adjJ barely moves (0.8579 → 0.8561). Averaging logits over
+the D4 symmetries of (y, x) acts like a blur in that plane, and sister separation
+one frame after a division has **p5 5.41 µm on a 1.625 µm grid**, so the two
+daughters merge into one peak under the average and the fork stops being a
+candidate. Retuning the threshold underneath does not recover it, which rules out
+"the operating point moved" as the whole story (that effect is real too — node
+ratio −0.149 against −0.071).
+
+**So TTA is not wrong in general, it is wrong at this resolution.** It is the
+first concrete argument for `--downsample 1,2,2` since the idea was raised: on a
+0.8125 µm grid the daughters stay resolved under the blur, and TTA plus a finer
+grid is a coherent pair where either alone is not. That makes task #19 worth
+doing after all, for a reason other than the one it was filed under.
+
+**And on Kaggle it is not free, which is a correction to a claim made twice in
+this file.** "Runtime is free, 0.66 h against a 12 h cap" was measured on an
+A6000. The detector measured **13.3 s/video on the real T4 kernel**, so eight
+views is ~5.9 h before post-processing, against ~1.6 h without. Extrapolate
+inference cost from the T4 measurement in `kaggle/README.md`, never from this
+box.
+
+**The threshold is a real interior optimum, not an inherited constant.** 0.965
+beats 0.93 by 0.004 under post-processing, so the value taken from the public
+notebooks survives being checked rather than being assumed.
 
 **Two bugs in the new stack, both caught by `validate_submission` rather than by
 the score** — which is the argument for the validator earning its place in the
