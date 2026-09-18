@@ -134,6 +134,14 @@ def main(argv=None) -> int:
     p.add_argument("--no-divisions", action="store_true")
     p.add_argument("--det-threshold", type=float, default=None,
                    help="Sigmoid threshold replacing the node budget.")
+    p.add_argument("--learned-edges", action="store_true",
+                   help="Use the checkpoint's trained transformer edge head.")
+    p.add_argument("--edge-threshold", type=float, default=0.5)
+    p.add_argument("--postprocess", action="store_true",
+                   help="Full post-detection stack; replaces gate linking.")
+    p.add_argument("--min-track-len", type=int, default=6)
+    p.add_argument("--tta", action="store_true",
+                   help="8-view D4 TTA in (y, x), averaged in logit space.")
     p.add_argument("--switch-at", type=float, default=None)
     p.add_argument("--refine", action="store_true", default=True)
     p.add_argument("--keep-csv", type=Path, default=None)
@@ -169,6 +177,11 @@ def main(argv=None) -> int:
             division_gate_um=None if args.no_divisions else args.division_gate_um,
             refine=args.refine, switch_at=args.switch_at,
             det_threshold=args.det_threshold,
+            postprocess=args.postprocess,
+            min_track_len=args.min_track_len,
+            learned_edges=args.learned_edges,
+            edge_threshold=args.edge_threshold,
+            tta=args.tta,
         )
         rows = score_csv(csv_path, data_dir, names)
         if args.keep_csv:

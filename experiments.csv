@@ -101,3 +101,14 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-16T15:26:45,afc80ac,linux-server,E6_ep012_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6802,0.6792,0.6857,0.0096,0.9169,+0.1390,477,is our selection metric picking the wrong epoch?
 2026-09-16T21:41:42,e280b3a,linux-server,E7f1_ep000_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6641,0.6627,0.6600,0.0140,0.8712,-0.0231,471,"E7 progress check, full fold, threshold path"
 2026-09-16T21:50:10,e280b3a,linux-server,E7f1_ep010_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.6700,0.6688,0.6715,0.0128,0.8960,+0.0763,502,"E7 progress check, full fold, threshold path"
+2026-09-18T11:16:34,4f94cc3,linux-server,E7f1_ep085_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.7148,0.7143,0.7232,0.0047,0.9492,+0.1678,518,"E7 late-epoch check, full fold, threshold"
+2026-09-18T11:26:48,4f94cc3,linux-server,E7f1_ep045_FULLFOLD,unet,1,71,1.0,,8.0,6.0,0.7049,0.7039,0.7087,0.0095,0.9313,+0.1018,608,"E7 late-epoch check, full fold, threshold"
+2026-09-18T11:27:16,4f94cc3,linux-server,pub_hungarian_FULL,unet,1,71,1.0,,8.0,6.0,0.7830,0.7819,0.7835,0.0110,0.9808,+0.0424,606,baseline for the learned edge head
+2026-09-18T11:35:55,4f94cc3,linux-server,pub_learned_FULL,unet,1,71,1.0,,8.0,6.0,0.7632,0.7614,0.7441,0.0178,0.9390,-0.2232,514,"trained transformer edge head, 580k params we were discarding"
+2026-09-18T11:36:43,4f94cc3,linux-server,pub_th0.965_FULL,unet,1,71,1.0,,8.0,6.0,0.7931,0.7920,0.7860,0.0110,0.9805,-0.0635,388,"public notebooks all use 0.965-0.985, not 0.5"
+2026-09-18T11:43:10,4f94cc3,linux-server,pub_th0.95_FULL,unet,1,71,1.0,,8.0,6.0,0.7914,0.7903,0.7854,0.0110,0.9805,-0.0500,382,"public notebooks all use 0.965-0.985, not 0.5"
+2026-09-18T13:06:00,4f94cc3,linux-server,pp_debug2,unet,1,2,1.0,,8.0,6.0,0.8118,0.8118,0.8091,0.0000,0.9417,-0.0340,24,end-to-end through submit.run + CSV readback
+2026-09-18T13:09:45,4f94cc3,linux-server,tta_debug2,unet,1,2,1.0,,8.0,6.0,0.8510,0.8510,0.8519,0.0000,0.9706,+0.0096,11,end-to-end through submit.run + CSV readback
+2026-09-18T13:10:48,4f94cc3,linux-server,tta_debug2_real,unet,1,2,1.0,,8.0,6.0,0.8548,0.8548,0.8455,0.0000,0.9804,-0.1131,28,end-to-end through submit.run + CSV readback
+2026-09-18T13:21:26,4f94cc3,linux-server,pub_th965_postproc_FULL,unet,1,71,1.0,,8.0,6.0,0.8687,0.8579,0.8510,0.1077,0.9830,-0.0708,908,"full public post-processing stack: 2-pass relink, gap close, safe divisions, len>=6 filter, smoothing"
+2026-09-18T13:27:24,4f94cc3,linux-server,pub_th965_tta8_FULL,unet,1,71,1.0,,8.0,6.0,0.7916,0.7907,0.7793,0.0088,0.9779,-0.1430,977,"8-view D4 TTA in (y,x), logit-space average; one variable vs pub_th0.965_FULL 0.7931"

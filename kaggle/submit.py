@@ -182,7 +182,7 @@ def load_volumes(zarr_path: Path) -> tuple[np.ndarray, float]:
     return np.clip((raw - lo) / (hi - lo + 1e-6), 0, None), q90
 
 
-def load_detector(weights: Path, device):
+def load_detector(weights: Path, device, tta: bool = False):
     """Rebuild just the detection half of the trained model.
 
     The checkpoint is a joint ``UNetNodeTransformer`` state dict: ``unet.*``,
@@ -224,19 +224,61 @@ def load_detector(weights: Path, device):
     unet.to(device).eval()
     head.to(device).eval()
 
-    def detect_map(frame: np.ndarray) -> np.ndarray:
+    def _forward(t: torch.Tensor, want_features: bool):
+        pair = torch.stack([t, t], dim=0).unsqueeze(0).unsqueeze(2)
+        feats = unet(pair)
+        logits = head(feats[0, 0:1])[0, 0].float()
+        return (logits, feats[0, 0]) if want_features else (logits, None)
+
+    def detect_map(frame: np.ndarray, want_features: bool = False):
         """Detection **logits** for one frame, at the input resolution.
 
-        Logits, not a sigmoid: the map is saturated (median sigmoid 1.0000 at GT
-        centroids, ~6,000 voxels/frame above 0.99), so a sigmoid flattens exactly
-        the ranking the peak finder needs. The frame is duplicated into a fake
-        pair because the U-Net is temporal and wants two frames.
+        Logits, not a sigmoid: a sigmoid flattens the ranking the peak finder
+        needs. The frame is duplicated into a fake pair because the U-Net is
+        temporal and wants two frames — measured to cost nothing (node recall
+        0.9967 from the real pair against 0.9973 from the fake one, because the
+        temporal attention degenerates cleanly on two identical tokens).
+
+        *want_features* additionally returns the 32-channel trunk features the
+        learned edge head indexes at detected coordinates. They are returned per
+        frame rather than per video on purpose: 32 channels x 64^3 x 100 frames
+        is 3.4 GB, while two frames is 67 MB.
+
+        **TTA is averaged in logit space over the D4 symmetries of the (y, x)
+        plane only.** Averaging sigmoids would compress exactly the ranking the
+        peak finder reads, and z is excluded because the microscope's PSF is
+        elongated in z — a z flip is out of distribution even though the
+        downsampled grid is geometrically isotropic. Rotations need y == x, which
+        holds for every sample measured (64 x 64 after the 1,4,4 stride), so a
+        differently shaped hidden sample falls back to the two flips rather than
+        raising. Features are returned from the identity view: they feed the edge
+        head's coordinate indexing, which no symmetry average is defined for.
         """
         with torch.no_grad():
             t = torch.from_numpy(frame).to(device)
-            pair = torch.stack([t, t], dim=0).unsqueeze(0).unsqueeze(2)
-            feats = unet(pair)
-            return head(feats[0, 0:1])[0, 0].float().cpu().numpy()
+            if not tta:
+                logits, feats = _forward(t, want_features)
+                logits = logits.cpu().numpy()
+                return (logits, feats) if want_features else logits
+
+            square = t.shape[-1] == t.shape[-2]
+            acc = None
+            feats = None
+            for k in (0, 1, 2, 3) if square else (0,):
+                rot = torch.rot90(t, k, dims=(-2, -1)) if k else t
+                for flip in (False, True):
+                    view = torch.flip(rot, dims=(-1,)) if flip else rot
+                    out, f = _forward(view, want_features and k == 0 and not flip)
+                    if f is not None:
+                        feats = f
+                    if flip:
+                        out = torch.flip(out, dims=(-1,))
+                    if k:
+                        out = torch.rot90(out, -k, dims=(-2, -1))
+                    acc = out if acc is None else acc + out
+            n_views = 8 if square else 2
+            logits = (acc / n_views).cpu().numpy()
+            return (logits, feats) if want_features else logits
 
     return detect_map
 
@@ -269,6 +311,45 @@ def detect_video(
     ]
 
 
+def detect_and_link_learned(
+    volumes: np.ndarray,
+    detect_map,
+    edge_head,
+    n_per_frame: int,
+    separation_um: float,
+    downsample: tuple[int, int, int],
+    refine: bool = False,
+    threshold: float | None = None,
+    edge_threshold: float = 0.5,
+) -> tuple[list[np.ndarray], list[list[tuple[int, int, float]]]]:
+    """Detect and link in one pass, keeping only two frames of features live.
+
+    Interleaved rather than detect-then-link because the edge head needs the
+    trunk features at both endpoints of every pair, and holding a whole video's
+    features costs 3.4 GB against 67 MB for a sliding pair.
+    """
+    from volt_biohub.edge_head import link_pair
+
+    window_shape = (2, *volumes.shape[1:])
+    coords_per_t: list[np.ndarray] = []
+    links_per_t: list[list[tuple[int, int, float]]] = []
+    prev_feat = None
+
+    for t, frame in enumerate(volumes):
+        logits, feat = detect_map(frame, want_features=True)
+        coords = detect_from_map(logits, n_per_frame, ISO_UM, separation_um,
+                                refine=refine, threshold=threshold)
+        coords_per_t.append(coords)
+        if t > 0:
+            links_per_t.append(link_pair(
+                edge_head, prev_feat, feat, coords_per_t[t - 1], coords,
+                t_src=0, window_shape=window_shape, downsample=downsample,
+                threshold=edge_threshold,
+            ))
+        prev_feat = feat
+    return coords_per_t, links_per_t
+
+
 def run(
     test_dir: Path,
     out_path: Path,
@@ -282,6 +363,11 @@ def run(
     limit: int | None = None,
     switch_at: float | None = None,
     det_threshold: float | None = None,
+    learned_edges: bool = False,
+    edge_threshold: float = 0.5,
+    postprocess: bool = False,
+    min_track_len: int = 6,
+    tta: bool = False,
 ) -> Path:
     """Predict every video in *test_dir* and write a validated submission."""
     names = list_datasets(test_dir)
@@ -289,10 +375,22 @@ def run(
         names = names[:limit]
 
     detect_map = None
+    edge_head = None
     if weights is not None:
         device = resolve_device()
         print(f"detector: unet on {device} ({weights})", flush=True)
-        detect_map = load_detector(weights, device)
+        detect_map = load_detector(weights, device, tta=tta)
+        if learned_edges:
+            import json as _json
+
+            from volt_biohub.edge_head import load_edge_head
+            cfg = _json.loads((weights.parent / "config.json").read_text())
+            edge_head = load_edge_head(weights, cfg, device)
+            # None means the checkpoint has no transformer.* weights, so fall
+            # back to the geometric linker rather than dying at hour ten.
+            which = ("learned edge head" if edge_head is not None
+                     else "geometric (no transformer.* in checkpoint)")
+            print(f"linker: {which}", flush=True)
     else:
         print("detector: dog (no weights)", flush=True)
 
@@ -330,8 +428,16 @@ def run(
             crowded = (n_true / max(len(volumes), 1)) >= switch_at
             use_map = detect_map if crowded else None
             picked = "unet" if crowded else "dog"
-        coords = detect_video(volumes, n_per_frame, separation_um, use_map,
-                              refine, threshold=det_threshold)
+        learned_links = None
+        if edge_head is not None and use_map is not None:
+            coords, learned_links = detect_and_link_learned(
+                volumes, use_map, edge_head, n_per_frame, separation_um,
+                DOWNSAMPLE, refine=refine, threshold=det_threshold,
+                edge_threshold=edge_threshold,
+            )
+        else:
+            coords = detect_video(volumes, n_per_frame, separation_um, use_map,
+                                  refine, threshold=det_threshold)
         if not any(len(c) for c in coords):
             # Every test dataset must be *present* in the submission, and a
             # dataset that detected nothing emits no rows at all — absent, not
@@ -344,8 +450,24 @@ def run(
             centre = np.array([[s // 2 for s in volumes.shape[1:]]], dtype=np.int64)
             coords = [centre] + [np.empty((0, 3), dtype=np.int64)] * (len(volumes) - 1)
 
-        links = link_sequence(coords, (ISO_UM, ISO_UM, ISO_UM),
-                             gate_um=gate_um, division_gate_um=division_gate_um)
+        if postprocess:
+            # Replaces the one-pass fixed-gate linker entirely: two-pass Hungarian
+            # with velocity extrapolation, single-frame gap closing, structurally
+            # gated divisions, short-track filtering and line-fit smoothing, in
+            # the order the reference uses (see volt_biohub.postprocess.run_all).
+            from volt_biohub.postprocess import run_all
+            coords, links = run_all(
+                coords, ISO_UM,
+                divisions=division_gate_um is not None,
+                min_track_len=min_track_len,
+                shape=tuple(volumes.shape[1:]),
+            )
+        elif learned_links is not None:
+            links = learned_links
+        else:
+            links = link_sequence(
+                coords, (ISO_UM, ISO_UM, ISO_UM),
+                gate_um=gate_um, division_gate_um=division_gate_um)
         rows.extend(dataset_rows(name, coords, links, upsample=DOWNSAMPLE))
 
         n_nodes = sum(len(c) for c in coords)
@@ -393,6 +515,25 @@ def main(argv: list[str] | None = None) -> int:
                         "the node budget -- which is what caps node recall on samples "
                         "where predict_n_true under-shoots (0.50x and 0.54x on two of "
                         "the four test samples). The reference uses 0.5.")
+    p.add_argument("--learned-edges", action="store_true",
+                   help="Use the checkpoint's trained transformer edge head instead of "
+                        "Hungarian assignment. The public checkpoint carries 580,353 "
+                        "such parameters that load_detector was discarding; holding "
+                        "detections fixed, this is worth +0.073.")
+    p.add_argument("--edge-threshold", type=float, default=0.5,
+                   help="Minimum softmax-over-sources probability for a learned edge.")
+    p.add_argument("--postprocess", action="store_true",
+                   help="Run the full post-detection stack from the public 0.942-0.948 "
+                        "notebooks: two-pass Hungarian with velocity, gap closing, "
+                        "structurally gated divisions, short-track filtering, line-fit "
+                        "smoothing. Replaces --gate-um linking.")
+    p.add_argument("--min-track-len", type=int, default=6,
+                   help="Drop connected components smaller than this many NODES "
+                        "(fork-containing components exempt). Reference uses 6.")
+    p.add_argument("--tta", action="store_true",
+                   help="Average detection logits over the 8 D4 symmetries of the "
+                        "(y, x) plane. Every public notebook above 0.942 uses it; "
+                        "8x the detector cost is affordable against the 12 h cap.")
     p.add_argument("--switch-at", type=float, default=None,
                    help="Predicted cells/frame above which to use the U-Net instead of "
                         "DoG (150 is the measured optimum; flat 125-175). Needs "
@@ -411,6 +552,9 @@ def main(argv: list[str] | None = None) -> int:
         division_gate_um=args.division_gate_um, refine=args.refine,
         limit=args.limit, switch_at=args.switch_at,
         det_threshold=args.det_threshold,
+        learned_edges=args.learned_edges, edge_threshold=args.edge_threshold,
+        postprocess=args.postprocess, min_track_len=args.min_track_len,
+        tta=args.tta,
     )
     return 0
 
