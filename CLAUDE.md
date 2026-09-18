@@ -1350,6 +1350,38 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-18 — THE ILP HONESTLY MEASURED: −0.05, and the edge head's
+probabilities pay only as a COST BONUS.** Once the head actually loaded (see the
+measurement error below), the three ways to spend the same probabilities separate
+cleanly on the full 71-sample fold:
+
+| how the edge-head probabilities are spent | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| **as a bonus on the relink's geometric cost** | **0.8706** | **0.8593** | **0.1129** | **0.9841** |
+| not at all (shipped) | 0.8687 | 0.8579 | 0.1077 | 0.9830 |
+| as edges, resolved greedily | 0.7830 | 0.7819 | 0.0110 | 0.9808 |
+| as ILP candidates, threshold 0.48, gaps on | 0.8190 | 0.8167 | 0.0238 | 0.9419 |
+| as ILP candidates, threshold 0.10, no gaps | 0.8093 | 0.8027 | 0.0667 | 0.9548 |
+
+**The ILP loses by 0.05, not the 0.008 the broken runs suggested, and node recall
+is the mechanism**: 0.9419 against 0.9830. `ILPSolver`'s `node_weight` defaults to
+0.0, so deleting a node is free while an edge is worth at most 1.0 against a
+disappearance cost of 2.0 — every marginal node is cheaper to delete than to keep.
+The reference is insulated because its motion relink runs *afterwards* and
+re-derives edges from geometry, repairing the over-deletion. With the relink off —
+their own best arm — the cost balance has to carry itself, and ours does not. This
+does not refute their +0.037; it says the ILP is not transplantable into a
+pipeline whose linker already reaches node recall 0.983.
+
+**What does pay is the third option, which we had never tried.** The reference's
+cost is `motion + 0.05*raw − MOTION_RELINK_LEARNED_BONUS * prob` with the bonus at
+**1.0**; we shipped the first two terms and nothing else. As a bonus the head
+cannot cause either failure above — geometry still decides the assignment, and the
+model only pulls a confident pair forward by at most one micrometre of apparent
+distance. **+0.0019 over the shipped config**, which is ten times the ±0.0002
+cross-card noise floor, and adjJ, divJ and node recall all move the same way,
+which is what a real effect looks like.
+
 **2026-09-18 — A MEASUREMENT ERROR WORTH MORE THAN THE RESULT: six "ILP" arms
 ran with no edge head and measured something else entirely.** `submit.run` loaded
 the transformer edge head only `if learned_edges`, and the ILP arms did not pass

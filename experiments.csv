@@ -133,3 +133,6 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-18T17:50:30,d27f592,linux-server,sep30_th99_FULL,unet,1,71,1.0,,8.0,6.0,0.8582,0.8547,0.8503,0.0353,0.9909,-0.0398,893,joint finer picker + higher threshold; rerun after fixing the writer out-degree bug the finer picker exposed
 2026-09-18T17:53:56,d27f592,linux-server,bonus_debug2,unet,1,2,1.0,,8.0,6.0,0.8118,0.8118,0.8091,0.0000,0.9417,-0.0340,23,end-to-end through submit.run + CSV readback
 2026-09-18T17:56:18,d27f592,linux-server,bonus_debug2b,unet,1,2,1.0,,8.0,6.0,0.8118,0.8118,0.8091,0.0000,0.9417,-0.0342,27,end-to-end through submit.run + CSV readback
+2026-09-18T18:12:08,2a57246,linux-server,bonus10_FULL,unet,1,71,1.0,,8.0,6.0,0.8706,0.8593,0.8524,0.1129,0.9841,-0.0708,923,shipped config + the relink learned-probability bonus the reference ships at 1.0 and we shipped at 0
+2026-09-18T18:28:31,2a57246,linux-server,ILP_real_c048_gaps_FULL,unet,1,71,1.0,,8.0,6.0,0.8190,0.8167,0.7997,0.0238,0.9419,-0.2105,1898,"real ILP at the reference candidate threshold, gap closing left ON since it measured +0.008 here"
+2026-09-18T19:42:16,2a57246,linux-server,ILP_real_c010_FULL,unet,1,71,1.0,,8.0,6.0,0.8093,0.8027,0.7856,0.0667,0.9548,-0.2063,6339,the ACTUAL ILP test: previous six arms ran with edge_head None and measured --no-gaps instead
