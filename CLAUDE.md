@@ -64,9 +64,16 @@ distance, **max 7.0 µm**, scale `(z, y, x) = (1.625, 0.40625, 0.40625)` µm/vox
    `0.848 + 0.1·divJ` gives 0.848 at divJ 0, **0.898 at divJ 0.5** (the leaderboard
    median is 0.902) and **0.948 at divJ 1.0** (the top-10% line is 0.946). The field's
    score distribution is *explained* by the division term. It is not a tiebreaker.
-   **But the gate is not the lever** — see the sweep in `linking.py`: opening it from
-   6 µm to 10 µm doubles true divisions found (3→6) and *lowers* the score, drowned by
-   390 false forks. The binding constraint is the **ranking** of fork candidates.
+   **The gate alone is not the lever, but it WAS blocking the candidates** — opening
+   it from 6 µm to 10 µm in `linking.py` doubles true divisions found (3→6) and *lowers*
+   the score, drowned by 390 false forks, so the binding constraint is the **ranking**
+   of fork candidates. That conclusion stands and is incomplete: at a 6 µm gate against
+   a measured GT sister separation of **median 10.4 µm**, most real divisions were never
+   proposed at all, so the 1:556 base rate measured on 2026-09-12 was partly an artefact
+   of the gate. `postprocess.add_safe_divisions` opens the gates (parent 9.0, sister
+   14.0) *and* replaces the geometric ranker with structural admission — mutual-nearest
+   orphans, forward divergence, a symmetry test, hard per-frame and global caps — and
+   reaches **divJ 0.1077** on the full fold against 0.0110. Both halves were needed.
 2. **False positives outside annotated regions are free.** A predicted edge counts
    at all (TP *or* FP) only when `out_valid(matched source) OR in_valid(matched
    target)` — an endpoint matched a GT node that itself has GT edges. Everything
@@ -687,6 +694,8 @@ than silently extracting nothing.
 | `src/volt_biohub/detection_targets.py` | 452 | Gaussian targets, PU mask, pseudo-labels, detection loss | ours; keep |
 | `src/volt_biohub/linking.py` | 195 | Hungarian linking in µm, ≤2 children, graph build | ours; keep |
 | `src/volt_biohub/detectors.py` | 132 | DoG and score-map front-ends behind one signature | ours; keep |
+| `src/volt_biohub/postprocess.py` | 546 | two-pass relink, gap closing, safe divisions, filter, smoothing | **+0.076; the score lives here** |
+| `src/volt_biohub/edge_head.py` | 174 | tracksdata-free port of the transformer edge linker | measured worse; kept as the artefact |
 | `src/volt_biohub/scoring.py` | 165 | video-level detect→link→score, shared by train and CLI | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
@@ -1340,6 +1349,74 @@ Consequences:
 `--save-every 5`. Split 4 was added as an all-train split (199 samples) matching the
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
+
+**2026-09-18 — THE POST-DETECTION STACK IS THE GAP, AND IT IS WORTH +0.076.
+Measured on the full 71-sample fold through the submission path, one variable at
+a time, same public checkpoint throughout:**
+
+| arm | score | adjJ | divJ | node recall | node ratio |
+|---|---|---|---|---|---|
+| threshold 0.5, one-pass gate 8 µm | 0.7830 | 0.7819 | 0.0110 | 0.9808 | +0.0424 |
+| threshold 0.965 | 0.7931 | 0.7920 | 0.0110 | 0.9805 | −0.0635 |
+| **+ full post-processing** | **0.8687** | **0.8579** | **0.1077** | 0.9830 | −0.0708 |
+| 8-view D4 TTA alone, threshold 0.965 | 0.7916 | 0.7907 | 0.0088 | 0.9779 | −0.1430 |
+| learned transformer edge head | 0.7632 | 0.7614 | 0.0178 | 0.9390 | −0.2232 |
+
+`src/volt_biohub/postprocess.py` is the public 0.942–0.948 notebooks' shared
+post-processing cell, ported in their order (which is load-bearing): two-pass
+Hungarian with velocity extrapolation → single-frame gap closing → structurally
+gated divisions → short-track filter → line-fit smoothing.
+
+**The division term finally moved, and the reason our gate was wrong is
+embarrassing.** divJ has sat at ~0.01 since the first submission against a term
+worth 0.1. Our `DIVISION_GATE_UM` is 6.0 µm; measured GT sister separation one
+frame after a division has a **median of 10.4 µm** (p90 13.0). We were rejecting
+most real divisions by construction, which is also why the 2026-09-12 fork-ranker
+study found only 3 real forks proposed in 14 samples — **the proposal ceiling that
+study measured was an artefact of the gate, not a property of the detections.**
+The reference opens the gates (parent 9.0, sister 14.0) and defends precision
+structurally instead: mutual-nearest orphans, forward divergence ≥2.25 µm, a
+symmetry test at τ 0.6, and hard per-frame (0.76 %) and global (0.375 %) caps.
+That combination gives divJ 0.1077 where opening our gate alone gave 390 false
+forks and lost score. **Ranking was the right diagnosis; the gate was still
+blocking the candidates.**
+
+**Two components are deliberately NOT in it, and both were measured rather than
+assumed.** The ILP: those notebooks run it and then **discard its edge set
+wholesale**, keeping only per-pair probabilities as a small additive bonus in the
+Hungarian cost, so their shipped edges come from the two-pass Hungarian. Task #17
+is therefore dropped, not deferred. The learned transformer edge head: 0.7632
+against Hungarian's 0.7830 on the same fold. It emits 25–27k edges/video, so the
+old "emits zero edges" claim was false, but abstaining leaves isolated nodes that
+pruning then deletes and node recall falls 0.9808 → 0.9390. The +0.073 recorded
+for it on 2026-09-14 came from 8 contaminated videos at effective n ≈ 3. Kept
+behind `--learned-edges` as the artefact behind the number.
+
+**8-view TTA is flat, and the reason is the operating point, not the map.** Every
+public notebook above 0.942 uses it, so a flat result wants explaining: averaging
+logits over the D4 group suppresses peaks that only one view fired on, so at a
+*fixed* threshold it emits fewer nodes (ratio −0.143 against −0.064) rather than
+ranking better. It needs the threshold retuned underneath it, which is measuring
+now. Runtime is not the obstacle — 12.0 s/video, **0.66 h for a train-sized test
+set** against the 12 h cap.
+
+**Two bugs in the new stack, both caught by `validate_submission` rather than by
+the score** — which is the argument for the validator earning its place in the
+scoring harness and not only at the save site. Line-fit smoothing pulls a border
+node marginally outside the grid, and a z/y/x of −0.3 becomes **−1** once the
+writer multiplies by the downsample factor: 11 nodes in two videos, and the file
+is rejected outright. And gap closing and the division pass each add edges under
+their own local guard, so neither sees that the other has claimed a node — the
+scorer does **not** error on a merge, it silently collapses the duplicates and
+keeps the lowest edge id, so an in-degree of 2 is a free false positive with no
+visible failure. In-degree is now capped at 1 and out-degree at 2, longest links
+dropped first.
+
+`tests/test_tta_and_postprocess.py` pins the TTA inverse transforms by the one
+property that holds for *any* model: a full-group symmetry average is exactly
+equivariant, so rotating the input must rotate the output. A "does it run" test
+passes with the inverses omitted, which is precisely the bug that silently
+destroys a detection map by averaging misaligned views.
 
 **2026-09-16 — THE CLAMP IS BROKEN: 0.581 → 0.846 FROM ONE VARIABLE.** Submission
 `56278746` replaced the node budget with a detection threshold (`det_threshold 0.5`),

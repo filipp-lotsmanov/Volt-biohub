@@ -12,16 +12,15 @@ detection map by averaging misaligned views.
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch")
-
-import sys
-from pathlib import Path
-
 sys.path.insert(0, str(Path(__file__).parent.parent / "kaggle"))
+
+torch = pytest.importorskip("torch")
 
 _CONFIG = {
     "unet_layers": [8, 16],
@@ -108,3 +107,27 @@ def test_structure_enforcement_keeps_one_parent_and_two_children() -> None:
     assert (1, 5, 1.0) in kept and (0, 5, 3.0) not in kept  # shortest parent wins
     assert sum(1 for a, _, _ in kept if a == 0) == 2        # at most two children
     assert (0, 8, 5.0) not in kept                          # the longest is dropped
+
+
+@pytest.mark.parametrize(("label", "frames"), [
+    ("empty middle frame", [1, 0, 1, 1, 1, 1]),
+    ("all frames empty", [0, 0, 0, 0, 0]),
+    ("single frame video", [1]),
+    ("empty first and last", [0, 1, 1, 0]),
+])
+def test_postprocess_survives_degenerate_videos(label: str, frames: list[int]) -> None:
+    """A threshold detector can emit nothing for a frame; a crash costs 12 hours.
+
+    Every stage indexes by frame and several build a KD-tree, so an empty frame
+    is the shape that breaks them. Kept as a parametrised case rather than one
+    combined video because the first and last frame are special-cased.
+    """
+    from volt_biohub.postprocess import run_all
+
+    coords = [
+        np.array([[10.0, 10.0, 10.0 + i]]) if n else np.empty((0, 3))
+        for i, n in enumerate(frames)
+    ]
+    out_coords, out_links = run_all(coords, 1.625, shape=(64, 64, 64))
+    assert len(out_coords) == len(frames)
+    assert len(out_links) == max(0, len(frames) - 1)
