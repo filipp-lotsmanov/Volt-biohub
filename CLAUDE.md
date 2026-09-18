@@ -1350,6 +1350,29 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-18 — 0.905 → 0.908, and the CV has now ranked correctly twice.**
+Submission `56340649` (kernel v10, git `308c77a`), the relink learned bonus at
+15.0.
+
+| change | CV | LB | CV Δ | LB Δ |
+|---|---|---|---|---|
+| threshold replaces the node budget | 0.7830 | 0.846 | — | — |
+| post-processing stack | 0.8687 | 0.905 | +0.086 | +0.059 |
+| **relink learned bonus 15.0** | **0.8760** | **0.908** | +0.007 | +0.003 |
+
+**The gap is stable and the delta compresses.** CV sits 0.032–0.036 below the LB
+in level, consistently, because fold 1 tests on `44b6`, our worst embryo. But the
+*change* transfers at only 40–70 %: +0.086 became +0.059, +0.007 became +0.003.
+Two points is not a calibration curve, but the direction has been right twice and
+the compression was present both times.
+
+**Operational consequence: a CV gain below ~0.005 is not worth a submission
+slot**, because it lands inside the leaderboard's own resolution once compressed.
+Bank such changes and ship them together with the next real one — which is not a
+licence to bundle blindly, since the 0.578 submission bundled four changes and
+became unattributable; it means a sub-0.005 arm should be *held*, not submitted
+alone.
+
 **2026-09-18 — THE LEARNED BONUS: 0.8687 → 0.8760, and it is the transformer we
 deleted twice.** Full 71-sample fold, one variable, reproducible (the 15.0 arm
 repeated on a different GPU model gives a bit-identical 0.8760):
