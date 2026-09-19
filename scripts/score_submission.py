@@ -153,6 +153,18 @@ def main(argv=None) -> int:
                         "the assignment; the model only breaks ties -- which is "
                         "the one way to spend these probabilities that we have not "
                         "measured losing (greedy edges 0.7632, ILP 0.8605).")
+    p.add_argument("--feature-tta", action="store_true",
+                   help="Average the U-Net FEATURES over the 8 D4 views while "
+                        "leaving detection sharp. Detection TTA loses here "
+                        "(0.8609 vs 0.8687) by blurring daughters into one peak; "
+                        "this touches only what the edge head reads, and is the "
+                        "public chain's largest single step (0.941 -> 0.946).")
+    p.add_argument("--bidirectional-weight", type=float, default=0.0,
+                   help="Fuse forward and reverse edge probabilities by a "
+                        "weighted harmonic mean (reference 0.15, measured "
+                        "+0.0053). Touches no detection and no geometry, so the "
+                        "daughter-blurring that killed detection TTA cannot "
+                        "occur -- it only sharpens what the bonus spends.")
     p.add_argument("--candidate-threshold", type=float, default=0.48,
                    help="Probability above which a pair becomes an ILP candidate. "
                         "No distance gate. Reference 0.48; 0.44 measured +0.003.")
@@ -231,6 +243,8 @@ def main(argv=None) -> int:
             tta=args.tta,
             ilp=args.ilp,
             learned_bonus=args.learned_bonus,
+            bidirectional_weight=args.bidirectional_weight,
+            feature_tta=args.feature_tta,
             candidate_threshold=args.candidate_threshold,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {

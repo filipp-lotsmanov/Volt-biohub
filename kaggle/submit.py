@@ -182,7 +182,8 @@ def load_volumes(zarr_path: Path) -> tuple[np.ndarray, float]:
     return np.clip((raw - lo) / (hi - lo + 1e-6), 0, None), q90
 
 
-def load_detector(weights: Path, device, tta: bool = False):
+def load_detector(weights: Path, device, tta: bool = False,
+                  feature_tta: bool = False):
     """Rebuild just the detection half of the trained model.
 
     The checkpoint is a joint ``UNetNodeTransformer`` state dict: ``unet.*``,
@@ -251,33 +252,63 @@ def load_detector(weights: Path, device, tta: bool = False):
         downsampled grid is geometrically isotropic. Rotations need y == x, which
         holds for every sample measured (64 x 64 after the 1,4,4 stride), so a
         differently shaped hidden sample falls back to the two flips rather than
-        raising. Features are returned from the identity view: they feed the edge
-        head's coordinate indexing, which no symmetry average is defined for.
+        raising.
+
+        **Feature TTA is a separate switch, and the separation is the point.**
+        An earlier version of this docstring claimed features could not be
+        symmetry-averaged "because no symmetry average is defined for coordinate
+        indexing". That was simply wrong: a feature map is (C, Z, Y, X) and its
+        spatial axes invert exactly like the logits. Keeping the two flags apart
+        matters because detection TTA *loses* here (0.8609 against 0.8687) by
+        blurring two daughters into a single peak, while the public chain's
+        largest single step (0.941 -> 0.946) is averaging the features the EDGE
+        predictor consumes. With ``feature_tta`` on and ``tta`` off, detections
+        stay sharp and only the edge probabilities are smoothed -- so the failure
+        that killed detection TTA structurally cannot occur.
         """
+        avg_feats = feature_tta and want_features
         with torch.no_grad():
             t = torch.from_numpy(frame).to(device)
-            if not tta:
+            if not tta and not avg_feats:
                 logits, feats = _forward(t, want_features)
                 logits = logits.cpu().numpy()
                 return (logits, feats) if want_features else logits
 
             square = t.shape[-1] == t.shape[-2]
             acc = None
+            facc = None
             feats = None
             for k in (0, 1, 2, 3) if square else (0,):
                 rot = torch.rot90(t, k, dims=(-2, -1)) if k else t
                 for flip in (False, True):
+                    identity = k == 0 and not flip
                     view = torch.flip(rot, dims=(-1,)) if flip else rot
-                    out, f = _forward(view, want_features and k == 0 and not flip)
+                    # Ask for features on every view only when averaging them.
+                    out, f = _forward(view, want_features and (avg_feats or identity))
                     if f is not None:
-                        feats = f
+                        if avg_feats:
+                            # Same inverse as the logits, on the same two axes:
+                            # a feature map is (C, Z, Y, X).
+                            if flip:
+                                f = torch.flip(f, dims=(-1,))
+                            if k:
+                                f = torch.rot90(f, -k, dims=(-2, -1))
+                            facc = f if facc is None else facc + f
+                        elif identity:
+                            feats = f
                     if flip:
                         out = torch.flip(out, dims=(-1,))
                     if k:
                         out = torch.rot90(out, -k, dims=(-2, -1))
                     acc = out if acc is None else acc + out
+                    if not tta and identity:
+                        # Detection TTA is off: keep the sharp identity map and
+                        # stop accumulating, so the peaks are unblurred.
+                        sharp = acc
             n_views = 8 if square else 2
-            logits = (acc / n_views).cpu().numpy()
+            logits = ((acc / n_views) if tta else sharp).cpu().numpy()
+            if avg_feats:
+                feats = facc / n_views
             return (logits, feats) if want_features else logits
 
     return detect_map
@@ -361,6 +392,7 @@ def detect_and_candidates(
     threshold: float | None = None,
     candidate_threshold: float = 0.48,
     want_probs: bool = False,
+    bidirectional_weight: float = 0.0,
 ) -> tuple[list[np.ndarray], list[tuple[int, int, float, float]], list | None]:
     """Detect, then emit ILP *candidate* edges instead of resolved links.
 
@@ -397,6 +429,7 @@ def detect_and_candidates(
             probs = pair_probs(
                 edge_head, prev_feat, feat, coords_per_t[t - 1], coords,
                 t_src=0, window_shape=window_shape, downsample=downsample,
+                bidirectional_weight=bidirectional_weight,
             )
             # candidates_from_probs indexes globally, so hand it just this pair
             # and shift by the running offset rather than re-deriving offsets
@@ -439,6 +472,8 @@ def run(
     div_kwargs: dict | None = None,
     ilp: bool = False,
     learned_bonus: float = 0.0,
+    bidirectional_weight: float = 0.0,
+    feature_tta: bool = False,
     candidate_threshold: float = 0.48,
     ilp_kwargs: dict | None = None,
     gaps: bool = True,
@@ -455,7 +490,8 @@ def run(
     if weights is not None:
         device = resolve_device()
         print(f"detector: unet on {device} ({weights})", flush=True)
-        detect_map = load_detector(weights, device, tta=tta)
+        detect_map = load_detector(weights, device, tta=tta,
+                                   feature_tta=feature_tta)
         # The head is needed by three different consumers, not just --learned-edges:
         # the ILP needs its probabilities as candidate weights, and the relink
         # needs them as a cost bonus. Gating the load on `learned_edges` alone
@@ -525,6 +561,7 @@ def run(
                 DOWNSAMPLE, refine=refine, threshold=det_threshold,
                 candidate_threshold=candidate_threshold,
                 want_probs=bool(learned_bonus),
+                bidirectional_weight=bidirectional_weight,
             )
             if not ilp:
                 candidates = None

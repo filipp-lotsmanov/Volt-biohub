@@ -105,6 +105,7 @@ def pair_probs(
     t_src: int,
     window_shape: tuple[int, ...],
     downsample: tuple[int, int, int],
+    bidirectional_weight: float = 0.0,
 ) -> np.ndarray:
     """The raw ``n_src x n_tgt`` probability matrix, ungated and unresolved.
 
@@ -122,6 +123,21 @@ def pair_probs(
     Time is expressed **window-relative** (``t_src``, ``t_src + 1``) and
     normalised by the window length, not by the absolute frame index, because
     that is how the positional embedding was fed during training.
+
+    **Bidirectional fusion** (*bidirectional_weight* > 0) scores each pair a
+    second time with the two frames swapped and combines the two by a weighted
+    harmonic mean. The forward pass softmaxes over sources, so it answers
+    "which parent for this child"; the swapped pass answers "which child for
+    this parent". A harmonic mean is near zero unless *both* agree, which is the
+    point — it is an agreement test, not an average. The reference measures it
+    at **+0.0053** and reached it by *removing* an earlier hard guard that both
+    directions must pick the same winner, in favour of this soft form.
+
+    Why it is worth retrying here specifically: our detection-logit TTA lost
+    because averaging over the D4 group blurs two daughters into one peak. This
+    touches no detection and no geometry — it only sharpens the probabilities
+    that the relink spends as a cost bonus, which is the one interface where
+    this head has been measured to help.
     """
     import torch
 
@@ -155,6 +171,24 @@ def pair_probs(
         # docstring. A sigmoid here would score every pair independently and
         # give back exactly the over-linking the Hungarian linker suffers from.
         probs = torch.softmax(logits, dim=0).float().cpu().numpy()
+
+        if bidirectional_weight > 0.0:
+            # Swap the roles: the later frame is fed as the "source". Its
+            # softmax over dim 0 then normalises over the t+1 nodes for each t
+            # node, i.e. P(child | parent), and transposing puts it back in
+            # (src, tgt) orientation to pair with P(parent | child).
+            rev = edge_head(torch.cat([f_t, pos_t], dim=-1),
+                            torch.cat([f_s, pos_s], dim=-1),
+                            xyz_t, xyz_s, m_t, m_s)[0]
+            p_rev = torch.softmax(rev, dim=0).float().cpu().numpy().T
+            w = bidirectional_weight
+            # Weighted harmonic mean, guarded: either probability at exactly 0
+            # makes the reciprocal infinite, and the fused value should be 0
+            # there anyway (no agreement).
+            both = (probs > 0) & (p_rev > 0)
+            fused = np.zeros_like(probs)
+            fused[both] = 1.0 / ((1.0 - w) / probs[both] + w / p_rev[both])
+            probs = fused
     return probs
 
 
