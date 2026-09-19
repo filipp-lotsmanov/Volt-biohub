@@ -153,6 +153,12 @@ def main(argv=None) -> int:
                         "the assignment; the model only breaks ties -- which is "
                         "the one way to spend these probabilities that we have not "
                         "measured losing (greedy edges 0.7632, ILP 0.8605).")
+    p.add_argument("--edge-temperature", type=float, default=1.0,
+                   help="Divide the edge logits before the softmax: below 1 "
+                        "sharpens, above 1 smooths. Two smoothing operations "
+                        "lost here (fusion -0.001, feature TTA -0.011), which "
+                        "says the cost reads the RANKING; this tests the "
+                        "opposite direction. Not the same as the bonus size.")
     p.add_argument("--feature-tta", action="store_true",
                    help="Average the U-Net FEATURES over the 8 D4 views while "
                         "leaving detection sharp. Detection TTA loses here "
@@ -245,6 +251,7 @@ def main(argv=None) -> int:
             learned_bonus=args.learned_bonus,
             bidirectional_weight=args.bidirectional_weight,
             feature_tta=args.feature_tta,
+            temperature=args.edge_temperature,
             candidate_threshold=args.candidate_threshold,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {

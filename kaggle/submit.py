@@ -393,6 +393,7 @@ def detect_and_candidates(
     candidate_threshold: float = 0.48,
     want_probs: bool = False,
     bidirectional_weight: float = 0.0,
+    temperature: float = 1.0,
 ) -> tuple[list[np.ndarray], list[tuple[int, int, float, float]], list | None]:
     """Detect, then emit ILP *candidate* edges instead of resolved links.
 
@@ -430,6 +431,7 @@ def detect_and_candidates(
                 edge_head, prev_feat, feat, coords_per_t[t - 1], coords,
                 t_src=0, window_shape=window_shape, downsample=downsample,
                 bidirectional_weight=bidirectional_weight,
+                temperature=temperature,
             )
             # candidates_from_probs indexes globally, so hand it just this pair
             # and shift by the running offset rather than re-deriving offsets
@@ -473,6 +475,7 @@ def run(
     ilp: bool = False,
     learned_bonus: float = 0.0,
     bidirectional_weight: float = 0.0,
+    temperature: float = 1.0,
     feature_tta: bool = False,
     candidate_threshold: float = 0.48,
     ilp_kwargs: dict | None = None,
@@ -562,6 +565,7 @@ def run(
                 candidate_threshold=candidate_threshold,
                 want_probs=bool(learned_bonus),
                 bidirectional_weight=bidirectional_weight,
+                temperature=temperature,
             )
             if not ilp:
                 candidates = None

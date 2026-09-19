@@ -106,6 +106,7 @@ def pair_probs(
     window_shape: tuple[int, ...],
     downsample: tuple[int, int, int],
     bidirectional_weight: float = 0.0,
+    temperature: float = 1.0,
 ) -> np.ndarray:
     """The raw ``n_src x n_tgt`` probability matrix, ungated and unresolved.
 
@@ -170,7 +171,7 @@ def pair_probs(
         # Softmax over sources (dim 0) is the abstain mechanism -- see module
         # docstring. A sigmoid here would score every pair independently and
         # give back exactly the over-linking the Hungarian linker suffers from.
-        probs = torch.softmax(logits, dim=0).float().cpu().numpy()
+        probs = torch.softmax(logits / temperature, dim=0).float().cpu().numpy()
 
         if bidirectional_weight > 0.0:
             # Swap the roles: the later frame is fed as the "source". Its
@@ -180,7 +181,7 @@ def pair_probs(
             rev = edge_head(torch.cat([f_t, pos_t], dim=-1),
                             torch.cat([f_s, pos_s], dim=-1),
                             xyz_t, xyz_s, m_t, m_s)[0]
-            p_rev = torch.softmax(rev, dim=0).float().cpu().numpy().T
+            p_rev = torch.softmax(rev / temperature, dim=0).float().cpu().numpy().T
             w = bidirectional_weight
             # Weighted harmonic mean, guarded: either probability at exactly 0
             # makes the reciprocal infinite, and the fused value should be 0

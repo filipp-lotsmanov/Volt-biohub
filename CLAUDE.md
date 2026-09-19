@@ -1350,6 +1350,48 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-19 — SEVEN POST-PROCESSING IDEAS, ONE WIN, AND THE PIPELINE IS AT A
+LOCAL OPTIMUM IN EVERY DIRECTION TESTED.** All on the full 71-sample fold against
+the shipped **0.8760** (LB 0.908). Recording the negatives in one place because
+the next session's cheapest win is not re-running them:
+
+| arm | score | Δ |
+|---|---|---|
+| **shipped: postprocess + learned bonus 15.0** | **0.8760** | — |
+| bidirectional harmonic fusion, w 0.50 / 0.30 / 0.15 | 0.8754 / 0.8752 / 0.8750 | −0.001 |
+| edge softmax temperature 2.0 (smooth) | 0.8750 | −0.001 |
+| edge softmax temperature 0.5 / 0.25 (sharpen) | 0.8737 / 0.8736 | −0.002 |
+| feature TTA (D4 average of U-Net features) | 0.8646 | **−0.011** |
+| ILP over learned candidates | 0.8190 | **−0.057** |
+| finer peak picker, separation 3.0 | 0.8527 | −0.023 |
+| 8-view detection TTA | 0.8609 | −0.015 |
+
+**A prediction of mine was falsified by its own control, which is the part worth
+keeping.** Two smoothing operations lost (fusion −0.001, feature TTA −0.011), so I
+reasoned the relink cost must read the *ranking* of the edge probabilities rather
+than their calibration, and predicted that **sharpening** would help — with
+temperature 2.0 as a control that should lose. Measured: sharpening lost *more*
+(0.8736 at T=0.25) and the control lost *least* (0.8750). The mechanism was wrong.
+What the sweep actually shows is that the model's trained calibration is already
+matched to the micrometre cost scale, and both directions degrade it.
+
+**So we now hold two orthogonal 1-D sweeps with interior optima at the shipped
+values** — bonus magnitude (0.8687 at 0, rising to 0.8760 at 15, falling to 0.8738
+at 100) and probability shape (temperature 1.0 beating both 0.25 and 2.0). Two
+independent axes both peaking where we sit is real evidence of a local optimum
+rather than an unexplored plateau.
+
+**The unifying caveat on every one of these, and it is the transferable lesson.**
+Each of these components is *measured positive in the reference's own ablation*:
+ILP +0.037, TTA +0.009, fusion +0.005, feature TTA the 0.941→0.946 step. None
+transferred. The reason is consistent: their deltas are measured inside a pipeline
+whose linker is the ILP, and ours is a geometric relink that already reaches node
+recall 0.984. Components that repair a weak linker have nothing to repair here,
+and components that smooth probabilities degrade a cost that is already
+well-scaled. **Do not port another component on the strength of its published
+delta alone — check first what it is repairing, and whether we have that
+defect.**
+
 **2026-09-18 — 0.905 → 0.908, and the CV has now ranked correctly twice.**
 Submission `56340649` (kernel v10, git `308c77a`), the relink learned bonus at
 15.0.
