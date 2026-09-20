@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -183,7 +184,11 @@ def load_volumes(zarr_path: Path) -> tuple[np.ndarray, float]:
 
 
 def load_detector(weights: Path, device, tta: bool = False,
-                  feature_tta: bool = False):
+                  feature_tta: bool = False,
+                  secondary: Path | None = None,
+                  secondary_weight: float = 0.0,
+                  retention: float = 0.90,
+                  det_threshold_for_guard: float | None = None):
     """Rebuild just the detection half of the trained model.
 
     The checkpoint is a joint ``UNetNodeTransformer`` state dict: ``unet.*``,
@@ -224,6 +229,61 @@ def load_detector(weights: Path, device, tta: bool = False,
                           if k.startswith("detect_head.")})
     unet.to(device).eval()
     head.to(device).eval()
+
+    # A second, independently-trained detector. The public cluster blends two and
+    # we had been running one: `…seed314159-v1` is their SECONDARY seed and
+    # `…support-pack-50ep-v1` their primary. Measured separately on our full fold
+    # the two are a dead heat (0.8760 vs 0.8754) but they disagree in their
+    # *errors* — divJ 0.1034 vs 0.0896, node ratio −0.071 vs −0.086 — which is the
+    # case where blending pays rather than averaging two copies of one mistake.
+    unet2 = head2 = None
+    if secondary is not None and secondary_weight > 0.0:
+        cfg2 = json.loads((secondary.parent / "config.json").read_text())
+        if tuple(cfg2.get("downsample", DOWNSAMPLE)) != DOWNSAMPLE:
+            raise SystemExit(
+                f"secondary checkpoint trained at downsample {cfg2['downsample']}, "
+                f"not {DOWNSAMPLE}; every micrometre gate downstream would be wrong."
+            )
+        unet2 = TemporalUNet3D(in_channels=1, out_channels=cfg2["unet_out_channels"],
+                               layers=cfg2["unet_layers"])
+        head2 = nn.Conv3d(cfg2["unet_out_channels"], 1, kernel_size=1)
+        st2 = torch.load(secondary, map_location="cpu", weights_only=True)
+        unet2.load_state_dict({k[len("unet."):]: v for k, v in st2.items()
+                               if k.startswith("unet.")})
+        head2.load_state_dict({k[len("detect_head."):]: v for k, v in st2.items()
+                               if k.startswith("detect_head.")})
+        unet2.to(device).eval()
+        head2.to(device).eval()
+
+    def _blend(primary_logits, frame_t):
+        """Moment-matched logit blend with a per-frame retention guard.
+
+        Two detectors trained separately have no reason to share a logit scale, so
+        a raw average would let whichever runs hotter dominate the peak finder.
+        Align the secondary to the primary's mean and standard deviation first —
+        the reference clamps the scale ratio to [0.5, 2.0], which stops a nearly
+        flat frame from being amplified into noise.
+
+        The guard is the part that makes this safe rather than merely plausible:
+        if the blended map yields fewer than *retention* of the primary's
+        candidates on this frame, keep the primary. A blend that loses detections
+        costs node recall, and node recall is the term we can least afford — it is
+        what the ILP cost us (0.9419 against 0.9830) when it went wrong.
+        """
+        out2 = head2(unet2(torch.stack([frame_t, frame_t], dim=0)
+                           .unsqueeze(0).unsqueeze(2))[0, 0:1])[0, 0].float()
+        p_mean, p_std = primary_logits.mean(), primary_logits.std()
+        s_mean, s_std = out2.mean(), out2.std()
+        ratio = torch.clamp(p_std / (s_std + 1e-6), 0.5, 2.0)
+        aligned = (out2 - s_mean) * ratio + p_mean
+        blended = (1.0 - secondary_weight) * primary_logits + secondary_weight * aligned
+        if det_threshold_for_guard is not None:
+            cut = math.log(det_threshold_for_guard / (1.0 - det_threshold_for_guard))
+            n_p = int((primary_logits > cut).sum())
+            n_b = int((blended > cut).sum())
+            if n_p > 0 and n_b < retention * n_p:
+                return primary_logits
+        return blended
 
     def _forward(t: torch.Tensor, want_features: bool):
         pair = torch.stack([t, t], dim=0).unsqueeze(0).unsqueeze(2)
@@ -271,6 +331,8 @@ def load_detector(weights: Path, device, tta: bool = False,
             t = torch.from_numpy(frame).to(device)
             if not tta and not avg_feats:
                 logits, feats = _forward(t, want_features)
+                if unet2 is not None:
+                    logits = _blend(logits, t)
                 logits = logits.cpu().numpy()
                 return (logits, feats) if want_features else logits
 
@@ -477,6 +539,8 @@ def run(
     bidirectional_weight: float = 0.0,
     temperature: float = 1.0,
     feature_tta: bool = False,
+    secondary_weights: Path | None = None,
+    secondary_weight: float = 0.0,
     candidate_threshold: float = 0.48,
     ilp_kwargs: dict | None = None,
     gaps: bool = True,
@@ -494,7 +558,13 @@ def run(
         device = resolve_device()
         print(f"detector: unet on {device} ({weights})", flush=True)
         detect_map = load_detector(weights, device, tta=tta,
-                                   feature_tta=feature_tta)
+                                   feature_tta=feature_tta,
+                                   secondary=secondary_weights,
+                                   secondary_weight=secondary_weight,
+                                   det_threshold_for_guard=det_threshold)
+        if secondary_weights is not None and secondary_weight > 0:
+            print(f"detector: BLEND w={secondary_weight} with {secondary_weights}",
+                  flush=True)
         # The head is needed by three different consumers, not just --learned-edges:
         # the ILP needs its probabilities as candidate weights, and the relink
         # needs them as a cost bonus. Gating the load on `learned_edges` alone

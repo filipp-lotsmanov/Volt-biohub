@@ -159,6 +159,14 @@ def main(argv=None) -> int:
                         "lost here (fusion -0.001, feature TTA -0.011), which "
                         "says the cost reads the RANKING; this tests the "
                         "opposite direction. Not the same as the bonus size.")
+    p.add_argument("--secondary-weights", type=Path, default=None,
+                   help="A second detector checkpoint to blend with. The public "
+                        "cluster runs two (support-pack-50ep primary + seed314159 "
+                        "secondary); we shipped one. Measured separately the two "
+                        "are a dead heat but disagree in their errors.")
+    p.add_argument("--secondary-weight", type=float, default=0.0,
+                   help="Blend weight for the secondary, moment-matched in logit "
+                        "space with a per-frame retention guard. Reference 0.80.")
     p.add_argument("--feature-tta", action="store_true",
                    help="Average the U-Net FEATURES over the 8 D4 views while "
                         "leaving detection sharp. Detection TTA loses here "
@@ -251,6 +259,8 @@ def main(argv=None) -> int:
             learned_bonus=args.learned_bonus,
             bidirectional_weight=args.bidirectional_weight,
             feature_tta=args.feature_tta,
+            secondary_weights=args.secondary_weights,
+            secondary_weight=args.secondary_weight,
             temperature=args.edge_temperature,
             candidate_threshold=args.candidate_threshold,
             gaps=not args.no_gaps,
