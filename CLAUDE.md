@@ -1350,15 +1350,278 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-19 — SEVEN POST-PROCESSING IDEAS, ONE WIN, AND THE PIPELINE IS AT A
+LOCAL OPTIMUM IN EVERY DIRECTION TESTED.** All on the full 71-sample fold against
+the shipped **0.8760** (LB 0.908). Recording the negatives in one place because
+the next session's cheapest win is not re-running them:
+
+| arm | score | Δ |
+|---|---|---|
+| **shipped: postprocess + learned bonus 15.0** | **0.8760** | — |
+| bidirectional harmonic fusion, w 0.50 / 0.30 / 0.15 | 0.8754 / 0.8752 / 0.8750 | −0.001 |
+| edge softmax temperature 2.0 (smooth) | 0.8750 | −0.001 |
+| edge softmax temperature 0.5 / 0.25 (sharpen) | 0.8737 / 0.8736 | −0.002 |
+| feature TTA (D4 average of U-Net features) | 0.8646 | **−0.011** |
+| ILP over learned candidates | 0.8190 | **−0.057** |
+| finer peak picker, separation 3.0 | 0.8527 | −0.023 |
+| 8-view detection TTA | 0.8609 | −0.015 |
+
+**A prediction of mine was falsified by its own control, which is the part worth
+keeping.** Two smoothing operations lost (fusion −0.001, feature TTA −0.011), so I
+reasoned the relink cost must read the *ranking* of the edge probabilities rather
+than their calibration, and predicted that **sharpening** would help — with
+temperature 2.0 as a control that should lose. Measured: sharpening lost *more*
+(0.8736 at T=0.25) and the control lost *least* (0.8750). The mechanism was wrong.
+What the sweep actually shows is that the model's trained calibration is already
+matched to the micrometre cost scale, and both directions degrade it.
+
+**So we now hold two orthogonal 1-D sweeps with interior optima at the shipped
+values** — bonus magnitude (0.8687 at 0, rising to 0.8760 at 15, falling to 0.8738
+at 100) and probability shape (temperature 1.0 beating both 0.25 and 2.0). Two
+independent axes both peaking where we sit is real evidence of a local optimum
+rather than an unexplored plateau.
+
+**The unifying caveat on every one of these, and it is the transferable lesson.**
+Each of these components is *measured positive in the reference's own ablation*:
+ILP +0.037, TTA +0.009, fusion +0.005, feature TTA the 0.941→0.946 step. None
+transferred. The reason is consistent: their deltas are measured inside a pipeline
+whose linker is the ILP, and ours is a geometric relink that already reaches node
+recall 0.984. Components that repair a weak linker have nothing to repair here,
+and components that smooth probabilities degrade a cost that is already
+well-scaled. **Do not port another component on the strength of its published
+delta alone — check first what it is repairing, and whether we have that
+defect.**
+
+**2026-09-18 — 0.905 → 0.908, and the CV has now ranked correctly twice.**
+Submission `56340649` (kernel v10, git `308c77a`), the relink learned bonus at
+15.0.
+
+| change | CV | LB | CV Δ | LB Δ |
+|---|---|---|---|---|
+| threshold replaces the node budget | 0.7830 | 0.846 | — | — |
+| post-processing stack | 0.8687 | 0.905 | +0.086 | +0.059 |
+| **relink learned bonus 15.0** | **0.8760** | **0.908** | +0.007 | +0.003 |
+
+**The gap is stable and the delta compresses.** CV sits 0.032–0.036 below the LB
+in level, consistently, because fold 1 tests on `44b6`, our worst embryo. But the
+*change* transfers at only 40–70 %: +0.086 became +0.059, +0.007 became +0.003.
+Two points is not a calibration curve, but the direction has been right twice and
+the compression was present both times.
+
+**Operational consequence: a CV gain below ~0.005 is not worth a submission
+slot**, because it lands inside the leaderboard's own resolution once compressed.
+Bank such changes and ship them together with the next real one — which is not a
+licence to bundle blindly, since the 0.578 submission bundled four changes and
+became unattributable; it means a sub-0.005 arm should be *held*, not submitted
+alone.
+
+**2026-09-18 — THE LEARNED BONUS: 0.8687 → 0.8760, and it is the transformer we
+deleted twice.** Full 71-sample fold, one variable, reproducible (the 15.0 arm
+repeated on a different GPU model gives a bit-identical 0.8760):
+
+| bonus | 0 | 0.5 | 1.0 | 2.0 | 3.0 | 5.0 | 8.0 | **15.0** | 30.0 | 100.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| score | 0.8687 | 0.8697 | 0.8706 | 0.8706 | 0.8722 | 0.8737 | 0.8753 | **0.8760** | 0.8748 | 0.8738 |
+| adjJ | 0.8579 | 0.8587 | 0.8593 | 0.8609 | 0.8627 | 0.8644 | 0.8658 | 0.8657 | 0.8639 | 0.8630 |
+
+A clean interior optimum at **15.0**, which is **15× the reference's 1.0** — and
+the units say why. The bonus is subtracted from a cost in *micrometres*, and
+median inter-frame motion is 1.82 µm, so a bonus of 1.0 can only break near-ties.
+At 15 the geometric term is nearly vestigial and the cost has degenerated to
+**Hungarian on learned probabilities within a motion gate**. Past that it decays
+again: the gate stops discriminating and wrong-but-confident pairs win.
+
+**This is the third way to spend the edge head's probabilities and the only one
+that works**, which retires two earlier conclusions at once:
+
+| | score | why it fails |
+|---|---|---|
+| as edges, resolved greedily | 0.7830 | softmax abstention leaves a node with no parent; pruning deletes it (recall 0.9808 → 0.9390) |
+| as ILP candidates | 0.8190 | `node_weight` is 0.0, so deleting a node is free (recall 0.9419) |
+| **as a bonus on the geometric cost** | **0.8760** | geometry still assigns; the model only reorders within the gate, so it can neither abstain a node into deletion nor drop one |
+
+So "the learned edge head is worse, drop it" (measured twice, believed twice) was
+a statement about *our two ways of using it*, not about the head. **The general
+lesson: when a component loses, separate the component from the interface before
+concluding it has no signal.**
+
+**2026-09-18 — THE ILP HONESTLY MEASURED: −0.05, and the edge head's
+probabilities pay only as a COST BONUS.** Once the head actually loaded (see the
+measurement error below), the three ways to spend the same probabilities separate
+cleanly on the full 71-sample fold:
+
+| how the edge-head probabilities are spent | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| **as a bonus on the relink's geometric cost** | **0.8706** | **0.8593** | **0.1129** | **0.9841** |
+| not at all (shipped) | 0.8687 | 0.8579 | 0.1077 | 0.9830 |
+| as edges, resolved greedily | 0.7830 | 0.7819 | 0.0110 | 0.9808 |
+| as ILP candidates, threshold 0.48, gaps on | 0.8190 | 0.8167 | 0.0238 | 0.9419 |
+| as ILP candidates, threshold 0.10, no gaps | 0.8093 | 0.8027 | 0.0667 | 0.9548 |
+
+**The ILP loses by 0.05, not the 0.008 the broken runs suggested, and node recall
+is the mechanism**: 0.9419 against 0.9830. `ILPSolver`'s `node_weight` defaults to
+0.0, so deleting a node is free while an edge is worth at most 1.0 against a
+disappearance cost of 2.0 — every marginal node is cheaper to delete than to keep.
+The reference is insulated because its motion relink runs *afterwards* and
+re-derives edges from geometry, repairing the over-deletion. With the relink off —
+their own best arm — the cost balance has to carry itself, and ours does not. This
+does not refute their +0.037; it says the ILP is not transplantable into a
+pipeline whose linker already reaches node recall 0.983.
+
+**What does pay is the third option, which we had never tried.** The reference's
+cost is `motion + 0.05*raw − MOTION_RELINK_LEARNED_BONUS * prob` with the bonus at
+**1.0**; we shipped the first two terms and nothing else. As a bonus the head
+cannot cause either failure above — geometry still decides the assignment, and the
+model only pulls a confident pair forward by at most one micrometre of apparent
+distance. **+0.0019 over the shipped config**, which is ten times the ±0.0002
+cross-card noise floor, and adjJ, divJ and node recall all move the same way,
+which is what a real effect looks like.
+
+**2026-09-18 — A MEASUREMENT ERROR WORTH MORE THAN THE RESULT: six "ILP" arms
+ran with no edge head and measured something else entirely.** `submit.run` loaded
+the transformer edge head only `if learned_edges`, and the ILP arms did not pass
+that flag — so `edge_head` was `None`, the guard `ilp and edge_head is not None`
+was False, and **the ILP never ran**. What those arms actually varied was
+`--no-gaps`, which they all carried.
+
+**The tell was in the numbers and I missed it.** The six arms produced exactly two
+distinct outcomes, and they cluster by **GPU card** (cards 0 and 7 → 0.8605,
+card 3 → 0.8601), not by parameter. Six different cost settings collapsing onto
+two values is the signature of a parameter that is not reaching the code; the
+cross-card noise floor established the same day (±0.0002) is what the two clusters
+actually measure. **Rule: when an arm is insensitive to its own parameter, check
+that the parameter arrives before explaining why it does not matter.** I wrote a
+mechanism for the null result instead — that the solver spends its freedom in the
+unannotated 96.5 % the metric ignores — which is plausible, may even be true, and
+was not what those runs showed.
+
+Fixed two ways: the head now loads whenever *any* consumer asks for it
+(`learned_edges or ilp or learned_bonus`), and a checkpoint with no `transformer.*`
+weights now **raises** instead of silently degrading to the geometric linker and
+reporting the result as that arm.
+
+**The real finding from those runs, correctly labelled: gap closing is worth
++0.008 here.** 0.8687 with it, 0.8605 without, on the full fold. That contradicts
+the reference's own clean-split ablation, which prices gap closing at **+0.0004**
+— and the difference is explicable: their pipeline has the ILP choosing topology,
+so a gap is usually already bridged, while ours relies on the relink and needs the
+repair. Another instance of the standing lesson that their component deltas are
+measured at their operating point, not ours.
+
+**2026-09-18 — THE FINER PEAK PICKER: +0.008 node recall, −0.016 score, and it
+re-confirms a trade-off this file already recorded.** We diverged from the
+reference by construction and nobody had noticed: their `pool_kernel_from_um` is
+`round(µm/voxel)` forced odd, so `pool_kernel_um` of **3.0, 4.0 and 5.0 all give a
+3-voxel window** (min separation 3.25 µm), while our `_peak_window` is
+`2·ceil(sep/iso) − 1`, so our shipped `separation_um 4.0` gives a **5-voxel**
+window (4.875 µm). We suppress 1.5× more aggressively than the pipeline we forked.
+
+| | shipped, sep 4.0 | sep 3.0 |
+|---|---|---|
+| score | **0.8687** | 0.8527 |
+| adjJ | 0.8579 | 0.8483 |
+| **node recall** | 0.9830 | **0.9911** |
+| node count ratio | −0.071 | **+0.031** |
+| division Jaccard | 0.1077 | **0.0435** |
+
+Node recall 0.9911 is the highest measured in the project, so the mechanism is
+real: at 4.875 µm we were merging peaks the reference keeps, and sister separation
+one frame after a division has p5 5.41 µm. **But it loses on the other two terms
+and the division half was predictable from this file.** "Over-detection is free on
+edges but taxed on divisions" — the fork caps are *fractions* of node and edge
+counts (0.76 % per frame, 0.375 % global), so more nodes admit more false forks,
+and divJ halved. The node-count bonus also flipped from −0.071 to +0.031, worth
+about 0.01 on its own. The lesson is the one in metric fact 3's consequences:
+**detector and linker cannot be swept independently**, and a recall gain has to be
+paid for somewhere.
+
+**2026-09-18 — 0.846 → 0.905 ON THE LEADERBOARD, AND THE HARNESS RANKED IT
+CORRECTLY FOR THE FIRST TIME.** Submission `56332095` (kernel v9, git `0b978aa`)
+scored **0.905 public**, against the field median of 0.902. First time this
+project has been above the middle of the board.
+
+| | CV fold 1 | LB | gap |
+|---|---|---|---|
+| threshold 0.5, one-pass linker | 0.7830 | 0.846 | +0.063 |
+| **post-processing, threshold 0.965** | **0.8687** | **0.905** | +0.036 |
+
+**This file has twice recorded that our CV tracks the leaderboard in level but
+fails to rank two configurations. It ranked this one.** CV predicted +0.086 and
+the board gave +0.059 — same sign, same order of magnitude, and the config that
+won on CV won on the board. The LB sits *above* CV in both rows because fold 1
+tests on `44b6`, the crowded 0.77 %-annotated embryo that is our worst fold, so a
+fold-1 number is a conservative estimate rather than an optimistic one. That is
+worth knowing before spending a submission slot on confirmation: the harness can
+now carry a ranking decision, and the remaining slots are better spent on
+genuinely uncertain changes.
+
+Progress in context: 0.588 (2026-09-11) → 0.846 (2026-09-16) → **0.905**. The
+top-25 % line is 0.944 and top-10 % is 0.946, so **+0.041 remains.**
+
+**The division term decomposed, and the reference's gates are already at a local
+optimum.** Full fold, shipped config, forks labelled against GT:
+
+| | |
+|---|---|
+| forks emitted | 4,053 |
+| **charged as FP** | **40 (1.0 %)** — the rest fall in unannotated regions and are ignored |
+| TP / FN | 7 / 19 → recall **0.269** |
+| precision | 0.149 |
+
+FP being 6× TP suggested tightening should pay. **It does not** — three arms, all
+at or below the shipped 0.8687:
+
+| arm | score | divJ |
+|---|---|---|
+| **reference defaults** | **0.8687** | 0.1061 |
+| symmetry τ 0.6 → 0.75 | 0.8682 | **0.1061 — identical** |
+| forward divergence 2.25 → 3.5 µm | 0.8641 | 0.0625 |
+| wider gates (parent 11.0, sister 18.0) | 0.8679 | 0.1000 |
+
+Two things to take from it. Tightening a structural gate removes true forks at
+least as fast as false ones, so the average precision of 0.149 does not describe
+the *marginal* candidate. And **the symmetry test is not the active filter** — at
+τ 0.75 it rejected exactly zero candidates, leaving divJ bit-identical, while
+divergence halved it. So do not sweep symmetry again; divergence at 2.25 µm and
+the mutual-nearest-orphan rule are what admit the candidates.
+
+**Consequence: the remaining division loss needs a better ranker or a new
+feature, not a different threshold.** That converges with the 2026-09-12 finding
+that geometric features do not separate real from false forks at the quartiles —
+but that study was run at divJ 0.015 behind a 6 µm gate, and this one is at
+divJ 0.106 with the gate open, so the conclusion now rests on a real operating
+point rather than on 3 proposed forks. Untested and still open: appearance
+features (intensity drop, nuclear shape), which is the one axis that study
+explicitly did not cover.
+
+**Our own detector, measured honestly for the first time against the public one.**
+E7 fold 1 epoch 95 (trained on `6bba`'s 128 samples, tested on `44b6`) through
+the identical post-processing stack:
+
+| detector | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| public 400-epoch pack (trained on **all 199**, so contaminated) | 0.8687 | 0.8579 | 0.1077 | 0.9830 |
+| **ours, E7 epoch 95, honestly held out** | 0.7755 | 0.7704 | 0.0508 | 0.9402 |
+
+The public number is an upper bound — it has seen these 71 videos — but a
+**0.043 node-recall gap** is too large to be only contamination. Our detector is
+genuinely behind, and the public checkpoint stays the submission detector (legal:
+pre-trained models are explicitly allowed). The apples-to-apples test of our
+recipe is `E7_alltrain_100ep`, which trains on the same 199 samples and is
+therefore contaminated the same way; it is at epoch 55/100.
+
 **2026-09-18 — THE POST-DETECTION STACK IS THE GAP, AND IT IS WORTH +0.076.
 Measured on the full 71-sample fold through the submission path, one variable at
 a time, same public checkpoint throughout:**
 
 | arm | score | adjJ | divJ | node recall | node ratio |
 |---|---|---|---|---|---|
-| threshold 0.5, one-pass gate 8 µm | 0.7830 | 0.7819 | 0.0110 | 0.9808 | +0.0424 |
+| threshold 0.5, one-pass gate 8 µm (**scored 0.846 on LB**) | 0.7830 | 0.7819 | 0.0110 | 0.9808 | +0.0424 |
 | threshold 0.965 | 0.7931 | 0.7920 | 0.0110 | 0.9805 | −0.0635 |
-| **+ full post-processing** | **0.8687** | **0.8579** | **0.1077** | 0.9830 | −0.0708 |
+| **+ full post-processing — SHIPPED** | **0.8687** | **0.8579** | **0.1077** | 0.9830 | −0.0708 |
+| post-processing, threshold 0.93 | 0.8649 | 0.8556 | 0.0938 | 0.9829 | −0.0448 |
+| post-processing + 8-view TTA, threshold 0.965 | 0.8609 | 0.8561 | 0.0484 | 0.9788 | −0.1489 |
+| post-processing + 8-view TTA, threshold 0.93 | 0.8593 | 0.8543 | 0.0492 | 0.9802 | −0.1083 |
 | 8-view D4 TTA alone, threshold 0.965 | 0.7916 | 0.7907 | 0.0088 | 0.9779 | −0.1430 |
 | learned transformer edge head | 0.7632 | 0.7614 | 0.0178 | 0.9390 | −0.2232 |
 
@@ -1392,13 +1655,34 @@ pruning then deletes and node recall falls 0.9808 → 0.9390. The +0.073 recorde
 for it on 2026-09-14 came from 8 contaminated videos at effective n ≈ 3. Kept
 behind `--learned-edges` as the artefact behind the number.
 
-**8-view TTA is flat, and the reason is the operating point, not the map.** Every
-public notebook above 0.942 uses it, so a flat result wants explaining: averaging
-logits over the D4 group suppresses peaks that only one view fired on, so at a
-*fixed* threshold it emits fewer nodes (ratio −0.143 against −0.064) rather than
-ranking better. It needs the threshold retuned underneath it, which is measuring
-now. Runtime is not the obstacle — 12.0 s/video, **0.66 h for a train-sized test
-set** against the 12 h cap.
+**8-view TTA LOSES, and the mechanism matters because every public notebook above
+0.942 uses it.** Three arms: alone it is flat (0.7916 vs 0.7931), and on top of
+post-processing it costs 0.008 at threshold 0.965 and 0.009 at 0.93. **The damage
+is concentrated entirely in the division term** — divJ 0.1077 → 0.0484/0.0492,
+i.e. it halves — while adjJ barely moves (0.8579 → 0.8561). Averaging logits over
+the D4 symmetries of (y, x) acts like a blur in that plane, and sister separation
+one frame after a division has **p5 5.41 µm on a 1.625 µm grid**, so the two
+daughters merge into one peak under the average and the fork stops being a
+candidate. Retuning the threshold underneath does not recover it, which rules out
+"the operating point moved" as the whole story (that effect is real too — node
+ratio −0.149 against −0.071).
+
+**So TTA is not wrong in general, it is wrong at this resolution.** It is the
+first concrete argument for `--downsample 1,2,2` since the idea was raised: on a
+0.8125 µm grid the daughters stay resolved under the blur, and TTA plus a finer
+grid is a coherent pair where either alone is not. That makes task #19 worth
+doing after all, for a reason other than the one it was filed under.
+
+**And on Kaggle it is not free, which is a correction to a claim made twice in
+this file.** "Runtime is free, 0.66 h against a 12 h cap" was measured on an
+A6000. The detector measured **13.3 s/video on the real T4 kernel**, so eight
+views is ~5.9 h before post-processing, against ~1.6 h without. Extrapolate
+inference cost from the T4 measurement in `kaggle/README.md`, never from this
+box.
+
+**The threshold is a real interior optimum, not an inherited constant.** 0.965
+beats 0.93 by 0.004 under post-processing, so the value taken from the public
+notebooks survives being checked rather than being assumed.
 
 **Two bugs in the new stack, both caught by `validate_submission` rather than by
 the score** — which is the argument for the validator earning its place in the

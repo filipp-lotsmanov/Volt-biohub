@@ -140,6 +140,71 @@ def main(argv=None) -> int:
     p.add_argument("--postprocess", action="store_true",
                    help="Full post-detection stack; replaces gate linking.")
     p.add_argument("--min-track-len", type=int, default=6)
+    p.add_argument("--ilp", action="store_true",
+                   help="Solve the RAW learned candidate graph with tracksdata's "
+                        "ILP instead of assigning per frame pair. The reference's "
+                        "own clean-split ablation prices this at +0.037, the "
+                        "largest single component; our adjJ 0.858 sits exactly on "
+                        "their 'ILP off' arm of 0.8587. Needs --weights.")
+    p.add_argument("--learned-bonus", type=float, default=0.0,
+                   help="Subtract this x the edge-head probability from the "
+                        "relink's Hungarian cost, in micrometres. The reference "
+                        "ships 1.0 and we shipped nothing. Geometry still decides "
+                        "the assignment; the model only breaks ties -- which is "
+                        "the one way to spend these probabilities that we have not "
+                        "measured losing (greedy edges 0.7632, ILP 0.8605).")
+    p.add_argument("--edge-temperature", type=float, default=1.0,
+                   help="Divide the edge logits before the softmax: below 1 "
+                        "sharpens, above 1 smooths. Two smoothing operations "
+                        "lost here (fusion -0.001, feature TTA -0.011), which "
+                        "says the cost reads the RANKING; this tests the "
+                        "opposite direction. Not the same as the bonus size.")
+    p.add_argument("--feature-tta", action="store_true",
+                   help="Average the U-Net FEATURES over the 8 D4 views while "
+                        "leaving detection sharp. Detection TTA loses here "
+                        "(0.8609 vs 0.8687) by blurring daughters into one peak; "
+                        "this touches only what the edge head reads, and is the "
+                        "public chain's largest single step (0.941 -> 0.946).")
+    p.add_argument("--bidirectional-weight", type=float, default=0.0,
+                   help="Fuse forward and reverse edge probabilities by a "
+                        "weighted harmonic mean (reference 0.15, measured "
+                        "+0.0053). Touches no detection and no geometry, so the "
+                        "daughter-blurring that killed detection TTA cannot "
+                        "occur -- it only sharpens what the bonus spends.")
+    p.add_argument("--candidate-threshold", type=float, default=0.48,
+                   help="Probability above which a pair becomes an ILP candidate. "
+                        "No distance gate. Reference 0.48; 0.44 measured +0.003.")
+    p.add_argument("--ilp-disappearance", type=float, default=None,
+                   help="Cost of a track ending. Reference 2.0; 3.0 measured "
+                        "+0.004 on 18 of 20 volumes.")
+    p.add_argument("--ilp-appearance", type=float, default=None,
+                   help="Cost of a track starting. Reference 0.0; 1.0 measured "
+                        "-0.0055 and suppresses divisions.")
+    p.add_argument("--ilp-node", type=float, default=None,
+                   help="Reward for keeping a node (negative rewards, the solver "
+                        "minimises). The reference leaves it 0.0, which makes "
+                        "deleting a node free and costs us node recall.")
+    p.add_argument("--ilp-edge", type=float, default=None,
+                   help="Edge weight multiplying the probability. Reference -1.0, "
+                        "so an edge is worth at most 1.0 against a disappearance "
+                        "cost of 2.0 -- scale it up to make links pay.")
+    p.add_argument("--ilp-division", type=float, default=None,
+                   help="Cost of a fork. Reference 1.2; 0.8 and 1.6 both lose.")
+    p.add_argument("--no-gaps", action="store_true",
+                   help="Skip single-frame gap closing, which the reference's "
+                        "ablation prices at +0.0004 once a solver picks topology.")
+    p.add_argument("--div-symmetry-tau", type=float, default=None,
+                   help="Raise to demand more even splits. Full-fold decomposition "
+                        "at the default 0.6: TP 7, FP 40, FN 19 -- FP is 6x TP, so "
+                        "the precision side may already be past its optimum.")
+    p.add_argument("--div-diverge-um", type=float, default=None,
+                   help="Minimum extra separation of the grandchildren over the "
+                        "sisters. Raise to demand stronger post-mitotic divergence.")
+    p.add_argument("--div-global-frac", type=float, default=None,
+                   help="Cap on forks as a fraction of edges. A blunt count limit: "
+                        "it drops candidates by order, not by quality.")
+    p.add_argument("--div-parent-um", type=float, default=None)
+    p.add_argument("--div-sister-um", type=float, default=None)
     p.add_argument("--tta", action="store_true",
                    help="8-view D4 TTA in (y, x), averaged in logit space.")
     p.add_argument("--switch-at", type=float, default=None)
@@ -182,6 +247,27 @@ def main(argv=None) -> int:
             learned_edges=args.learned_edges,
             edge_threshold=args.edge_threshold,
             tta=args.tta,
+            ilp=args.ilp,
+            learned_bonus=args.learned_bonus,
+            bidirectional_weight=args.bidirectional_weight,
+            feature_tta=args.feature_tta,
+            temperature=args.edge_temperature,
+            candidate_threshold=args.candidate_threshold,
+            gaps=not args.no_gaps,
+            ilp_kwargs={k: v for k, v in {
+                "disappearance_weight": args.ilp_disappearance,
+                "appearance_weight": args.ilp_appearance,
+                "division_weight": args.ilp_division,
+                "node_weight": args.ilp_node,
+                "edge_weight": args.ilp_edge,
+            }.items() if v is not None} or None,
+            div_kwargs={k: v for k, v in {
+                "symmetry_tau": args.div_symmetry_tau,
+                "diverge_um": args.div_diverge_um,
+                "global_frac": args.div_global_frac,
+                "parent_um": args.div_parent_um,
+                "sister_um": args.div_sister_um,
+            }.items() if v is not None} or None,
         )
         rows = score_csv(csv_path, data_dir, names)
         if args.keep_csv:

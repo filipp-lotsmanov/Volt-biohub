@@ -182,7 +182,8 @@ def load_volumes(zarr_path: Path) -> tuple[np.ndarray, float]:
     return np.clip((raw - lo) / (hi - lo + 1e-6), 0, None), q90
 
 
-def load_detector(weights: Path, device, tta: bool = False):
+def load_detector(weights: Path, device, tta: bool = False,
+                  feature_tta: bool = False):
     """Rebuild just the detection half of the trained model.
 
     The checkpoint is a joint ``UNetNodeTransformer`` state dict: ``unet.*``,
@@ -251,33 +252,63 @@ def load_detector(weights: Path, device, tta: bool = False):
         downsampled grid is geometrically isotropic. Rotations need y == x, which
         holds for every sample measured (64 x 64 after the 1,4,4 stride), so a
         differently shaped hidden sample falls back to the two flips rather than
-        raising. Features are returned from the identity view: they feed the edge
-        head's coordinate indexing, which no symmetry average is defined for.
+        raising.
+
+        **Feature TTA is a separate switch, and the separation is the point.**
+        An earlier version of this docstring claimed features could not be
+        symmetry-averaged "because no symmetry average is defined for coordinate
+        indexing". That was simply wrong: a feature map is (C, Z, Y, X) and its
+        spatial axes invert exactly like the logits. Keeping the two flags apart
+        matters because detection TTA *loses* here (0.8609 against 0.8687) by
+        blurring two daughters into a single peak, while the public chain's
+        largest single step (0.941 -> 0.946) is averaging the features the EDGE
+        predictor consumes. With ``feature_tta`` on and ``tta`` off, detections
+        stay sharp and only the edge probabilities are smoothed -- so the failure
+        that killed detection TTA structurally cannot occur.
         """
+        avg_feats = feature_tta and want_features
         with torch.no_grad():
             t = torch.from_numpy(frame).to(device)
-            if not tta:
+            if not tta and not avg_feats:
                 logits, feats = _forward(t, want_features)
                 logits = logits.cpu().numpy()
                 return (logits, feats) if want_features else logits
 
             square = t.shape[-1] == t.shape[-2]
             acc = None
+            facc = None
             feats = None
             for k in (0, 1, 2, 3) if square else (0,):
                 rot = torch.rot90(t, k, dims=(-2, -1)) if k else t
                 for flip in (False, True):
+                    identity = k == 0 and not flip
                     view = torch.flip(rot, dims=(-1,)) if flip else rot
-                    out, f = _forward(view, want_features and k == 0 and not flip)
+                    # Ask for features on every view only when averaging them.
+                    out, f = _forward(view, want_features and (avg_feats or identity))
                     if f is not None:
-                        feats = f
+                        if avg_feats:
+                            # Same inverse as the logits, on the same two axes:
+                            # a feature map is (C, Z, Y, X).
+                            if flip:
+                                f = torch.flip(f, dims=(-1,))
+                            if k:
+                                f = torch.rot90(f, -k, dims=(-2, -1))
+                            facc = f if facc is None else facc + f
+                        elif identity:
+                            feats = f
                     if flip:
                         out = torch.flip(out, dims=(-1,))
                     if k:
                         out = torch.rot90(out, -k, dims=(-2, -1))
                     acc = out if acc is None else acc + out
+                    if not tta and identity:
+                        # Detection TTA is off: keep the sharp identity map and
+                        # stop accumulating, so the peaks are unblurred.
+                        sharp = acc
             n_views = 8 if square else 2
-            logits = (acc / n_views).cpu().numpy()
+            logits = ((acc / n_views) if tta else sharp).cpu().numpy()
+            if avg_feats:
+                feats = facc / n_views
             return (logits, feats) if want_features else logits
 
     return detect_map
@@ -350,6 +381,78 @@ def detect_and_link_learned(
     return coords_per_t, links_per_t
 
 
+def detect_and_candidates(
+    volumes: np.ndarray,
+    detect_map,
+    edge_head,
+    n_per_frame: int,
+    separation_um: float,
+    downsample: tuple[int, int, int],
+    refine: bool = False,
+    threshold: float | None = None,
+    candidate_threshold: float = 0.48,
+    want_probs: bool = False,
+    bidirectional_weight: float = 0.0,
+    temperature: float = 1.0,
+) -> tuple[list[np.ndarray], list[tuple[int, int, float, float]], list | None]:
+    """Detect, then emit ILP *candidate* edges instead of resolved links.
+
+    Same interleaved structure and the same memory argument as
+    ``detect_and_link_learned`` — two frames of features live, 67 MB rather than
+    3.4 GB — but it never resolves the probabilities into a topology. That is the
+    whole point: resolving them greedily is what made the edge head score 0.7632
+    against the geometric linker's 0.7830, because an abstention becomes a
+    deleted node. Handed to the solver, the same abstention becomes a
+    disappearance cost it can price against the alternatives.
+
+    Candidates are accumulated sparsely per frame pair rather than by keeping the
+    probability matrices: 770 x 770 float32 per pair is 2.4 MB, so a 100-frame
+    video would hold 235 MB of matrices to extract a few thousand candidates
+    from. The source-softmax means at most two sources clear 0.48 for any target,
+    so the sparse form is 100x smaller with no loss.
+    """
+    from volt_biohub.edge_head import pair_probs
+    from volt_biohub.ilp_link import candidates_from_probs
+
+    window_shape = (2, *volumes.shape[1:])
+    coords_per_t: list[np.ndarray] = []
+    candidates: list[tuple[int, int, float, float]] = []
+    kept_probs: list[np.ndarray] | None = [] if want_probs else None
+    offset = 0
+    prev_feat = None
+
+    for t, frame in enumerate(volumes):
+        logits, feat = detect_map(frame, want_features=True)
+        coords = detect_from_map(logits, n_per_frame, ISO_UM, separation_um,
+                                refine=refine, threshold=threshold)
+        coords_per_t.append(coords)
+        if t > 0:
+            probs = pair_probs(
+                edge_head, prev_feat, feat, coords_per_t[t - 1], coords,
+                t_src=0, window_shape=window_shape, downsample=downsample,
+                bidirectional_weight=bidirectional_weight,
+                temperature=temperature,
+            )
+            # candidates_from_probs indexes globally, so hand it just this pair
+            # and shift by the running offset rather than re-deriving offsets
+            # over a coords list that is still being built.
+            local = candidates_from_probs(
+                [probs], [coords_per_t[t - 1], coords], ISO_UM,
+                threshold=candidate_threshold,
+            )
+            # `local` is already indexed into [prev, cur] concatenated, so a
+            # single running offset shifts both endpoints into video space.
+            candidates.extend((offset + a, offset + b, p, d) for a, b, p, d in local)
+            offset += len(coords_per_t[t - 1])
+            if kept_probs is not None:
+                # ~36 MB for a 100-frame video at 300 nodes/frame, 235 MB at 770.
+                # Affordable, and the alternative (recomputing per stage) would
+                # run the transformer twice.
+                kept_probs.append(probs)
+        prev_feat = feat
+    return coords_per_t, candidates, kept_probs
+
+
 def run(
     test_dir: Path,
     out_path: Path,
@@ -368,6 +471,17 @@ def run(
     postprocess: bool = False,
     min_track_len: int = 6,
     tta: bool = False,
+    div_kwargs: dict | None = None,
+    ilp: bool = False,
+    learned_bonus: float = 0.0,
+    bidirectional_weight: float = 0.0,
+    temperature: float = 1.0,
+    feature_tta: bool = False,
+    candidate_threshold: float = 0.48,
+    ilp_kwargs: dict | None = None,
+    gaps: bool = True,
+    relink_kwargs: dict | None = None,
+    gap_kwargs: dict | None = None,
 ) -> Path:
     """Predict every video in *test_dir* and write a validated submission."""
     names = list_datasets(test_dir)
@@ -379,8 +493,15 @@ def run(
     if weights is not None:
         device = resolve_device()
         print(f"detector: unet on {device} ({weights})", flush=True)
-        detect_map = load_detector(weights, device, tta=tta)
-        if learned_edges:
+        detect_map = load_detector(weights, device, tta=tta,
+                                   feature_tta=feature_tta)
+        # The head is needed by three different consumers, not just --learned-edges:
+        # the ILP needs its probabilities as candidate weights, and the relink
+        # needs them as a cost bonus. Gating the load on `learned_edges` alone
+        # silently disabled both -- six "ILP" arms ran with edge_head None and
+        # measured --no-gaps instead, clustering by GPU card rather than by
+        # parameter. Load it whenever a consumer asked for it.
+        if learned_edges or ilp or learned_bonus:
             import json as _json
 
             from volt_biohub.edge_head import load_edge_head
@@ -388,9 +509,15 @@ def run(
             edge_head = load_edge_head(weights, cfg, device)
             # None means the checkpoint has no transformer.* weights, so fall
             # back to the geometric linker rather than dying at hour ten.
-            which = ("learned edge head" if edge_head is not None
-                     else "geometric (no transformer.* in checkpoint)")
-            print(f"linker: {which}", flush=True)
+            wanted = ("learned edge head" if learned_edges else
+                      "ILP candidates" if ilp else "relink cost bonus")
+            if edge_head is None:
+                raise SystemExit(
+                    f"asked for {wanted} but the checkpoint at {weights} has no "
+                    "transformer.* weights. Failing here rather than silently "
+                    "running the geometric linker and reporting it as this arm."
+                )
+            print(f"linker: {wanted}", flush=True)
     else:
         print("detector: dog (no weights)", flush=True)
 
@@ -429,7 +556,20 @@ def run(
             use_map = detect_map if crowded else None
             picked = "unet" if crowded else "dog"
         learned_links = None
-        if edge_head is not None and use_map is not None:
+        candidates = None
+        probs_per_pair = None
+        if (ilp or learned_bonus) and edge_head is not None and use_map is not None:
+            coords, candidates, probs_per_pair = detect_and_candidates(
+                volumes, use_map, edge_head, n_per_frame, separation_um,
+                DOWNSAMPLE, refine=refine, threshold=det_threshold,
+                candidate_threshold=candidate_threshold,
+                want_probs=bool(learned_bonus),
+                bidirectional_weight=bidirectional_weight,
+                temperature=temperature,
+            )
+            if not ilp:
+                candidates = None
+        elif edge_head is not None and use_map is not None:
             coords, learned_links = detect_and_link_learned(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
                 DOWNSAMPLE, refine=refine, threshold=det_threshold,
@@ -450,6 +590,16 @@ def run(
             centre = np.array([[s // 2 for s in volumes.shape[1:]]], dtype=np.int64)
             coords = [centre] + [np.empty((0, 3), dtype=np.int64)] * (len(volumes) - 1)
 
+        if candidates is not None:
+            # The solver replaces the linker AND selects the node set. It runs
+            # before post-processing so the remaining stages operate on its
+            # topology -- and `relink=False` below is the whole point: the
+            # reference's own ablation prices its two-pass Hungarian at -0.011
+            # precisely because it overwrites these edges.
+            from volt_biohub.ilp_link import solve as ilp_solve
+            coords, links = ilp_solve(coords, candidates, ISO_UM,
+                                      **(ilp_kwargs or {}))
+
         if postprocess:
             # Replaces the one-pass fixed-gate linker entirely: two-pass Hungarian
             # with velocity extrapolation, single-frame gap closing, structurally
@@ -461,6 +611,16 @@ def run(
                 divisions=division_gate_um is not None,
                 min_track_len=min_track_len,
                 shape=tuple(volumes.shape[1:]),
+                div_kwargs=div_kwargs,
+                links_per_t=links if candidates is not None else None,
+                gaps=gaps,
+                relink_kwargs={
+                    **(relink_kwargs or {}),
+                    **({"probs_per_pair": probs_per_pair,
+                        "learned_bonus": learned_bonus}
+                       if probs_per_pair is not None else {}),
+                } or None,
+                gap_kwargs=gap_kwargs,
             )
         elif learned_links is not None:
             links = learned_links

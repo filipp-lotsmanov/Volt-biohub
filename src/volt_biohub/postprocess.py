@@ -38,6 +38,7 @@ TIGHT_UM = 6.0
 RELAXED_UM = 10.0
 LAMBDA_V = 0.5
 ALPHA_RAW = 0.05
+LEARNED_BONUS = 1.0
 # --- gap closing -------------------------------------------------------------
 GAP_SPAN_UM = 11.6          # total span across one missing frame (5.8 per step)
 GAP_REUSE_UM = 3.2
@@ -69,6 +70,8 @@ def motion_relink(
     relaxed_um: float = RELAXED_UM,
     lambda_v: float = LAMBDA_V,
     alpha_raw: float = ALPHA_RAW,
+    probs_per_pair: list[np.ndarray] | None = None,
+    learned_bonus: float = LEARNED_BONUS,
 ) -> list[list[tuple[int, int, float]]]:
     """Two-pass Hungarian assignment with velocity extrapolation.
 
@@ -84,6 +87,18 @@ def motion_relink(
     confident pairs first and only the leftovers see the relaxed gate, so a
     genuine long displacement is matched without the loose gate being available
     to everyone — which is the failure a single 8 um gate has.
+
+    **The learned bonus is the third term, and it is how the edge head earns its
+    keep here.** The reference's cost is
+    ``motion + 0.05*raw - MOTION_RELINK_LEARNED_BONUS * prob``; we shipped only
+    the first two. This matters because of what we measured trying the other two
+    ways to spend those probabilities: resolved greedily into edges they score
+    0.7632 against this linker's 0.7830 (abstention orphans nodes), and handed to
+    a global ILP they score 0.8605 against 0.8687 (the solver's decisions land in
+    the unannotated 96.5% the metric ignores). As a *bonus on a geometric cost*
+    they cannot do either -- geometry still decides the assignment, and the model
+    only breaks ties in micrometre-scale units, so a confident pair is pulled
+    forward by at most ``learned_bonus`` micrometres of apparent distance.
     """
     out: list[list[tuple[int, int, float]]] = []
     prev_pos: dict[int, np.ndarray] = {}     # index in frame t -> its position at t-1
@@ -105,6 +120,18 @@ def motion_relink(
         raw = np.linalg.norm((s[:, None, :] - g[None, :, :]) * iso_um, axis=-1)
         motion = np.linalg.norm((pred[:, None, :] - g[None, :, :]) * iso_um, axis=-1)
         cost_base = motion + alpha_raw * raw
+        if probs_per_pair is not None and learned_bonus:
+            pr = probs_per_pair[t]
+            if pr.shape == cost_base.shape:
+                cost_base = cost_base - learned_bonus * pr
+            elif pr.size:
+                # A shape mismatch means detections and probabilities came from
+                # different passes, which would silently score the wrong pairs
+                # against each other. Louder than a wrong answer.
+                raise ValueError(
+                    f"probability matrix for frame pair {t} is {pr.shape}, "
+                    f"expected {cost_base.shape}"
+                )
 
         links: list[tuple[int, int, float]] = []
         used_s: set[int] = set()
@@ -524,6 +551,12 @@ def run_all(
     min_track_len: int = MIN_TRACK_LEN,
     smooth: bool = True,
     shape: tuple[int, int, int] | None = None,
+    div_kwargs: dict | None = None,
+    links_per_t: list[list[tuple[int, int, float]]] | None = None,
+    gaps: bool = True,
+    relink_kwargs: dict | None = None,
+    gap_kwargs: dict | None = None,
+    smooth_kwargs: dict | None = None,
 ):
     """The reference's ordering, which is load-bearing — see each step's docstring.
 
@@ -532,14 +565,33 @@ def run_all(
     can be joined; divisions must precede it too so the fork exemption protects
     the component they create; smoothing runs last so its neighbourhoods reflect
     the final graph.
+
+    **Pass *links_per_t* to skip the relink entirely**, using the topology a
+    better linker already produced. This is not a convenience: the reference's
+    own clean-split ablation prices its two-pass Hungarian at **-0.011**, because
+    once a global solver has chosen the edges, re-deriving them from geometry
+    overwrites good ones (and, in their measurement, steals division daughters —
+    the division term rose 0.059 -> 0.114 when it was removed). The relink earned
+    its +0.076 here only because it replaced a naive one-pass fixed-gate linker;
+    against the ILP it is expected to be the harmful pass, and this parameter is
+    how that gets measured rather than assumed.
+
+    *gaps* likewise switches off single-frame gap closing, which the same
+    ablation prices at +0.0004 — i.e. nothing — once the solver is choosing
+    topology.
     """
-    links = motion_relink(coords_per_t, iso_um)
-    coords, links = close_single_frame_gaps(coords_per_t, links, iso_um)
+    links = (motion_relink(coords_per_t, iso_um, **(relink_kwargs or {}))
+             if links_per_t is None else links_per_t)
+    coords = coords_per_t
+    if gaps:
+        coords, links = close_single_frame_gaps(coords_per_t, links, iso_um,
+                                               **(gap_kwargs or {}))
     if divisions:
-        coords, links = add_safe_divisions(coords, links, iso_um)
+        coords, links = add_safe_divisions(coords, links, iso_um,
+                                           **(div_kwargs or {}))
     coords, links = filter_short_tracks(coords, links, min_len=min_track_len)
     if smooth:
-        coords, links = linefit_smooth(coords, links)
+        coords, links = linefit_smooth(coords, links, **(smooth_kwargs or {}))
     links = _enforce_structure(links)
     if shape is not None:
         coords = _clamp_to_grid(coords, shape)
