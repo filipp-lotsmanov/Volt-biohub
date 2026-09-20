@@ -8,9 +8,9 @@ Two goals, score first where they conflict: **top-7 leaderboard placement**, and
 repo that shows engineering judgement. The write-up is assembled in the final week
 from artifacts accumulated along the way — don't stop to write essays mid-competition.
 
-**Deadlines** (all 23:59 UTC). Started 2026-06-29. **2026-09-22: entry deadline *and*
-team-merger deadline** — the team must exist before it, and nothing recovers a miss.
-**2026-09-29: final submission.** Features freeze ~Sept 22.
+**Deadlines** (all 23:59 UTC). Started 2026-06-29. 2026-09-22 was the entry and
+team-merger deadline; **the team ("Volt") exists, so that gate is closed** — stop
+raising it. **2026-09-29: final submission.** Features freeze ~Sept 22.
 
 **Prizes**, top 7: $18k / $12k / $8k / $6k / $6k / $5k / $5k.
 
@@ -637,6 +637,15 @@ with no error bars. So:
 - Unusually for a Kaggle competition, the **leaderboard is a genuine third embryo** and
   therefore real information. Still don't search on it, but weigh it more than you
   normally would against a 2-fold CV.
+- **BUT THE PUBLIC LEADERBOARD IS ONLY 29 % OF THE TEST SET** (verbatim on the
+  leaderboard page; Kaggle's own config carries `leaderboardPercentage: 29`). The final
+  standing uses the other **71 %**, which nobody has ever seen. Everything this file
+  calls "the leaderboard" is a 29 % sample, and `usesSynchronousReruns: true` means both
+  scores are computed at rerun with only the public part revealed. Two consequences that
+  should govern the endgame: a change worth less than the public LB's own resolution is
+  not evidence of anything, and **our held-out CV is a better predictor of the private
+  71 % than the public LB is** — because the public LB is what 862 teams have been
+  fitting to. Kaggle also states plainly that "the final standings may be different".
 
 **The local `test/` folder is fake** — now proven, not inferred. It holds exactly **4
 samples, byte-identical to their train counterparts** (`44b6_0113de3b`, `44b6_0b24845f`,
@@ -1311,8 +1320,8 @@ and `240247@buas.nl` / `240843@buas.nl` are verified on the university accounts
 deliberately, since `/root` is the container's ephemeral overlay.
 
 Not done: `scripts/make_splits.py` as a committed script (a deliberate
-`dataset_splits.json` now exists beside the data, but from a throwaway script), any
-modelling with a CV number attached, Kaggle team.
+`dataset_splits.json` now exists beside the data, but from a throwaway script). The
+Kaggle team exists — see Gate 0.
 
 **2026-09-16 — THE LOSS/METRIC ANTI-CORRELATION IS DEAD. It was the selection metric
 all along.** This file has called it "the single most important open problem" since
@@ -1349,6 +1358,66 @@ Consequences:
 `--save-every 5`. Split 4 was added as an all-train split (199 samples) matching the
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
+
+**2026-09-20 — THE ENDGAME FACTS. Read these before planning any more work.**
+
+**1. The public leaderboard is 29 % of the test set; the final standing is the other
+71 %.** Verbatim on the leaderboard page, and `leaderboardPercentage: 29` in Kaggle's
+config. See the expanded note under Data. This is the most consequential fact in the
+competition and it was absent from this file until today.
+
+**2. Rank is wildly non-linear in score, and the cliff is the whole game.** Measured
+from the downloaded leaderboard, 3761 teams, 2026-09-20. We are **rank 2023 at 0.908**,
+team "Volt".
+
+| target | rank | places gained |
+|---|---|---|
+| 0.908 — us | 2023 | — |
+| 0.920 | 1627 | +396 |
+| 0.940 | 1343 | +680 |
+| 0.946 | 1091 | +932 |
+| **0.947** | **376** | **+1647** |
+| 0.950 | 115 | +1908 |
+| 0.966 — 7th, prize cutoff | 7 | — |
+
+Pulled through the API, the pile is even denser than the CSV suggests: **697 teams at
+exactly 0.947**, 165 at 0.946, 86 at 0.948 — 862 teams inside 0.002, i.e. **18.5 % of
+the entire board on one public-notebook configuration**. Note `scoreTruncationNumDecimals: 3`,
+so some of that pile is display granularity rather than identical pipelines.
+
+**3. That cluster is fitted to the 29 %.** Its weights (`pilkwang/…seed314159-v1`) carry
+a `split_manifest.json` whose train list is **all 199 train videos**, so any hold-out
+drawn from train is in-sample for it; and the two notebooks above the cluster that have
+been reverse-engineered *self-declare* `leaderboard_feedback_used_for_configuration:
+true`, with per-movie overrides tuned against the four public test movies. One
+participant measured local-CV to LB correlation at **r ≈ −0.2** in the 0.93–0.95 band.
+Multiple threads predict a large shake-up. **So our position is better than rank 2023
+suggests**: every number in this file was measured on held-out CV and we have made 7 LB
+submissions, not 86.
+
+**4. Two final submissions are selectable** (`numScoredSubmissions: 2`, rules §2.2.b),
+and **the auto-selection criterion is not documented for this competition** — the rules
+only say "or automatically selected by Kaggle". Do not assume best-public is taken;
+**select both slots by hand**. Suggested shape: one CV-validated safe pick, one
+higher-variance pick.
+
+**5. Deadlines, from Kaggle's config rather than recollection.** Entry and team-merger
+both **2026-09-22 23:59 UTC**; final submission **2026-09-29 23:59 UTC**; 5
+submissions/day; max team size 5. Also `kernelsPublishingDisabledDeadline: 2026-09-22`
+— the public notebook frontier freezes then. And **`requiresIdentityVerification: true`**:
+prize eligibility needs it, so it should be confirmed done well before the end.
+
+**6. Our own detector has converged and is not the path.** `E7_alltrain` on all 199
+samples: epoch 70 → 0.7998, **epoch 99 → 0.8007**. Twenty-nine epochs bought +0.001
+against the public pack's 0.8760 through the identical stack. Training to their 400
+epochs (~200 GPU-hours, 8 days) is therefore not a gamble worth taking — the curve is
+flat, not slow.
+
+**7. We were running the wrong checkpoint.** The public cluster blends *two*: primary
+`pilkwang/biohub-tracking-support-pack-50ep-v1` (20,017 downloads) and secondary
+`pilkwang/biohub-temporal-unet3d-seed314159-v1`. **We have been using the secondary
+alone and had never downloaded the primary.** Different md5, identical architecture and
+byte size. Measuring it now.
 
 **2026-09-19 — SEVEN POST-PROCESSING IDEAS, ONE WIN, AND THE PIPELINE IS AT A
 LOCAL OPTIMUM IN EVERY DIRECTION TESTED.** All on the full 71-sample fold against
@@ -2184,8 +2253,17 @@ track into one weakly-connected component plus fake forks, exploiting the old ru
 a division TP needed only shared-component reachability. Patched 2026-07-17
 (`aa65e90`); `metrics.md` now says "Merely sharing a weakly connected component is not
 sufficient." **Our `division_metrics.py` contains the post-patch
-`_is_strongly_connected_division`, so our CV measures the current metric.** The
-0.946/0.947 clusters (231 + 209 teams) are defanged forks of those notebooks. Also
+`_is_strongly_connected_division`, so our CV measures the current metric.**
+**CORRECTED 2026-09-20: the 0.946/0.947 cluster is NOT a defanged fork of those hack
+notebooks.** It is `reyhanksatria/biohub-cell-tracking-0-947-lb` with a clean documented
+lineage (pilkwang's learned-graph baseline → `nusrati/0-938` → `evgendvorkin/0-927`,
+bidirectional fusion → Reyhan Ksatria for 0.941→0.947); the runnable public copy is
+`zhincez/biohub-0-947-lb-runnable-with-public-datasets`. No hub nodes anywhere in it.
+The hack was patched 2026-07-17 (`aa65e90`) and **every submission was rescored by
+2026-07-23** (Kaggle admin: "The rescore is complete"), after which the augmentation is
+*negative* (measured 0.9839 → 0.9794). The 0.963–0.966 figures still visible on some
+notebook badges are fossils of the pre-patch metric — the badges were never refreshed,
+the leaderboard was. Also
 note: the widely-forked *offline* metric still uses the pre-patch rule and reports
 division Jaccard **double** — score locally with ours, never theirs.
 
@@ -2294,11 +2372,10 @@ scoring bug.
 
 ## Plan
 
-**Gate 0 — the team is the only thing left that needs a human.** Dev subset downloaded,
-`pytest -m "not slow"` green at 122 passed on the dev box; the Linux server is
-provisioned, its environment questions are all answered, and the full dataset is
-downloading. Remaining: **form the Kaggle team before Sept 22** — 20 days out, and
-nothing recovers a miss.
+**Gate 0 — DONE. The team exists** (Kaggle team "Volt", confirmed 2026-09-20 from the
+leaderboard: rank 2023 of 3761, 7 submissions). The entry and team-merger deadline of
+2026-09-22 is therefore satisfied. Earlier copies of this file listed it as the last
+open human action and a fresh session kept resurfacing it — it is closed.
 
 1. **Measure before designing — substantially done, needs committing.** The sweep over
    all 199 samples is complete and its findings are folded into Data (counts vs
