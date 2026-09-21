@@ -1502,8 +1502,34 @@ picks, so a gate really does reject her; and since the distance clause is now me
 as already optimal, the structural clause is what is left. That is a one-line change
 worth one arm, and it is the only division lever this project has not measured.
 
-Headroom if it works, with k of the 11 converting at two new FPs each:
-`(5+k)/(45+2k)`, i.e. divJ 0.111 → 0.239 and **+0.013 of score** at k=11.
+**MEASURED, AND IT IS A NO-OP: 0.9428 against the soup's 0.9428**, adjJ identical at
+0.9333, divJ 0.0950 → 0.0956, node recall and ratio unchanged. So the grandchild
+requirement was not the blocker either, and my second division prediction is falsified
+as cleanly as the first.
+
+**That completes a diagnosis by elimination. Every structural gate in
+`add_safe_divisions` has now been individually tested and none of them binds:**
+
+| gate | how tested | verdict |
+|---|---|---|
+| divergence *distance* | swept −2.0 / 0.0 / 1.0 vs 2.25 | 2.25 optimal; looser loses monotonically |
+| grandchild requirement | `--div-no-grandchildren` | **no-op** |
+| symmetry τ | 0.6 → 0.75 (2026-09-18) | rejected **zero** candidates |
+| parent / sister distance | widened to 11.0 / 18.0 (2026-09-18) | loses |
+
+**What is left is the caps picking by a ranking that cannot separate**, and the
+divergence sweep already demonstrated that mechanism rather than merely suggesting it:
+loosening the gate hands *more* candidates to the same fixed cap, and divJ fell
+monotonically, which can only happen if false forks outrank true ones. Raising the caps
+would admit more forks under the same bad ordering, which is why 2026-09-18's
+`divcap125` arm measured slightly negative and why it does not need re-running.
+
+**So the division term is stuck at ~0.095 without a NEW FEATURE, and this is now a
+closed line rather than an open lever.** The audit's 11 admissible FNs are real and they
+are admitted — they simply lose the cap. The only fork feature ever measured to separate
+is the parent's two-frame intensity *drop* (AUC 0.632), already measured at +0.0008
+alone and subsumed by the blend. Anything further here needs a genuinely new signal —
+nuclear shape, or a learned fork classifier — not another threshold.
 
 One counting trap, because the first version of this analysis fell into it: a divider
 with out-degree 1 *necessarily* parents one daughter, so "a daughter already has a
