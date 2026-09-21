@@ -66,6 +66,40 @@ DISAPPEARANCE_WEIGHT_TUNED = 3.0
 CANDIDATE_THRESHOLD_TUNED = 0.44
 
 
+
+def _drop_unselected(coords_per_t, links_per_t):
+    """Delete the nodes the solver did not select, and re-index the links.
+
+    **Not cosmetic.** A node the ILP drops is gone from the reference's graph
+    before any post-processing sees it; if we keep its coordinate and merely
+    strip its edges, gap closing reuses it as a bridge and the division pass
+    adopts it as an orphan, so exactly the detections the solver judged
+    unaffordable come straight back. Measured: returning them scores 0.9056
+    with node ratio +0.272 on the proxy set, against 0.9505 and -0.049 when the
+    same links come from a reference geff whose nodes were already deleted.
+
+    Which nodes are selected needs no separate bookkeeping. Keeping a node
+    costs ``node_weight`` (0.0) and buys nothing unless an edge uses it, while
+    appearance is free -- so an optimal solution selects exactly the endpoints
+    of its chosen edges.
+    """
+    keep = [set() for _ in coords_per_t]
+    for t, links in enumerate(links_per_t):
+        for a, b, _d in links:
+            keep[t].add(a)
+            keep[t + 1].add(b)
+    remap: list[dict[int, int]] = []
+    out_coords = []
+    for t, coords in enumerate(coords_per_t):
+        idx = sorted(keep[t])
+        remap.append({old: new for new, old in enumerate(idx)})
+        arr = np.asarray(coords)
+        out_coords.append(arr[idx] if len(idx) else np.empty((0, 3), dtype=arr.dtype))
+    out_links = [[(remap[t][a], remap[t + 1][b], d) for a, b, d in links]
+                 for t, links in enumerate(links_per_t)]
+    return out_coords, out_links
+
+
 def candidates_from_probs(
     probs_per_pair: list[np.ndarray],
     coords_per_t: list[np.ndarray],
@@ -260,7 +294,7 @@ def prune(
 
     n_frames = len(coords_per_t)
     out: list[list[tuple[int, int, float]]] = [[] for _ in range(max(0, n_frames - 1))]
-    if not any(len(l) for l in links_per_t):
+    if not any(len(lk) for lk in links_per_t):
         return coords_per_t, out
 
     graph = td.graph.InMemoryGraph()
@@ -320,7 +354,7 @@ def prune(
              - np.asarray(coords_per_t[t + 1][b], dtype=np.float64)) * iso_um))
         out[t].append((a, b, d))
 
-    return coords_per_t, out
+    return _drop_unselected(coords_per_t, out)
 
 
 def prune_dp(
@@ -442,4 +476,4 @@ def prune_dp(
             for c in kids.get(v, ()):
                 if c[0] not in taken:
                     stack.append((c[0], on[c[0]] <= free[c[0]]))
-    return coords_per_t, out
+    return _drop_unselected(coords_per_t, out)

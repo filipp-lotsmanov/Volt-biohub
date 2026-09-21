@@ -612,6 +612,7 @@ def run(
     secondary_weight: float = 0.0,
     candidate_threshold: float = 0.48,
     real_pairs: bool = False,
+    reference: bool = False,
     ilp_kwargs: dict | None = None,
     gaps: bool = True,
     relink_kwargs: dict | None = None,
@@ -675,6 +676,25 @@ def run(
           f"div gate {'off' if division_gate_um is None else division_gate_um}",
           flush=True)
 
+    # The reference inference path, copied rather than reimplemented. On the
+    # four movies the public notebooks validate on it reaches adjusted edge
+    # Jaccard 0.9299 where this file's own detect-and-link reaches 0.8888, and
+    # with our post-processing on top the pair scores 0.9505 -- above the 0.9417
+    # those notebooks report for themselves. See volt_biohub.reference_predict.
+    ref_model = ref_cfg = None
+    if reference:
+        if weights is None:
+            raise SystemExit("--reference needs --weights")
+        from volt_biohub import reference_predict as rp
+        ref_model, ref_W, ref_down = rp.load_model(weights, resolve_device())
+        if tuple(ref_down) != DOWNSAMPLE:
+            raise SystemExit(f"checkpoint downsample {ref_down} != {DOWNSAMPLE}")
+        ref_cfg = rp.PredictConfig(det_threshold=det_threshold if det_threshold
+                                   else 0.965, det_tta=tta)
+        print(f"linker: REFERENCE path (det_tta={ref_cfg.det_tta}, "
+              f"pool {ref_cfg.pool_kernel_um} um, edge threshold "
+              f"{ref_cfg.threshold})", flush=True)
+
     rows: list[dict] = []
     t0 = time.monotonic()
     for i, name in enumerate(names, 1):
@@ -696,10 +716,29 @@ def run(
             crowded = (n_true / max(len(volumes), 1)) >= switch_at
             use_map = detect_map if crowded else None
             picked = "unet" if crowded else "dog"
+        reference_links = None
         learned_links = None
         candidates = None
         probs_per_pair = None
-        want_pair_probs = ilp or ilp_prune or learned_bonus or (learned_edges and postprocess)
+        if reference:
+            from volt_biohub import reference_predict as rp
+            from volt_biohub.ilp_link import prune_dp
+            raw_coords, raw_edges = rp.predict_video(
+                ref_model, test_dir / f"{name}.zarr", resolve_device(),
+                cfg=ref_cfg, window_size=ref_W, downsample=DOWNSAMPLE)
+            coords, reference_links, sparse = rp.to_per_frame(
+                raw_coords, raw_edges, DOWNSAMPLE, len(volumes), ISO_UM)
+            probs_per_pair = rp.probs_as_matrices(coords, sparse)
+            if ilp_prune:
+                # Applied here rather than through run_all's prune_fn so the
+                # solver sees the reference's own edges and nothing else.
+                coords, reference_links = prune_dp(
+                    coords, reference_links, probs_per_pair, ISO_UM,
+                    **(ilp_kwargs or {}))
+            picked = "ref"
+
+        want_pair_probs = (not reference) and (
+            ilp or ilp_prune or learned_bonus or (learned_edges and postprocess))
         if want_pair_probs and edge_head is not None and use_map is not None:
             coords, candidates, probs_per_pair = detect_and_candidates(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
@@ -713,13 +752,13 @@ def run(
             )
             if not ilp:
                 candidates = None
-        elif edge_head is not None and use_map is not None:
+        elif (not reference) and edge_head is not None and use_map is not None:
             coords, learned_links = detect_and_link_learned(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
                 DOWNSAMPLE, refine=refine, threshold=det_threshold,
                 edge_threshold=edge_threshold,
             )
-        else:
+        elif not reference:
             coords = detect_video(volumes, n_per_frame, separation_um, use_map,
                                   refine, threshold=det_threshold)
         if not any(len(c) for c in coords):
@@ -803,18 +842,21 @@ def run(
                 shape=tuple(volumes.shape[1:]),
                 div_kwargs={**(div_kwargs or {}), "intensity": _intensity}
                            if (div_kwargs or {}).get("rise_weight") else div_kwargs,
-                links_per_t=(links if candidates is not None
-                             else (learned_links if learned_edges and learned_links
-                                   else None)),
+                links_per_t=(reference_links if reference_links is not None
+                             else (links if candidates is not None
+                                   else (learned_links
+                                         if learned_edges and learned_links
+                                         else None))),
                 gaps=gaps,
                 relink_kwargs={
                     **(relink_kwargs or {}),
                     **({"probs_per_pair": probs_per_pair,
                         "learned_bonus": learned_bonus}
-                       if probs_per_pair is not None else {}),
+                       if probs_per_pair is not None and not reference else {}),
                 } or None,
                 gap_kwargs=gap_kwargs,
-                prune_fn=_make_prune(probs_per_pair) if ilp_prune else None,
+                prune_fn=(_make_prune(probs_per_pair)
+                          if ilp_prune and not reference else None),
             )
         elif learned_links is not None:
             links = learned_links

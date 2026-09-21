@@ -235,6 +235,13 @@ def main(argv=None) -> int:
                         "det_tta actually does and what its +0.009 refers to. "
                         "Rotating a 90-degree turn through an anisotropic PSF is "
                         "a much stronger perturbation than a mirror.")
+    p.add_argument("--reference", action="store_true",
+                   help="Run volt_biohub.reference_predict -- the upstream "
+                        "inference path copied verbatim -- instead of this "
+                        "repo's detect-and-link. On the public notebooks' own "
+                        "4-movie proxy set it reaches adjusted edge Jaccard "
+                        "0.9299 where the rewrite reaches 0.8888, and 0.9505 "
+                        "total once our post-processing runs on top.")
     p.add_argument("--real-pairs", action="store_true",
                    help="Compute the edge head's trunk features from a REAL "
                         "consecutive pair instead of one frame duplicated. The "
@@ -293,6 +300,7 @@ def main(argv=None) -> int:
             temperature=args.edge_temperature,
             candidate_threshold=args.candidate_threshold,
             real_pairs=args.real_pairs,
+            reference=args.reference,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {
                 "disappearance_weight": args.ilp_disappearance,
