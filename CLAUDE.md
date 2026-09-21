@@ -1568,6 +1568,35 @@ node recall to 0.8789 against 0.9377. So it does not isolate contamination. What
 it does establish is that the reference path is **not** unconditionally better —
 it is better *with this checkpoint*.
 
+**Tuning the prune, fold 1, against the 0.9124 baseline.** Two knobs, and they
+say the same thing:
+
+| disappearance | 0.5 | 1.0 | **1.5** | 2.0 (ref) | 3.0 |
+|---|---|---|---|---|---|
+| score | 0.9032 | 0.9131 | **0.9134** | 0.9124 | 0.9120 |
+| node recall | 0.9821 | 0.9778 | 0.9744 | 0.9700 | 0.9641 |
+
+| min_track_len | 4 | 6 (shipped) |
+|---|---|---|
+| score | **0.9140** | 0.9124 |
+| node recall | 0.9817 | 0.9700 |
+
+**The reference's own retune runs backwards here** — their ablation prices
+disappearance 3.0 at +0.004 on 18 of 20 volumes, and it is our worst setting —
+because their post-processing does not re-add structure and ours does. And
+`min_track_len` 4 *gains* 0.0016 where it *lost* 0.003 on the old pipeline:
+once the ILP deletes nodes, every later stage that also deletes is cutting the
+same tracks twice. But 0.5 collapses to 0.9032, so the prune is doing real work
+and is merely slightly over-tuned; the optimum is interior and flat between 1.0
+and 2.0. Both gains are ~0.001, i.e. above the 0.0002 noise floor and below the
+0.005 that justifies a submission slot on its own — bank them.
+
+**Not the caps.** divJ fell 0.1034 → 0.0822 when the prune landed and the
+obvious suspect was the fork caps, which are fractions of node and edge counts
+that the prune cut by a fifth. Scaling both by 1.25 gives 0.9123 against
+0.9124, divJ 0.0800 against 0.0822 — nothing. The division loss under the new
+linker is structural, not a cap artefact.
+
 **The decomposition, and it puts almost all the gain on the memorisation-exposed
 half.** Full fold 1, one variable at a time:
 
