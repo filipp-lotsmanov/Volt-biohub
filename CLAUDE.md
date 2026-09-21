@@ -1673,6 +1673,12 @@ Fold 1 with the w = 0.30 blend and the appearance term is **0.9150** (adjJ 0.904
 falls 0.0822 -> 0.0580 on that fold's handful of division events). Weighted with
 fold 0's 0.9336 that is **0.9308 against the shipped 0.9270, +0.0038.**
 
+**Superseded by kernel v13** (git `b5f5e0f`), the same path at the swept w = 0.15
+— visible run clean, **102.3 s/video, 5.66 h** for a train-sized test set. The
+graded reruns have been taking roughly 1.6x their visible-run estimate, so
+expect ~9 h: inside the 12 h cap, and the point at which nothing else that
+multiplies detector cost can be stacked on top.
+
 **Submitted as `56432361`** (kernel v12, git `04f8bf3`). Visible run clean —
 blend active, validator PASS, 116,006 nodes — and **90.6 s/video, 5.01 h for a
 train-sized test set** against the 12 h cap, up from 4.34 h without the blend.
