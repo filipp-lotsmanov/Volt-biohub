@@ -1576,10 +1576,17 @@ say the same thing:
 | score | 0.9032 | 0.9131 | **0.9134** | 0.9124 | 0.9120 |
 | node recall | 0.9821 | 0.9778 | 0.9744 | 0.9700 | 0.9641 |
 
-| min_track_len | 4 | 6 (shipped) |
-|---|---|---|
-| score | **0.9140** | 0.9124 |
-| node recall | 0.9817 | 0.9700 |
+| min_track_len | 3 | 4 | 6 (shipped) |
+|---|---|---|---|
+| score | 0.9140 | **0.9140** | 0.9124 |
+| node recall | 0.9817 | 0.9817 | 0.9700 |
+
+**3 and 4 are bit-identical on all five metrics**, which is not a coincidence and
+pins the mechanism: a chain of L nodes carries L−1 edges worth at most 1.0 each
+against a disappearance cost of 2.0, so a 3-node component is break-even at
+best and the solver has already dropped every component below 4. The length
+filter therefore has nothing left to do below 4, and **its old value of 6 was
+cutting tracks the ILP had already paid for**.
 
 **The reference's own retune runs backwards here** — their ablation prices
 disappearance 3.0 at +0.004 on 18 of 20 volumes, and it is our worst setting —
