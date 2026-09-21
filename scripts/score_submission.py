@@ -232,6 +232,14 @@ def main(argv=None) -> int:
                         "it drops candidates by order, not by quality.")
     p.add_argument("--div-parent-um", type=float, default=None)
     p.add_argument("--div-sister-um", type=float, default=None)
+    p.add_argument("--div-no-grandchildren", action="store_true",
+                   help="Stop REQUIRING both daughters to have a child before a "
+                        "fork is admitted. The forward-divergence DISTANCE is "
+                        "measured as already optimal (loosening it to 1.0 and "
+                        "-2.0 both lose monotonically), but its structural half "
+                        "was unreachable from any knob and demands two further "
+                        "frames of correct linking on both branches. Absence of "
+                        "a grandchild is not evidence against a division.")
     p.add_argument("--div-rise-weight", type=float, default=None,
                    help="Weight on the parent's own two-frame intensity rise in "
                         "the fork ranking, micrometre-equivalent. The only fork "
@@ -331,6 +339,10 @@ def main(argv=None) -> int:
                 "parent_um": args.div_parent_um,
                 "sister_um": args.div_sister_um,
                 "rise_weight": args.div_rise_weight,
+                # False is meaningful here, so it cannot ride the
+                # `v is not None` filter as a plain flag default.
+                "require_grandchildren": (
+                    False if args.div_no_grandchildren else None),
             }.items() if v is not None} or None,
         )
         rows = score_csv(csv_path, data_dir, names)

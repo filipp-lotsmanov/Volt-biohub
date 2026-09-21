@@ -147,9 +147,16 @@ def test_secondary_ensembled_with_itself_is_a_no_op(tiny_checkpoint, clip):
     for targets; off by one, or with the two swapped, it still returns a
     plausible matrix of the right shape and the run completes. Passing the same
     checkpoint as both primary and secondary makes the correct answer exactly
-    the unensembled one -- moment-matching a logit map against itself gives
-    ratio 1 and returns it unchanged, and averaging a probability matrix with
-    itself is the identity -- so any indexing error shows up as a difference.
+    the unensembled one, because averaging a probability matrix with itself is
+    the identity -- so any indexing error shows up as a difference.
+
+    ``det_weight=0`` is deliberate, and the reason is worth recording: the
+    detection blend is **not** exactly identity against itself. Its scale ratio
+    is ``p_std / (s_std + 1e-6)``, which for identical maps is marginally below
+    1, so the blended map is shifted by ~1e-6 relative -- enough to flip a
+    local-max tie and move an integer coordinate. That is a property of the
+    moment matching rather than a bug, but it makes a whole-pipeline identity
+    assertion untestable, so this pins the half that does have an exact answer.
     """
     dev = torch.device("cpu")
     # threshold=0.0 so the random model actually emits edges; at the default
@@ -160,7 +167,7 @@ def test_secondary_ensembled_with_itself_is_a_no_op(tiny_checkpoint, clip):
 
     plain_c, plain_e = rp.predict_video(model, clip, dev, cfg=cfg,
                                         window_size=W, downsample=down)
-    sec = rp.make_secondary(tiny_checkpoint, dev, det_weight=0.5,
+    sec = rp.make_secondary(tiny_checkpoint, dev, det_weight=0.0,
                             edge_weight=0.5, window_size=W, downsample=down)
     same_c, same_e = rp.predict_video(model, clip, dev, cfg=cfg,
                                       window_size=W, downsample=down,

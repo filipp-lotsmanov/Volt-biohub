@@ -1314,6 +1314,7 @@ def train(
         "det_neg_weight": det_neg_weight,
         "det_pseudo_weight": det_pseudo_weight,
         "unet_weights": None if unet_weights is None else str(unet_weights),
+        "init_weights": None if init_weights is None else str(init_weights),
         "augmentations": [getattr(a, "__name__", str(a)) for a in (augmentations or [])],
         "data_parallel": data_parallel,
         "select_videos": select_videos,

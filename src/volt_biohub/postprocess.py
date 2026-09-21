@@ -334,6 +334,7 @@ def add_safe_divisions(
     global_frac: float = DIV_GLOBAL_FRAC,
     intensity=None,
     rise_weight: float = 0.0,
+    require_grandchildren: bool = True,
 ):
     """Attach a second daughter, gated structurally rather than by distance alone.
 
@@ -406,10 +407,22 @@ def add_safe_divisions(
             m = 0.5 * (d_exist + d_par)
             if m > 0 and abs(d_exist - d_par) / m > symmetry_tau:
                 continue
+            # Forward divergence. The distance half is `diverge_um` and is
+            # measured as already optimal (loosening it to 1.0 and -2.0 both
+            # LOSE, monotonically, divJ 0.0816 -> 0.0691 -> 0.0521 on fold 0).
+            # The structural half -- requiring BOTH daughters to have exactly
+            # one child -- is the part no knob reached, and it demands two
+            # further frames of correct linking on both branches. Absence of a
+            # grandchild is not evidence against a division, so
+            # `require_grandchildren=False` treats divergence as evidence only
+            # when it is available rather than as a precondition.
             g1, g2 = children.get(ch, []), children.get(cand, [])
-            if len(g1) != 1 or len(g2) != 1:
+            if len(g1) > 1 or len(g2) > 1:
                 continue
-            if _dist(pos[g1[0]], pos[g2[0]], iso_um) - d_sis < diverge_um:
+            if len(g1) == 1 and len(g2) == 1:
+                if _dist(pos[g1[0]], pos[g2[0]], iso_um) - d_sis < diverge_um:
+                    continue
+            elif require_grandchildren:
                 continue
             rise_term = 0.0
             if rise_weight and intensity is not None:
