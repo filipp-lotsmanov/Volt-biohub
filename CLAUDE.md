@@ -1535,12 +1535,27 @@ Extrapolating from the T4 detector measurement that is roughly 3 h for a train-s
 `rustworkx` wheels all ship in the public pack, so the offline constraint that kept the
 ILP out is not a constraint.
 
-**A second measurement error of the same shape: our "TTA" is not their TTA.** Their
-`PredictConfig.det_tta` is **flip-xy, four views**. Ours averages the full **eight-view
-D4 group**, rotations included — and a 90° turn through an anisotropic PSF is a far
-stronger perturbation than a mirror. Our −0.015 and their +0.009 are not measurements
-of the same operation. `--tta-views 4` restricts to the flip subgroup
-(`k ∈ {0, 2}` with the x-flip is exactly {id, flip-x, flip-y, flip-xy}).
+**A second measurement error of the same shape: our "TTA" is not their TTA — and TTA
+is not a loss at all once the ruler is fixed.** Their `PredictConfig.det_tta` is
+**flip-xy, four views**; ours averaged the full **eight-view D4 group**, rotations
+included, and a 90° turn through an anisotropic PSF is a far stronger perturbation
+than a mirror. Separately, every detector-side number we have was measured on a
+checkpoint that trained on both our folds. On the **honestly held-out** detector
+(E7 fold 1 epoch 99, trained on `6bba`, tested on `44b6`), full fold:
+
+| arm | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| no TTA | 0.7799 | 0.7752 | 0.0462 | 0.9377 |
+| **4-view flips** (theirs) | **0.7864** | 0.7775 | 0.0896 | 0.9369 |
+| 8-view D4 (ours) | **0.7870** | 0.7801 | 0.0690 | 0.9410 |
+| feature TTA | 0.7794 | 0.7748 | 0.0462 | 0.9378 |
+
+**The sign flips with contamination** — the same 8-view average is −0.015 on the
+public checkpoint and +0.0071 here — and **the flip subgroup captures essentially all
+of it at half the cost**, which is what the reference ships and therefore what the
+reference path runs. Feature TTA stays out: neutral on the honest detector too. The
+general rule this establishes: **no detector-side change can be ranked on our CV**,
+because the hidden set is a third unseen embryo and that is the held-out regime.
 
 **Also settled today: the dual-seed blend transfers to the heavy fold.** w = 0.3,
 moment-matched in logit space with the 0.90 retention guard: fold 0 **0.8953 → 0.8986**
