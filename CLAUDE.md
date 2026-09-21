@@ -1398,21 +1398,30 @@ checkpoint-selection noise, across-run blending cancels initialisation and data-
 noise.** Different noise sources, so they add — and the secondary encode is therefore
 earning its ~20 % of detector runtime rather than being dead weight. Keep both.
 
-**And the soup does NOT un-gate the edge-side arms — I predicted it would and it does
-not.** On top of the soup, bidirectional fusion w=0.15 gives 0.9433 against 0.9428, i.e.
-**+0.0005**, essentially the +0.0008 it gave at the old operating point:
+**The soup un-gates ONE of the two edge-side arms, and an earlier version of this
+paragraph called it for both on the strength of the first arm to report — which was
+wrong.** Everything on top of the soup at blend 0.15 (baseline 0.9428):
 
-| | adjJ Δ | divJ Δ | net |
-|---|---|---|---|
-| bidir at the shipped operating point | +0.0011 | −0.0025 | +0.0008 |
-| bidir on top of the soup | +0.0010 | −0.0052 | +0.0005 |
+| arm | score | adjJ | divJ | vs old operating point |
+|---|---|---|---|---|
+| **secondary edge head w=0.5** | **0.9439** | **0.9350** | 0.0891 | +0.0011 against +0.0001 — **10×** |
+| bidirectional fusion w=0.15 | 0.9433 | 0.9343 | 0.0898 | +0.0005 against +0.0008 — flat |
 
-So the division cost these arms carry is **not about headroom** — it is a roughly fixed
-fraction of forks suppressed regardless of how many exist. Handing them a larger
-division term did not let them keep it. That closes the edge-side family: **three
-ports, two operating points, every one worth ≤ +0.0008**, consistently, which is an
-order of magnitude below the reference's published deltas for the same components and
-the same story as every other port — their deltas repair a defect we do not have.
+adjJ 0.9350 is the highest measured in this project. So the division headroom the soup
+restores is spendable by the *model ensemble* and not by the *direction ensemble*, and
+the honest reading is that the two arms were never one phenomenon: averaging two
+independently trained heads adds information, while averaging a head against its own
+transpose only adds an agreement test, and an agreement test has nothing to spend extra
+headroom on.
+
+The blend weight did **not** move under the new primary, which is worth noting because it
+moved twice before when an upstream component changed: 0.00 → 0.9392, **0.15 → 0.9428**,
+0.25 → 0.9401. A clean interior optimum in the same place.
+
+Best fold-0 configuration measured: **soup + blend 0.15 + secondary edge head 0.5 =
+0.9439.** Every non-soup increment is still ≤ +0.0011, an order of magnitude below the
+reference's published deltas for the same components, which remains the standing story:
+their deltas repair a defect we do not have.
 
 Proxy set (the 4 movies the public notebooks validate on), everything else matched,
 same card:
