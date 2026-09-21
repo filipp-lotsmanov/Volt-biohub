@@ -59,15 +59,16 @@ def _nodes_um(graph) -> tuple[np.ndarray, np.ndarray, list[int]]:
     ids = df["node_id"].to_list()
     t = df["t"].to_numpy().astype(np.int64)
     zyx = np.stack([df["z"].to_numpy(), df["y"].to_numpy(), df["x"].to_numpy()], axis=1)
-    return t, zyx.astype(np.float64) * np.asarray(ORIGINAL_SCALE[1:]), ids
+    return t, zyx.astype(np.float64) * np.asarray(ORIGINAL_SCALE), ids
 
 
-def _found(pred_t, pred_um, trees, t, um, tol=7.0) -> bool:
-    """Is there a predicted node within *tol* um in the same timepoint?"""
+def _match(pred_t, pred_um, trees, tree_rows, t, um, tol=7.0):
+    """Row index of the nearest predicted node within *tol* um, or None."""
     tree = trees.get(int(t))
     if tree is None:
-        return False
-    return bool(tree.query(um, k=1)[0] <= tol)
+        return None
+    d, k = tree.query(um, k=1)
+    return tree_rows[int(t)][int(k)] if d <= tol else None
 
 
 def audit_one(name: str, nodes: pl.DataFrame, edges: pl.DataFrame,
@@ -79,24 +80,55 @@ def audit_one(name: str, nodes: pl.DataFrame, edges: pl.DataFrame,
                              gt, ORIGINAL_SCALE, 7.0)
     fresh = build_graph_from_rows(nodes, edges)
     pred_t, pred_um, _ids = _nodes_um(fresh)
-    trees = {int(t): cKDTree(pred_um[pred_t == t])
-             for t in np.unique(pred_t) if (pred_t == t).any()}
+    trees, tree_rows = {}, {}
+    for t in np.unique(pred_t):
+        sel = np.nonzero(pred_t == t)[0]
+        trees[int(t)] = cKDTree(pred_um[sel])
+        tree_rows[int(t)] = sel
 
     gt_t, gt_um, gt_ids = _nodes_um(gt)
     pos = {i: (gt_t[k], gt_um[k]) for k, i in enumerate(gt_ids)}
+
+    # Predicted degrees, keyed by the node's index in pred_um, so a matched GT
+    # node can be asked whether it was already parented.
+    indeg: dict[int, int] = {}
+    outdeg: dict[int, int] = {}
+    parent_of: dict[int, int] = {}
+    id_to_row = {i: k for k, i in enumerate(_ids)}
+    for a, b in fresh.edge_attrs(attr_keys=[]).select(
+            ["source_id", "target_id"]).iter_rows():
+        ra, rb = id_to_row.get(a), id_to_row.get(b)
+        if ra is None or rb is None:
+            continue
+        outdeg[ra] = outdeg.get(ra, 0) + 1
+        indeg[rb] = indeg.get(rb, 0) + 1
+        parent_of[rb] = ra
 
     rows = []
     for div_node, ok in scored.scores.items():
         kids = list(gt.successors(div_node))
         parts = {"divider": div_node, **{f"daughter{k}": c
                                          for k, c in enumerate(kids, 1)}}
-        det = {k: _found(pred_t, pred_um, trees, *pos[v])
-               for k, v in parts.items() if v in pos}
+        matched = {k: _match(pred_t, pred_um, trees, tree_rows, *pos[v])
+                   for k, v in parts.items() if v in pos}
+        det = {k: v is not None for k, v in matched.items()}
+        # Which structural gate could have rejected this fork. The orphan rule
+        # in add_safe_divisions requires the second daughter to have NO parent
+        # at all, so a daughter the edge head already linked to something else
+        # can never become a candidate however wide the distance gates are.
+        d_rows = [matched[k] for k in matched if k.startswith("daughter")]
+        div_row = matched.get("divider")
+        parented = sum(1 for r in d_rows if r is not None and indeg.get(r, 0) > 0)
+        adopted = sum(1 for r in d_rows
+                      if r is not None and parent_of.get(r) == div_row)
         rows.append({
             "dataset": name, "gt_div_node": int(div_node),
             "scored_tp": bool(ok), "n_daughters": len(kids),
             "detected": sum(det.values()), "of": len(det),
             "missing": ",".join(sorted(k for k, v in det.items() if not v)) or "-",
+            "divider_outdeg": outdeg.get(div_row, 0) if div_row is not None else -1,
+            "daughters_parented": parented,
+            "daughters_linked_to_divider": adopted,
         })
     return rows, len(scored.fp_forks)
 
@@ -145,6 +177,24 @@ def main(argv=None) -> int:
             f"{r['detected']}/{r['of']}" for r in fn_rows.iter_rows(named=True)
     ).items(), reverse=True):
         print(f"  {k} detected : {v}")
+    full = fn_rows.filter(pl.col("detected") == pl.col("of"))
+    print(f"\nof the {full.height} FNs with EVERY node detected -- what blocked the fork:")
+    print(f"  divider out-degree 0 : {full.filter(pl.col('divider_outdeg') == 0).height}")
+    print(f"  divider out-degree 1 : {full.filter(pl.col('divider_outdeg') == 1).height}"
+          "   <- add_safe_divisions' candidate pool")
+    print(f"  divider out-degree 2 : {full.filter(pl.col('divider_outdeg') >= 2).height}"
+          "   <- already forked, so the fork exists but did not score")
+    # The distinction that matters. A divider with out-degree 1 necessarily
+    # parents ONE daughter, so "parented" on its own is the normal case. What
+    # blocks admission is a daughter parented by someone ELSE: the orphan rule
+    # requires no parent at all, so no distance gate can ever reach it.
+    foreign = (pl.col("daughters_parented") - pl.col("daughters_linked_to_divider"))
+    print(f"  second daughter parented by a FOREIGN node : "
+          f"{full.filter(foreign >= 1).height}"
+          "   <- orphan rule; no distance gate can reach these")
+    print(f"  second daughter genuinely an orphan        : "
+          f"{full.filter(foreign == 0).height}"
+          "   <- admissible, so a distance/symmetry/divergence gate rejected it")
     print("\nwhich node is missing, among FNs:")
     for k, v in Counter(fn_rows["missing"].to_list()).most_common():
         print(f"  {k:24s} {v}")

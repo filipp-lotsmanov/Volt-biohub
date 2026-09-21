@@ -152,7 +152,10 @@ def test_secondary_ensembled_with_itself_is_a_no_op(tiny_checkpoint, clip):
     itself is the identity -- so any indexing error shows up as a difference.
     """
     dev = torch.device("cpu")
-    cfg = rp.PredictConfig(det_threshold=0.05, det_tta=False)
+    # threshold=0.0 so the random model actually emits edges; at the default
+    # 0.5 a source-softmax over many candidates clears nothing and the
+    # comparison would be between two empty lists.
+    cfg = rp.PredictConfig(det_threshold=0.05, det_tta=False, threshold=0.0)
     model, W, down = rp.load_model(tiny_checkpoint, dev)
 
     plain_c, plain_e = rp.predict_video(model, clip, dev, cfg=cfg,
