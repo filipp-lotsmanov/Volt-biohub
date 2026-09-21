@@ -139,7 +139,7 @@ if WEIGHTS is not None:
 # predict_n_true(q0.9). A threshold removes N_true from inference entirely.
 #
 # THE DUAL-SEED BLEND is the change over the 0.920 submission, and it is now
-# inside the reference path (reference_predict.make_blend) rather than in
+# inside the reference path (reference_predict.Secondary) rather than in
 # load_detector, which that path bypasses. The public cluster blends two
 # checkpoints; we had been running one of them alone, having never downloaded
 # the other. Moment-matched in logit space, scale ratio clamped to [0.5, 2.0],

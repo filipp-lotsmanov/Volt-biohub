@@ -633,6 +633,7 @@ def run(
     feature_tta: bool = False,
     secondary_weights: Path | None = None,
     secondary_weight: float = 0.0,
+    secondary_edge_weight: float = 0.0,
     candidate_threshold: float = 0.48,
     real_pairs: bool = False,
     reference: bool = False,
@@ -704,7 +705,7 @@ def run(
     # Jaccard 0.9299 where this file's own detect-and-link reaches 0.8888, and
     # with our post-processing on top the pair scores 0.9505 -- above the 0.9417
     # those notebooks report for themselves. See volt_biohub.reference_predict.
-    ref_model = ref_cfg = None
+    ref_model = ref_cfg = ref_secondary = None
     if reference:
         if weights is None:
             raise SystemExit("--reference needs --weights")
@@ -714,8 +715,17 @@ def run(
             raise SystemExit(f"checkpoint downsample {ref_down} != {DOWNSAMPLE}")
         ref_cfg = rp.PredictConfig(det_threshold=det_threshold if det_threshold
                                    else 0.965, det_tta=tta)
-        ref_blend = rp.make_blend(secondary_weights, resolve_device(),
-                                  secondary_weight) if secondary_weights else None
+        ref_secondary = rp.make_secondary(
+            secondary_weights, resolve_device(), secondary_weight,
+            secondary_edge_weight, window_size=ref_W,
+            downsample=DOWNSAMPLE) if secondary_weights else None
+        if secondary_edge_weight > 0.0:
+            print("linker: SECONDARY EDGE HEAD ensembled at weight "
+                  f"{secondary_edge_weight}", flush=True)
+        if bidirectional_weight > 0.0:
+            print("linker: BIDIRECTIONAL fusion, reverse weight "
+                  f"{bidirectional_weight}",
+                  flush=True)
         print(f"linker: REFERENCE path (det_tta={ref_cfg.det_tta}, "
               f"pool {ref_cfg.pool_kernel_um} um, edge threshold "
               f"{ref_cfg.threshold})", flush=True)
@@ -772,7 +782,7 @@ def run(
             raw_coords, raw_edges = rp.predict_video(
                 ref_model, test_dir / f"{name}.zarr", resolve_device(),
                 cfg=ref_cfg, window_size=ref_W, downsample=DOWNSAMPLE,
-                blend=ref_blend)
+                secondary=ref_secondary, bidir=bidirectional_weight)
             coords, reference_links, sparse = rp.to_per_frame(
                 raw_coords, raw_edges, DOWNSAMPLE, n_frames, ISO_UM)
             probs_per_pair = rp.probs_as_matrices(coords, sparse)

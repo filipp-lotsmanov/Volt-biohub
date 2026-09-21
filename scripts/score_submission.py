@@ -179,6 +179,12 @@ def main(argv=None) -> int:
                         "(0.8609 vs 0.8687) by blurring daughters into one peak; "
                         "this touches only what the edge head reads, and is the "
                         "public chain's largest single step (0.941 -> 0.946).")
+    p.add_argument("--secondary-edge-weight", type=float, default=0.0,
+                   help="Ensemble the SECONDARY checkpoint's transformer edge "
+                        "head at this weight (reference path only). Separate "
+                        "from --secondary-weight, which blends detection maps: "
+                        "the two halves of the same checkpoint are worth "
+                        "different amounts and compose independently.")
     p.add_argument("--bidirectional-weight", type=float, default=0.0,
                    help="Fuse forward and reverse edge probabilities by a "
                         "weighted harmonic mean (reference 0.15, measured "
@@ -300,6 +306,7 @@ def main(argv=None) -> int:
             ilp=args.ilp,
             ilp_prune=args.ilp_prune,
             learned_bonus=args.learned_bonus,
+            secondary_edge_weight=args.secondary_edge_weight,
             bidirectional_weight=args.bidirectional_weight,
             feature_tta=args.feature_tta,
             secondary_weights=args.secondary_weights,

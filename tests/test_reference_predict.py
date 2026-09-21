@@ -82,3 +82,58 @@ def test_open_meta_matches_open_dataset(clip):
     assert ours.image_shape == tuple(theirs.image_shape)
     assert ours.quantiles == theirs.quantiles
     np.testing.assert_allclose(ours.scale, theirs.scale)
+
+
+def test_bidirectional_fusion_uses_the_reverse_pass_transposed(
+    tiny_checkpoint, clip, monkeypatch,
+):
+    """The transpose is the whole bug class, and it is silent when n_src == n_tgt.
+
+    A missing transpose fuses ``P(parent|child)`` with ``P(child|parent)`` read
+    off the wrong axis -- a plausible-looking matrix that scrambles which pair
+    got which score. So rather than compare against a second implementation of
+    the same arithmetic, this pins ``predict_edges`` to a deterministic
+    asymmetric function of its own shapes, which makes every fused probability
+    predictable in closed form.
+    """
+    dev = torch.device("cpu")
+    model, W, down = rp.load_model(tiny_checkpoint, dev)
+    w = 0.35
+
+    def fake_predict_edges(f_a, f_b, *_args, **_kw):
+        n_a, n_b = f_a.shape[1], f_b.shape[1]
+        i = torch.arange(n_a, dtype=torch.float32).unsqueeze(1)
+        j = torch.arange(n_b, dtype=torch.float32).unsqueeze(0)
+        return (0.37 * i - 0.11 * j).unsqueeze(0)
+
+    monkeypatch.setattr(model, "predict_edges", fake_predict_edges)
+    cfg = rp.PredictConfig(det_threshold=0.05, det_tta=False, threshold=0.0)
+    coords, edges = rp.predict_video(model, clip, dev, cfg=cfg,
+                                     window_size=W, downsample=down,
+                                     bidir=w)
+    assert edges, "fixture emitted no edges; the test proves nothing"
+
+    # Recover each edge's (pair, local i, local j) from the frame-ordered coords.
+    starts: dict[int, int] = {}
+    for k, t in enumerate(coords[:, 0].tolist()):
+        starts.setdefault(int(t), k)
+
+    seen_asymmetric = False
+    for gi, gj, prob, _dist in edges:
+        t_src = int(coords[gi, 0])
+        i = gi - starts[t_src]
+        j = gj - starts[t_src + 1]
+        n_src = sum(1 for t in coords[:, 0] if int(t) == t_src)
+        n_tgt = sum(1 for t in coords[:, 0] if int(t) == t_src + 1)
+        seen_asymmetric |= n_src != n_tgt
+
+        fwd = fake_predict_edges(torch.zeros(1, n_src, 1),
+                                 torch.zeros(1, n_tgt, 1))[0]
+        rev = fake_predict_edges(torch.zeros(1, n_tgt, 1),
+                                 torch.zeros(1, n_src, 1))[0]
+        p_f = torch.softmax(fwd, dim=0)[i, j].item()
+        p_r = torch.softmax(rev, dim=0).transpose(0, 1)[i, j].item()
+        expected = 1.0 / ((1.0 - w) / p_f + w / p_r)
+        assert prob == pytest.approx(expected, rel=1e-6), (gi, gj)
+
+    assert seen_asymmetric, "every pair was square; the transpose went untested"

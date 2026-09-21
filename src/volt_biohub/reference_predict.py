@@ -41,6 +41,7 @@ someone edits one of the three originals, that test is what notices.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -472,6 +473,29 @@ def _detect_cells_pooled(
     return np.concatenate([t_col, coords], axis=1).astype(np.int16)
 
 
+def _pair_probs(model, unet_out, f_idx, cfg, p_coords_src, p_coords_tgt,
+                p_pos_src, p_pos_tgt, p_mask_src, p_mask_tgt, ds_arr_t):
+    """One model's ``n_src x n_tgt`` edge probabilities for one frame pair.
+
+    Ours, not copied: the reference only ever scores a pair with one model in
+    one direction, so it has no need to factor this out. Both of our additions
+    -- the secondary checkpoint's edge head and bidirectional fusion -- are a
+    second call with the same tensors, which is only safe while the feature
+    indexing and the activation stay identical to the primary's.
+    """
+    feat_src = model._index_features(unet_out[:, f_idx], p_coords_src, p_mask_src)
+    feat_tgt = model._index_features(unet_out[:, f_idx + 1], p_coords_tgt, p_mask_tgt)
+    raw = model.predict_edges(
+        feat_src, feat_tgt,
+        p_coords_src * ds_arr_t, p_coords_tgt * ds_arr_t,
+        p_pos_src, p_pos_tgt,
+        p_mask_src, p_mask_tgt,
+    )[0]
+    if cfg.edge_activation == "softmax":
+        return torch.softmax(raw, dim=0).cpu().numpy()
+    return torch.sigmoid(raw).cpu().numpy()
+
+
 @torch.no_grad()
 
 
@@ -484,7 +508,8 @@ def predict_video(
     max_frames: int | None = None,
     unet_batch_size: int = 4,
     downsample: tuple[int, ...] = (1, 4, 4),
-    blend=None,
+    secondary: Secondary | None = None,
+    bidir: float = 0.0,
 ) -> tuple[np.ndarray, list[tuple[int, int, float, float]]]:
     """Run inference on a single video using sliding windows of W frames.
 
@@ -563,18 +588,22 @@ def predict_video(
             for f in range(W):
                 det_logits[f] = det_logits[f] / 4
 
-        # The one addition to the copied body, and it is a no-op unless a
-        # second checkpoint is passed. Two independently trained detectors have
-        # no reason to share a logit scale, so the secondary is moment-matched
-        # to the primary before averaging, with the scale ratio clamped the way
-        # the reference clamps it and a per-frame retention guard that reverts
-        # to the primary if the blend loses more than 10% of its candidates --
-        # losing node recall is the one failure this pipeline cannot absorb.
-        # Measured through our own detect-and-link at weight 0.3: fold 0
-        # 0.8953 -> 0.8986, fold 1 0.8760 -> 0.8852.
-        if blend is not None:
-            for f in range(W):
-                det_logits[f] = blend(det_logits[f], imgs, f, cfg.det_threshold)
+        # The first addition to the copied body, and a no-op unless a second
+        # checkpoint is passed. One encode serves both halves: the detection
+        # maps are blended here, and the trunk features are held for the edge
+        # stage below. See :class:`Secondary` for why the two halves use
+        # different combiners.
+        unet_out2 = None
+        if secondary is not None:
+            unet_out2, det2 = secondary.model.encode(imgs)
+            if secondary.det_weight > 0.0:
+                for f in range(W):
+                    det_logits[f] = secondary.blend_det(
+                        det_logits[f], det2[f], cfg.det_threshold)
+            del det2
+            if secondary.edge_weight <= 0.0:
+                del unet_out2
+                unet_out2 = None
 
         del imgs
 
@@ -646,6 +675,51 @@ def predict_video(
             else:
                 probs = torch.sigmoid(raw).cpu().numpy()
 
+            # Ensemble the second checkpoint's edge head over the *same* node
+            # set, so this changes only which links are believed and never
+            # which cells exist.
+            if unet_out2 is not None:
+                probs2 = _pair_probs(
+                    secondary.model, unet_out2, f_idx, cfg,
+                    p_coords_src, p_coords_tgt, p_pos_src, p_pos_tgt,
+                    p_mask_src, p_mask_tgt, ds_arr_t,
+                )
+                ew = secondary.edge_weight
+                probs = (1.0 - ew) * probs + ew * probs2
+
+            # Bidirectional harmonic fusion -- the second addition to the
+            # copied body, a no-op at bidir=0. Swapping the two frames makes
+            # the same softmax-over-sources answer the complementary question
+            # ("which child for this parent" rather than "which parent for
+            # this child"), and the transpose puts it back on this index grid.
+            # A weighted harmonic mean of the two is an agreement test, not an
+            # average. Formula and rationale: edge_head.pair_probs, which
+            # implements the identical fusion for the non-reference path -- the
+            # two must stay in step so `bidirectional_weight` means one thing.
+            if bidir > 0.0:
+                edge_logits_rev = model.predict_edges(
+                    unet_feat_tgt, unet_feat_src,
+                    p_coords_tgt * ds_arr_t, p_coords_src * ds_arr_t,
+                    p_pos_tgt, p_pos_src,
+                    p_mask_tgt, p_mask_src,
+                )  # (1, n_tgt, n_src)
+                rev = edge_logits_rev[0]
+                if cfg.edge_activation == "softmax":
+                    p_rev = torch.softmax(rev, dim=0)
+                else:
+                    p_rev = torch.sigmoid(rev)
+                p_rev = p_rev.transpose(0, 1).cpu().numpy()  # -> (n_src, n_tgt)
+                # Floor rather than > 0: a float32 softmax reaches 1e-45, whose
+                # reciprocal overflows, and the fused value there is zero either
+                # way -- an abstention in either direction is a disagreement.
+                both = (probs > 1e-12) & (p_rev > 1e-12)
+                fused = np.zeros_like(probs)
+                fused[both] = 1.0 / (
+                    (1.0 - bidir) / probs[both].astype(np.float64)
+                    + bidir / p_rev[both].astype(np.float64)
+                )
+                probs = fused
+
             candidates = sorted(
                 [
                     (probs[i, j], i, j)
@@ -691,51 +765,85 @@ def predict_video(
 # =============================================================================
 
 
-def make_blend(secondary_path: Path, device, weight: float,
-               retention: float = 0.90):
-    """A ``blend`` callable for :func:`predict_video`, or ``None`` at weight 0.
+class Secondary:
+    """A second independently-trained checkpoint, spent on detection, edges or both.
 
-    Kept here rather than in ``kaggle/submit.py`` so the reference path owns
-    its own optional second detector and the two cannot drift: ``submit.py``'s
-    version blends a single duplicated frame, this one blends whichever frame
-    of the window the caller names, which is what a temporal trunk needs.
+    The detection half is the measured win: two checkpoints of the same
+    architecture trained from different seeds disagree per-voxel, and averaging
+    their logits was worth +0.0065 on fold 0 at weight 0.15.
 
-    The guard is what makes it safe rather than merely plausible. A blend that
-    loses detections costs node recall, and node recall is the term this
-    pipeline can least afford -- it is what a misconfigured ILP cost us
-    (0.9419 against 0.9830). If the blended map yields fewer than *retention*
-    of the primary's candidates on a frame, that frame keeps the primary.
+    The edge half is the part that was being thrown away. The old
+    implementation hand-assembled just the secondary's UNet and 1x1 detection
+    head, ran the trunk once *per frame*, and discarded the features -- so the
+    secondary's trained transformer was never consulted at all, on the one axis
+    where our remaining loss actually sits (half the metric weight is
+    linking-limited at node recall > 0.99). Loading the whole checkpoint costs
+    nothing extra, makes its edge head reachable, and runs the trunk once per
+    window instead of W times.
+
+    Two different fusions, deliberately: the detection maps are averaged in
+    *logit* space after moment-matching, because two networks have no reason to
+    share a logit scale; the edge probabilities are averaged arithmetically,
+    because both heads answer the *same* question and an ensemble mean is the
+    right combiner there. That is the opposite of the harmonic mean used for
+    bidirectional fusion, which combines two *complementary* questions and is
+    an agreement test rather than an average.
     """
-    import math
 
-    if weight <= 0.0:
-        return None
-    cfg = json.loads((secondary_path.parent / "config.json").read_text())
-    unet2 = TemporalUNet3D(in_channels=1, out_channels=cfg["unet_out_channels"],
-                           layers=cfg["unet_layers"])
-    head2 = nn.Conv3d(cfg["unet_out_channels"], 1, kernel_size=1)
-    state = torch.load(secondary_path, map_location="cpu", weights_only=True)
-    unet2.load_state_dict({k[len("unet."):]: v for k, v in state.items()
-                           if k.startswith("unet.")})
-    head2.load_state_dict({k[len("detect_head."):]: v for k, v in state.items()
-                           if k.startswith("detect_head.")})
-    unet2.to(device).eval()
-    head2.to(device).eval()
+    def __init__(self, model: UNetNodeTransformer, det_weight: float,
+                 edge_weight: float = 0.0, retention: float = 0.90):
+        self.model = model
+        self.det_weight = det_weight
+        self.edge_weight = edge_weight
+        self.retention = retention
 
-    def _blend(primary, imgs, f, det_threshold):
-        with torch.no_grad():
-            feats = unet2(imgs.unsqueeze(2))
-            out2 = head2(feats[:, f])
+    def blend_det(self, primary, out2, det_threshold):
+        """Moment-matched logit blend with a per-frame retention guard.
+
+        The guard is what makes it safe rather than merely plausible. A blend
+        that loses detections costs node recall, and node recall is the term
+        this pipeline can least afford -- it is what a misconfigured ILP cost
+        us (0.9419 against 0.9830). If the blended map yields fewer than
+        *retention* of the primary's candidates on a frame, that frame keeps
+        the primary.
+        """
+        w = self.det_weight
         p_mean, p_std = primary.mean(), primary.std()
         s_mean, s_std = out2.mean(), out2.std()
         ratio = torch.clamp(p_std / (s_std + 1e-6), 0.5, 2.0)
         aligned = (out2 - s_mean) * ratio + p_mean
-        blended = (1.0 - weight) * primary + weight * aligned
+        blended = (1.0 - w) * primary + w * aligned
         cut = math.log(det_threshold / (1.0 - det_threshold))
         n_p = int((primary > cut).sum())
         n_b = int((blended > cut).sum())
-        if n_p > 0 and n_b < retention * n_p:
+        if n_p > 0 and n_b < self.retention * n_p:
             return primary
         return blended
 
-    return _blend
+
+def make_secondary(secondary_path: Path, device, det_weight: float,
+                   edge_weight: float = 0.0, retention: float = 0.90,
+                   window_size: int | None = None,
+                   downsample: tuple[int, ...] | None = None):
+    """Load a second checkpoint for :func:`predict_video`, or ``None`` if unused.
+
+    The two checks are not ceremony. Both checkpoints are indexed at the *same*
+    coordinates, so a secondary trained at a different downsample would read
+    its features from the wrong voxels -- silently, with no exception and a
+    plausible-looking score, which is the failure mode this repo has already
+    paid for twice in ``io.py``. A different window size would misalign the
+    temporal axis the same way.
+    """
+    if det_weight <= 0.0 and edge_weight <= 0.0:
+        return None
+    model2, w2, d2 = load_model(secondary_path, device)
+    if downsample is not None and tuple(d2) != tuple(downsample):
+        raise ValueError(
+            f"secondary checkpoint downsample {tuple(d2)} != primary's "
+            f"{tuple(downsample)}; the two are indexed at shared coordinates"
+        )
+    if window_size is not None and w2 != window_size:
+        raise ValueError(
+            f"secondary checkpoint window {w2} != primary's {window_size}"
+        )
+    return Secondary(model2, det_weight, edge_weight, retention)
