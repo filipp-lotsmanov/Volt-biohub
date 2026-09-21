@@ -147,10 +147,17 @@ if WEIGHTS is not None:
 # than 10% of its candidates -- because losing node recall is the one failure
 # this pipeline cannot absorb.
 #
-#   fold 0 (85% of weight)   0.9296 -> 0.9336   adjJ 0.9236 -> 0.9259
-#                                                divJ 0.0597 -> 0.0775
-#   fold 1                   0.9124 -> 0.9150
-#   weighted                 0.9270 -> 0.9308
+# The weight is 0.15, not the 0.3 that went out as 56432361. That 0.3 was found
+# under the OLD detect-and-link on fold 1; swept again on fold 0 under this
+# linker the curve is unimodal with the peak at 0.15, and adjJ, divJ and node
+# recall all peak there together:
+#
+#   w        0        0.10     0.15     0.20     0.30     0.45
+#   score    0.9296   0.9347   0.9361   0.9345   0.9336   0.9310
+#   adjJ     0.9236   0.9275   0.9279   0.9267   0.9259   0.9246
+#
+#   fold 0 (85% of weight)   0.9296 -> 0.9361   adjJ 0.9236 -> 0.9279
+#                                                divJ 0.0597 -> 0.0816
 #
 # It gains on the edge term AND the division term while the node count barely
 # moves, so it is not trading one against the other -- unlike the node-retention
@@ -174,7 +181,7 @@ submit.run(
     TEST, Path("/kaggle/working/submission.csv"),
     weights=WEIGHTS if USE_UNET else None,
     secondary_weights=SECONDARY if USE_UNET else None,
-    secondary_weight=0.3 if (USE_UNET and SECONDARY) else 0.0,
+    secondary_weight=0.15 if (USE_UNET and SECONDARY) else 0.0,
     budget=1.0,
     det_threshold=0.965 if USE_UNET else None,
     reference=USE_UNET,
