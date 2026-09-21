@@ -214,6 +214,13 @@ def main(argv=None) -> int:
     p.add_argument("--div-diverge-um", type=float, default=None,
                    help="Minimum extra separation of the grandchildren over the "
                         "sisters. Raise to demand stronger post-mitotic divergence.")
+    p.add_argument("--div-frame-frac", type=float, default=None,
+                   help="Per-frame fork cap as a fraction of that frame's nodes. "
+                        "It interacts with the ILP prune, which cuts node counts "
+                        "by about a fifth -- so the cap tightens by the same "
+                        "fifth without anyone asking it to, and divJ fell "
+                        "0.1034 -> 0.0822 on fold 1 and 0.0738 -> 0.0597 on "
+                        "fold 0 when the prune landed.")
     p.add_argument("--div-global-frac", type=float, default=None,
                    help="Cap on forks as a fraction of edges. A blunt count limit: "
                         "it drops candidates by order, not by quality.")
@@ -313,6 +320,7 @@ def main(argv=None) -> int:
                 "symmetry_tau": args.div_symmetry_tau,
                 "diverge_um": args.div_diverge_um,
                 "global_frac": args.div_global_frac,
+                "frame_frac": args.div_frame_frac,
                 "parent_um": args.div_parent_um,
                 "sister_um": args.div_sister_um,
                 "rise_weight": args.div_rise_weight,
