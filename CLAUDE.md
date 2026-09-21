@@ -1417,13 +1417,41 @@ that contain a GT division (26 divisions, TP 5 / FP 19 / FN 21, divJ 0.1111):
 | …second daughter a genuine **orphan** | **11 — fully admissible, a gate rejected it** |
 | …second daughter parented by a foreign node | 4 — the orphan rule; no distance gate reaches these |
 
-So the largest bucket is a structural gate throwing away candidates it was handed, and
-**loosening has never been measured** — 2026-09-18 established forward divergence as the
-active filter precisely by halving divJ when tightening it to 3.5 µm. Headroom, if k of
-the 11 convert at two new FPs each: `(5+k)/(45+2k)`, i.e. divJ 0.111 → 0.239 and
-**+0.013 of score** at k=11. That is larger than the whole remaining port inventory.
-Sweeping `--div-diverge-um` −2.0 / 0.0 / 1.0 against the 2.25 default **on fold 0**,
-which carries ~125 divisions against fold 1's 26.
+So the largest bucket is a structural gate throwing away candidates it was handed.
+
+**AND THEN LOOSENING THAT GATE WAS MEASURED AND LOST, MONOTONICALLY — my prediction
+from this decomposition was wrong.** Full fold 0, `--div-diverge-um` against the 2.25
+default:
+
+| forward divergence | score | adjJ | divJ |
+|---|---|---|---|
+| **2.25 µm (shipped)** | **0.9361** | 0.9279 | **0.0816** |
+| 1.0 µm | 0.9341 | 0.9272 | 0.0691 |
+| −2.0 µm | 0.9320 | 0.9268 | 0.0521 |
+
+**divJ *falls* as the gate opens**, which is the mirror image of 2026-09-18's finding
+that tightening it also falls. The gate is at a genuine interior optimum in both
+directions, so **2026-09-18's verdict — the division loss needs a better ranker, not a
+different threshold — was right, and the reversal above was wrong.**
+
+The two findings are compatible in a way I should have seen immediately: the forks are
+**admissible but out-ranked**. The caps are hard, so more candidates means the ranking
+decides, and the ranking is `d_par + 0.15·d_sis` over exactly the geometric features
+2026-09-12 measured as non-separating at the quartiles. A flooded cap fills with false
+forks that outrank the true ones, which is precisely the monotone fall.
+
+**What the sweep could not test, and is now the prime suspect.** `--div-diverge-um`
+relaxes only the *distance* clause `dist(g1,g2) − d_sis < diverge_um`. Beside it sits
+`len(g1) != 1 or len(g2) != 1` — **both daughters must have exactly one child each** —
+which is hard-coded, demands two further frames of correct linking on both branches, and
+no CLI knob reaches it. Extending the audit says the sister is at **orphan rank 0 in 6 of
+6 cases where rank is computable**, i.e. she *is* the candidate the mutual-nearest rule
+picks, so a gate really does reject her; and since the distance clause is now measured
+as already optimal, the structural clause is what is left. That is a one-line change
+worth one arm, and it is the only division lever this project has not measured.
+
+Headroom if it works, with k of the 11 converting at two new FPs each:
+`(5+k)/(45+2k)`, i.e. divJ 0.111 → 0.239 and **+0.013 of score** at k=11.
 
 One counting trap, because the first version of this analysis fell into it: a divider
 with out-degree 1 *necessarily* parents one daughter, so "a daughter already has a

@@ -121,6 +121,27 @@ def audit_one(name: str, nodes: pl.DataFrame, edges: pl.DataFrame,
         parented = sum(1 for r in d_rows if r is not None and indeg.get(r, 0) > 0)
         adopted = sum(1 for r in d_rows
                       if r is not None and parent_of.get(r) == div_row)
+        # Is the true sister actually the candidate add_safe_divisions would
+        # pick? The rule is `tree.query(pos[ch])` -- the SINGLE nearest orphan
+        # to the existing child -- so a spurious detection nearer than the true
+        # sister makes her unreachable by any distance gate. This is the column
+        # that separates "a gate rejected it" from "the selection never
+        # proposed it", and the divergence sweep (-2.0/0.0/1.0 all worse than
+        # 2.25, divJ falling monotonically as the gate opens) says it is the
+        # latter.
+        sister_rank = -1
+        linked = [r for r in d_rows if r is not None and parent_of.get(r) == div_row]
+        free = [r for r in d_rows if r is not None and indeg.get(r, 0) == 0]
+        if linked and free:
+            ch, sister = linked[0], free[0]
+            t_sis = int(pred_t[sister])
+            orphan_rows = [r for r in tree_rows.get(t_sis, [])
+                           if indeg.get(int(r), 0) == 0]
+            if orphan_rows and sister in orphan_rows:
+                d = np.linalg.norm(pred_um[orphan_rows] - pred_um[ch], axis=1)
+                order = [orphan_rows[k] for k in np.argsort(d)]
+                sister_rank = order.index(sister)
+
         rows.append({
             "dataset": name, "gt_div_node": int(div_node),
             "scored_tp": bool(ok), "n_daughters": len(kids),
@@ -129,6 +150,7 @@ def audit_one(name: str, nodes: pl.DataFrame, edges: pl.DataFrame,
             "divider_outdeg": outdeg.get(div_row, 0) if div_row is not None else -1,
             "daughters_parented": parented,
             "daughters_linked_to_divider": adopted,
+            "sister_orphan_rank": sister_rank,
         })
     return rows, len(scored.fp_forks)
 
@@ -195,6 +217,19 @@ def main(argv=None) -> int:
     print(f"  second daughter genuinely an orphan        : "
           f"{full.filter(foreign == 0).height}"
           "   <- admissible, so a distance/symmetry/divergence gate rejected it")
+    ranked = full.filter(pl.col("sister_orphan_rank") >= 0)
+    if ranked.height:
+        print(f"\nof the {ranked.height} where the sister's rank is computable -- is she "
+              "the nearest orphan to the existing child?")
+        print(f"  rank 0 (she IS the candidate) : "
+              f"{ranked.filter(pl.col('sister_orphan_rank') == 0).height}"
+              "   <- a gate rejected her; loosening could reach these")
+        print(f"  rank 1-2                      : "
+              f"{ranked.filter(pl.col('sister_orphan_rank').is_between(1, 2)).height}")
+        print(f"  rank >2                       : "
+              f"{ranked.filter(pl.col('sister_orphan_rank') > 2).height}"
+              "   <- mutual-nearest never proposes her, at ANY gate")
+        print(f"  median rank {ranked['sister_orphan_rank'].median()}")
     print("\nwhich node is missing, among FNs:")
     for k, v in Counter(fn_rows["missing"].to_list()).most_common():
         print(f"  {k:24s} {v}")
