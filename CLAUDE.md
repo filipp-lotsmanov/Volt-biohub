@@ -1453,6 +1453,31 @@ moment-matching (no shared scale); edge probabilities average *arithmetically* (
 question, so an ensemble mean). That is the opposite of the harmonic mean above, which
 combines complementary questions.
 
+**And the detection objective we default to is NOT the one that trained the field's
+best detector — measured, not inferred.** Warm-starting their epoch-400 weights and
+reading the loss on 12 iterations of all-train:
+
+| loss the warm-started model is scored under | det | edge |
+|---|---|---|
+| ours by default (`--det-target gaussian --det-pu-mask`) | **0.0386** | 0.0001 |
+| `--det-target voxel --no-det-pu-mask` (the inherited loss) | **0.0023** | 0.0001 |
+| **their own recorded epoch-400 values** | **0.0025** | 0.00016 |
+
+The legacy arm matches theirs to 8 % and our default reads **16× higher**, so the two
+are genuinely different objectives, not two parameterisations of one. Their
+`training_config.json` has no `det_target` key at all — those flags are ours —
+confirming they trained the inherited loss for all 400 epochs.
+
+Two things follow and a third does not. **Any continuation of their run must pass
+`--det-target voxel --no-det-pu-mask`**, or gradient descent immediately drags the
+detector off the optimum it spent 137 GPU-hours reaching; this is what gated the SWA
+run rather than being discovered eight hours into it. And **the best detector in this
+project was trained with the loss `detection_targets.py` was written to replace**,
+which is at least a reason to stop treating the Gaussian+PU default as settled — every
+ablation of it ran inside their first epoch (see 2026-09-14). What does *not* follow is
+that the legacy loss is better: their run was ~326× longer than any of ours, so budget
+is confounded with loss shape and this observation cannot separate them.
+
 **`--unet-weights` is a silent no-op on a full checkpoint** and `--init-weights` is the
 fix. The old flag loads into `unet` with `strict=False`, a full checkpoint's keys are
 `unet.`-prefixed, so nothing matches and training proceeds from scratch after printing a
