@@ -1608,11 +1608,33 @@ recovers it:
 | soup2 + edge head 0.5 + bidir 0.25 | 0.9454 | 0.9352 | 0.1025 |
 | **soup4 + edge head 0.5 + bidir 0.25** | **0.9463** | **0.9361** | 0.1020 |
 
-**One honest caveat on the stack.** Every arm above is one variable, but *selecting* the
-best combination across a dozen fold-0 arms is itself a fitting process on fold 0, and
-soup4's marginal +0.0009 is inside what 128 samples can produce as noise. The edge pair's
-+0.0026 is trustworthy because it reproduced **identically** on fold 1; soup4's increment
-has not been confirmed that way and should not be treated as solid until it is.
+**soup4 IS confirmed on fold 1, and it gains far more there: 0.9367 against soup2+pair's
+0.9316, i.e. +0.0051 where fold 0 gave +0.0009**, with divJ 0.1061 against 0.0769. So the
+caveat recorded here an hour earlier — that soup4's increment was fold-0-only and inside
+noise — is resolved in its favour. Best measured configuration, both folds:
+
+| | fold 0 | fold 1 | **weighted** |
+|---|---|---|---|
+| start of 2026-09-21 | 0.9361 | 0.9168 | 0.9332 |
+| soup2 + blend 0.15 (kernel v14, pending) | 0.9428 | 0.9290 | 0.9407 |
+| soup2 + edge head 0.5 + bidir 0.25 | 0.9454 | 0.9316 | 0.9433 |
+| **soup4 + edge head 0.5 + bidir 0.25** | **0.9463** | **0.9367** | **0.9449** |
+
+**+0.0117 over the day's start**, and +0.0042 over what is queued. Expected on the board,
+splitting by the measured transfer rates: soup4-over-soup2 is detector-side (+0.0016 at
+~100 %) and the edge pair is edge-head-side (+0.0026 at ~35 % → +0.0009), so ~+0.0025
+over whatever v14 scores.
+
+**A TRAP THAT NEARLY COST THE ATTRIBUTION, and it constrains the order of operations.**
+A code competition's graded rerun executes **at submission time against the CURRENT
+dataset versions**, and `kernel-metadata.json` lists `volt-wheels`/`volt-code`/
+`volt-weights` **unpinned**. So uploading soup4 — or pushing volt-code — before v14 is
+submitted would silently change what v14's rerun runs, and v14 exists precisely to
+measure the soup against byte-identical code. **Nothing may be uploaded to any of the
+three datasets until v14 is submitted and scored.** More generally: a pushed-but-
+unsubmitted kernel version is not a frozen experiment, because its inputs are still
+live. Pin the dataset versions in `kernel-metadata.json` if two configurations ever need
+to be in flight at once.
 
 **MEASURED, AND IT IS A NO-OP: 0.9428 against the soup's 0.9428**, adjJ identical at
 0.9333, divJ 0.0950 → 0.0956, node recall and ratio unchanged. So the grandchild
