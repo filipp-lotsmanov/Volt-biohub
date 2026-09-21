@@ -1658,6 +1658,15 @@ Fold 1 with both is **0.9150** (adjJ 0.9042 -> 0.9092, a +0.005 jump, while divJ
 falls 0.0822 -> 0.0580 on that fold's handful of division events). Weighted with
 fold 0's 0.9336 that is **0.9308 against the shipped 0.9270, +0.0038.**
 
+**Submitted as `56432361`** (kernel v12, git `04f8bf3`). Visible run clean —
+blend active, validator PASS, 116,006 nodes — and **90.6 s/video, 5.01 h for a
+train-sized test set** against the 12 h cap, up from 4.34 h without the blend.
+Worth noting for the endgame: the 0.920 rerun took ~7 h of wall clock against a
+4.34 h estimate, so a 5.01 h estimate is probably ~8 h in practice. That is
+still inside the cap but it is the first configuration where the margin is
+worth thinking about, and it rules out stacking anything else that multiplies
+the detector cost.
+
 Two reasons to expect the leaderboard to like it more than this number does.
 It is **detector-side**, so our contaminated fold understates it by the argument
 above; and it is variance reduction across two independently-seeded nets, which
