@@ -1441,15 +1441,26 @@ soup shows its effect on divJ is *weight-dependent*, not a fixed cost:
 | 0.15 | 0.9433 | 0.9343 | 0.0898 |
 | **0.25** | **0.9444** | 0.9344 | **0.1000** |
 
-At 0.15 it sells divisions; at 0.25 it **buys** them, and alone it is then worth +0.0016.
-So the earlier claim that "both edge-side arms buy the edge term by selling divisions,
-a roughly fixed fraction of forks suppressed" was drawn from a single weight and is
-wrong. The mechanism that fits all of it: a harmonic mean weighted further toward the
-reverse pass is a **stronger agreement test**, and a dividing parent's two daughters each
-*independently* agree with it — each daughter's own best parent is the divider — so a
-stronger test preserves forks while killing spurious single links. A weak test only
-sharpens the dominant assignment, which is what suppresses a second child. Its optimum
-is not yet bounded above; 0.35 and 0.50 are running.
+**Swept to both sides, and the optimum is a PLATEAU rather than a spike:**
+
+| bidir weight on the soup | 0 | 0.15 | **0.25** | **0.35** | 0.50 |
+|---|---|---|---|---|---|
+| score | 0.9428 | 0.9433 | **0.9444** | **0.9444** | 0.9422 |
+| divJ | 0.0950 | 0.0898 | 0.1000 | 0.1008 | 0.0947 |
+
+At 0.15 it sells divisions; from 0.25 to 0.35 it **buys** them and is worth +0.0016
+alone; by 0.50 it is below w=0. So the earlier claim that "both edge-side arms buy the
+edge term by selling divisions, a roughly fixed fraction of forks suppressed" was drawn
+from a single weight and is wrong. The mechanism that fits all of it: a harmonic mean
+weighted further toward the reverse pass is a **stronger agreement test**, and a dividing
+parent's two daughters each *independently* agree with it — each daughter's own best
+parent is the divider — so a stronger test preserves forks while killing spurious single
+links. A weak test only sharpens the dominant assignment, and that is what suppresses a
+second child; too strong a test starts rejecting real links on both sides.
+
+The flatness matters methodologically: a two-point plateau with symmetric falloff is
+what a real optimum looks like, where fold-0 noise would give a jagged profile. 0.25 is
+kept because it is the value confirmed in combination on **both** folds.
 
 Note also that bidir's own optimum on fold 0 is **0.25** (0.9375) rather than 0.15
 (0.9369) at the shipped operating point — the first sweep bracketed it too narrowly and
