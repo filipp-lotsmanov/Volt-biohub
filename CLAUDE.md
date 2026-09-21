@@ -1568,6 +1568,21 @@ node recall to 0.8789 against 0.9377. So it does not isolate contamination. What
 it does establish is that the reference path is **not** unconditionally better —
 it is better *with this checkpoint*.
 
+**The decomposition, and it puts almost all the gain on the memorisation-exposed
+half.** Full fold 1, one variable at a time:
+
+| arm | score | adjJ | node recall |
+|---|---|---|---|
+| our detection + our relink (shipped) | 0.8760 | 0.8657 | 0.9841 |
+| **reference detection + our relink** | **0.8776** | 0.8705 | **0.9931** |
+| reference detection + their edge head + ILP | **0.9124** | 0.9042 | 0.9700 |
+
+**The detection half is worth +0.0016. The linker half is worth +0.0348** — 96 %
+of it. Their peak picker and flip TTA do produce a better node set (recall
+0.9931, the highest measured in this project), and our geometric relink simply
+does not convert it; what converts it is the learned edge head choosing the
+topology, with the ILP pruning what it over-commits.
+
 **And the specific risk is nameable.** Both the 0.8760 baseline and the 0.9124
 candidate use the same contaminated detector, so the detector half is not what
 differs. What differs is the linker: ours is geometric, theirs is a learned edge
