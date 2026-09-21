@@ -106,19 +106,25 @@ def main(argv=None) -> int:
 
         # Controls: nodes with exactly one child, sampled from the same frames
         # as the divisions so any time-of-movie trend cancels.
-        one_child = set(int(s) for s, c in zip(src, cnt, strict=True) if c == 1)
+        one_child = {int(s) for s, c in zip(src, cnt, strict=True) if c == 1}
         frames_needed = set()
         for f in forks:
             k = idx[int(f)]
             frames_needed.update(range(max(0, int(t[k]) - 2), min(arr.shape[0], int(t[k]) + 2)))
         cache: dict[int, np.ndarray] = {}
 
-        def frame(ti: int) -> np.ndarray:
+        # Bound as defaults rather than captured: both closures are defined
+        # inside the per-sample loop, so a later iteration would silently
+        # rebind them (B023). They are in fact only called within their own
+        # iteration, but binding here makes that structural.
+        def frame(ti: int, *, cache=cache, arr=arr,
+                  q_lo=q_lo, q_hi=q_hi) -> np.ndarray:
             if ti not in cache:
                 cache[ti] = _norm_frame(np.asarray(arr[ti]), q_lo, q_hi)
             return cache[ti]
 
-        def record(node_id: int, kind: str) -> None:
+        def record(node_id: int, kind: str, *, idx=idx, t=t, zz=zz, yy=yy,
+                   xx=xx, pred=pred, stem=stem, frame=frame) -> None:
             k = idx[node_id]
             ti = int(t[k])
             here = np.array([int(zz[k]), int(yy[k]), int(xx[k])])
@@ -181,7 +187,8 @@ def main(argv=None) -> int:
         # sit there.
         allv = np.concatenate([dv, cv])
         order = allv.argsort()
-        ranks = np.empty(len(allv)); ranks[order] = np.arange(1, len(allv) + 1)
+        ranks = np.empty(len(allv))
+        ranks[order] = np.arange(1, len(allv) + 1)
         u = ranks[:len(dv)].sum() - len(dv) * (len(dv) + 1) / 2
         auc = u / (len(dv) * len(cv))
         d25, d50, d75 = np.percentile(dv, [25, 50, 75])
