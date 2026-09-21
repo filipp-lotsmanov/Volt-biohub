@@ -1551,6 +1551,31 @@ picks, so a gate really does reject her; and since the distance clause is now me
 as already optimal, the structural clause is what is left. That is a one-line change
 worth one arm, and it is the only division lever this project has not measured.
 
+**MORE SOUP MEMBERS TRADE THE SAME WAY, AND THE EDGE PAIR REVERSES THE TRADE — the one
+prediction today that held.** A four-member soup (pubfull 381 and 400 plus two epochs
+continuing that run under their own recipe) scores 0.9440 alone, +0.0012 over the
+two-member soup, and it gets there by the documented TTA mechanism: adjJ 0.9333 → 0.9359
+(+0.0026, highest measured) against divJ 0.0950 → **0.0805**. Averaging smooths the
+detection map, and sister separation one frame after a division has p5 of 5.41 µm on a
+1.625 µm grid, so daughters merge under the average. **So member count has an interior
+optimum rather than being monotone.**
+
+Pairing it with the edge-side arms, whose effect on divisions runs the other way,
+recovers it:
+
+| fold 0 | score | adjJ | divJ |
+|---|---|---|---|
+| soup2 + blend 0.15 (kernel v14) | 0.9428 | 0.9333 | 0.0950 |
+| soup4 alone | 0.9440 | 0.9359 | 0.0805 |
+| soup2 + edge head 0.5 + bidir 0.25 | 0.9454 | 0.9352 | 0.1025 |
+| **soup4 + edge head 0.5 + bidir 0.25** | **0.9463** | **0.9361** | 0.1020 |
+
+**One honest caveat on the stack.** Every arm above is one variable, but *selecting* the
+best combination across a dozen fold-0 arms is itself a fitting process on fold 0, and
+soup4's marginal +0.0009 is inside what 128 samples can produce as noise. The edge pair's
++0.0026 is trustworthy because it reproduced **identically** on fold 1; soup4's increment
+has not been confirmed that way and should not be treated as solid until it is.
+
 **MEASURED, AND IT IS A NO-OP: 0.9428 against the soup's 0.9428**, adjJ identical at
 0.9333, divJ 0.0950 → 0.0956, node recall and ratio unchanged. So the grandchild
 requirement was not the blocker either, and my second division prediction is falsified
