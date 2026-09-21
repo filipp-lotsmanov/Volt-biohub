@@ -79,109 +79,72 @@ if WEIGHTS is not None:
 
 # Best configuration measured through the submission path ITSELF, not through a
 # parallel harness -- that mismatch is what produced CV 0.7366 against LB 0.588.
-# Every number below is the full 71-sample LOEO fold, one variable at a time,
-# with this same checkpoint (the public 400-epoch pack, which is legal: the rules
-# explicitly allow freely available pre-trained models).
 #
-#   threshold 0.5, one-pass gate 8 um      0.7830   divJ 0.0110   <- scored 0.846
-#   threshold 0.965                        0.7931   divJ 0.0110
-#   + full post-processing                 0.8687   divJ 0.1077
-#   8-view D4 TTA alone                    0.7916   divJ 0.0088
-#   learned transformer edge head          0.7632   divJ 0.0178
-#   post-processing at threshold 0.93      0.8649   divJ 0.0938
-#   post-processing + TTA at 0.965         0.8609   divJ 0.0484
-#   post-processing + TTA at 0.93          0.8593   divJ 0.0492
-#   + relink learned bonus 15.0            0.8760   divJ 0.1034   <- shipping
-#   ILP over learned candidates            0.8190   divJ 0.0238
-#   finer peak picker, separation 3.0      0.8527   divJ 0.0435
+# THE CHANGE OVER THE 0.908 SUBMISSION IS THAT WE STOPPED REIMPLEMENTING THE
+# INFERENCE PATH. `volt_biohub.reference_predict` is
+# `scripts/predict_unet_transformer.py` copied verbatim -- itself byte-identical
+# to the upstream baseline apart from docstrings -- with tracksdata removed.
+# Everything after it is ours. Measured end to end through this same writer, on
+# the four movies the public 0.942/0.948 notebooks validate on (their validator
+# picks two held-out train movies per embryo prefix, division-preferring,
+# alphabetical, and its scorer is term for term ours):
 #
-# THE POST-PROCESSING IS THE CHANGE. It is the shared post-processing cell of the
-# public 0.942-0.948 notebooks, ported in their order (which is load-bearing) --
-# two-pass Hungarian with velocity extrapolation, single-frame gap closing by
-# inserting an interpolated node, structurally gated divisions, a short-track
-# filter and line-fit smoothing. The detector was never the gap: with this exact
-# checkpoint we scored 0.846 against a field median of 0.902, so everything after
-# detection was.
+#   our own detect-and-link + post-processing     0.9013   adjJ 0.8888
+#   reference path alone, no post-processing      0.9299   adjJ 0.9299  divJ 0.0000
+#   reference path + ILP prune + our stack        0.9505   adjJ 0.9362  divJ 0.1429
 #
-# The division term is the part worth naming. divJ has sat near zero since the
-# first submission, against a term worth 0.1 of the score. Our linker gated forks
-# at 6.0 um while measured GT sister separation one frame after a division has a
-# median of 10.4 um -- most real divisions were rejected by construction. The
-# reference opens the gates (parent 9.0, sister 14.0) and defends precision
-# structurally instead: mutual-nearest orphans, forward divergence, a symmetry
-# test, and hard per-frame and global caps.
+# 0.9505 is above the 0.9417 those notebooks report for themselves, and the
+# reason is the combination rather than either half: their ILP prices a fork at
+# 1.2 and prunes every one of them, so it scores division Jaccard 0.0000, while
+# our division pass scores 0.14 on a linker 0.04 worse. Neither side alone gets
+# there.
 #
-# NOT included, both on measurement rather than taste. The ILP: those notebooks
-# run it and then discard its edge set wholesale, keeping only per-pair
-# probabilities as a small additive bonus, so their shipped edges come from the
-# two-pass Hungarian above. The learned edge head: 0.7632 against Hungarian's
-# 0.7830, because abstaining leaves isolated nodes that pruning then deletes.
+# Why our rewrite lost 0.04, twice. This file's own history is the argument: on
+# 2026-09-14 the same comparison read 0.129 and the conclusion recorded then was
+# "stop maintaining the rewrite; ship the path that already works". We rebuilt
+# the rewrite instead. Four attempts to close it from the inside -- an ILP over
+# the resolved graph, real consecutive frame pairs for the trunk features, the
+# reference's 3-voxel peak window, and all three at once -- moved it by at most
+# 0.009, so the residual was never one identifiable bug.
 #
-# gate_um is deliberately absent: --postprocess REPLACES the one-pass fixed-gate
-# linker entirely, so passing it would be tuning a dead knob.
+# THE ILP RUNS, AND IT NEEDS NO SOLVER. Its earlier rejection here (0.8190, node
+# recall 0.9419) was of a solver handed the RAW candidate graph, which must then
+# choose the node set too; the reference resolves greedily to <=1 parent and <=2
+# children first and lets it decide only what to keep. In its own code that is
+# worth +0.047 of adjusted edge Jaccard, spent on precision -- edge false
+# positives roughly halve while true positives move by single digits. After
+# greedy resolution the graph is a forest, over which tracksdata's formulation
+# is separable, so `ilp_link.prune_dp` returns the identical edge set by tree DP:
+# 24,540 nodes against the solver's 24,542 on one full video, 42,186 against
+# 42,184 on another, the differences being equal-objective ties. Milliseconds
+# instead of ~15 s a video, and no tracksdata on the inference path.
 #
-# det_threshold REPLACES the node budget, which is what took the last submission
-# from 0.581 to 0.846. Four submissions scored 0.588 / 0.578 / 0.581 / 0.575
-# across four structurally different pipelines whose CV node recall spanned 0.65
-# to 0.98; the one thing all four shared was predict_n_true(q0.9), so every one
-# emitted the same wrong node count on the hidden embryo no matter what sat
-# underneath it. A threshold removes N_true from the inference path entirely and
-# the detector's own confidence estimates the count better than the fit did.
+# TTA IS ON, reversing a rejection this file argued at length. Two facts. The
+# reference's det_tta is FLIP-xy, four views; the -0.015 we measured was the
+# full eight-view D4 group, rotations included, which is a much stronger
+# perturbation through an anisotropic PSF -- not the same operation. And every
+# detector-side measurement we made used the public checkpoint, which trained on
+# all 199 movies including our own test folds; on our honestly held-out detector
+# the same eight-view TTA scores +0.0071 (0.7799 -> 0.7870) where it scored
+# -0.015 there. The hidden test set is a third unseen embryo, which is the
+# held-out regime, so the in-domain sign is the one not to trust.
 #
-# NO TTA, and the reason is specific rather than "it did not help". Every public
-# notebook above 0.942 uses it, so a negative result needs a mechanism. Averaging
-# logits over the D4 symmetries of (y, x) acts like a blur in that plane, and the
-# two daughters one frame after a division are close enough to merge under it --
-# so the division term halves, on both arms tested:
+# det_threshold REPLACES the node budget, which took us from 0.581 to 0.846:
+# four submissions scored 0.588 / 0.578 / 0.581 / 0.575 across pipelines whose
+# CV node recall spanned 0.65 to 0.98, and the one thing they shared was
+# predict_n_true(q0.9). A threshold removes N_true from inference entirely.
 #
-#   post-processing                        0.8687   divJ 0.1077
-#   + TTA, threshold 0.965                 0.8609   divJ 0.0484
-#   + TTA, threshold 0.93                  0.8593   divJ 0.0492
-#
-# Retuning the threshold underneath it does not recover it, which rules out "the
-# operating point moved" as the whole story. It is also not free: the detector
-# measured 13.3 s/video on the real T4 kernel, so eight views is ~5.9 h before
-# post-processing against ~1.6 h without. Available as tta=True, and worth
-# revisiting only for a detector whose daughters do not merge -- a finer grid
-# (--downsample 1,2,2) is the obvious candidate.
-#
-# The threshold retune without TTA also lost: 0.93 gives 0.8649 against 0.965's
-# 0.8687, so 0.965 is a real interior optimum and not inherited from the public
-# notebooks by assumption.
-# THE LEARNED BONUS is the change over the 0.905 submission, and it is the same
-# transformer edge head this project deleted twice. What changed is how its
-# probabilities are spent. Three ways, all measured on the full fold:
-#
-#   as edges, resolved greedily        0.7830   softmax abstention leaves nodes
-#                                               with no parent, and pruning then
-#                                               deletes them (recall 0.9808->0.9390)
-#   as ILP candidates                  0.8190   the solver deletes marginal nodes
-#                                               for free (recall 0.9419)
-#   as a bonus on the geometric cost   0.8760   neither failure can occur
-#
-# The cost becomes `motion + 0.05*raw - bonus*prob`. Geometry still decides the
-# assignment and the model only reorders candidates within the motion gate, so it
-# cannot abstain a node into deletion and cannot drop one. The reference ships
-# this at 1.0; our optimum is far higher because the bonus is subtracted from a
-# cost in MICROMETRES and median inter-frame motion is 1.82 um, so 1.0 can only
-# break near-ties. adjJ rises monotonically 0.8579 -> 0.8657 over bonus 0 -> 15
-# and then plateaus; at that end the cost has degenerated to Hungarian on learned
-# probabilities within a motion gate, which is the hybrid that beats both extremes.
-#
-# Rejected on measurement, so they do not get retried: the ILP (0.8190; node
-# recall collapses to 0.9419 because ILPSolver's node_weight defaults to 0.0, so
-# deleting a node is free against an edge worth at most 1.0 and a disappearance
-# cost of 2.0 -- the reference is insulated only because its relink runs
-# afterwards and repairs the over-deletion), 8-view TTA (0.8609; it blurs the two
-# daughters into one peak and halves divJ), and the finer peak picker (0.8527;
-# node recall 0.9911, the best measured, but the node-count bonus flips and divJ
-# halves).
+# Still not included: the dual-seed blend (+0.0042 weighted CV) only reaches
+# `load_detector`, which the reference path bypasses -- worth wiring into
+# reference_predict's detection next, not worth delaying this for.
 submit.run(
     TEST, Path("/kaggle/working/submission.csv"),
     weights=WEIGHTS if USE_UNET else None,
     budget=1.0,
     det_threshold=0.965 if USE_UNET else None,
+    reference=USE_UNET,
+    ilp_prune=USE_UNET,
+    tta=USE_UNET,
     postprocess=True,
     min_track_len=6,
-    learned_bonus=15.0 if USE_UNET else 0.0,
 )

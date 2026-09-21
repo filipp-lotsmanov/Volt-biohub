@@ -183,6 +183,29 @@ def load_volumes(zarr_path: Path) -> tuple[np.ndarray, float]:
     return np.clip((raw - lo) / (hi - lo + 1e-6), 0, None), q90
 
 
+
+def volume_meta(zarr_path: Path) -> tuple[int, tuple[int, int, int], float]:
+    """Frame count, downsampled spatial shape and the stored 0.9 quantile.
+
+    What :func:`load_volumes` returns minus the pixels, for the paths that do
+    not need them. Reading the array is not free: one video is 839 MB
+    uncompressed, and decoding it twice per dataset is real time on a notebook
+    with a handful of vCPUs.
+    """
+    g = zarr.open_group(str(zarr_path), mode="r")
+    shape = tuple(g["0"].shape)
+    stats = g.attrs.get("image_statistics") or {}
+    q = stats.get("quantiles") or {}
+    if "0.9" in q:
+        q90 = float(q["0.9"])
+    else:
+        q90 = float(np.percentile(np.asarray(g["0"][0]).astype(np.float32), 90))
+    dz, dy, dx = DOWNSAMPLE
+    return (shape[0],
+            (-(-shape[1] // dz), -(-shape[2] // dy), -(-shape[3] // dx)),
+            q90)
+
+
 def load_detector(weights: Path, device, tta: bool = False,
                   feature_tta: bool = False,
                   secondary: Path | None = None,
@@ -691,6 +714,8 @@ def run(
             raise SystemExit(f"checkpoint downsample {ref_down} != {DOWNSAMPLE}")
         ref_cfg = rp.PredictConfig(det_threshold=det_threshold if det_threshold
                                    else 0.965, det_tta=tta)
+        ref_blend = rp.make_blend(secondary_weights, resolve_device(),
+                                  secondary_weight) if secondary_weights else None
         print(f"linker: REFERENCE path (det_tta={ref_cfg.det_tta}, "
               f"pool {ref_cfg.pool_kernel_um} um, edge threshold "
               f"{ref_cfg.threshold})", flush=True)
@@ -699,9 +724,19 @@ def run(
     t0 = time.monotonic()
     for i, name in enumerate(names, 1):
         t1 = time.monotonic()
-        volumes, q90 = load_volumes(test_dir / f"{name}.zarr")
+        # The reference path reads its own frames, so loading them here as well
+        # would decode 839 MB twice per video -- cheap on 256 cores, not on
+        # Kaggle's handful of vCPUs. The division ranker's intensity lookup is
+        # the one thing in that branch that needs the pixels.
+        need_pixels = (not reference) or (div_kwargs or {}).get("rise_weight")
+        if need_pixels:
+            volumes, q90 = load_volumes(test_dir / f"{name}.zarr")
+            n_frames, vol_shape = len(volumes), tuple(volumes.shape[1:])
+        else:
+            volumes = None
+            n_frames, vol_shape, q90 = volume_meta(test_dir / f"{name}.zarr")
         n_true = predict_n_true(q90)
-        n_per_frame = budget_for(n_true, len(volumes), budget)
+        n_per_frame = budget_for(n_true, n_frames, budget)
 
         # Measured over all 199 training samples: the U-Net wins on the CROWDED
         # samples and DoG on the sparse ones, spearman(cells/frame, unet-dog) =
@@ -713,7 +748,7 @@ def run(
         use_map = detect_map
         picked = "unet" if detect_map is not None else "dog"
         if switch_at is not None:
-            crowded = (n_true / max(len(volumes), 1)) >= switch_at
+            crowded = (n_true / max(n_frames, 1)) >= switch_at
             use_map = detect_map if crowded else None
             picked = "unet" if crowded else "dog"
         reference_links = None
@@ -725,9 +760,10 @@ def run(
             from volt_biohub.ilp_link import prune_dp
             raw_coords, raw_edges = rp.predict_video(
                 ref_model, test_dir / f"{name}.zarr", resolve_device(),
-                cfg=ref_cfg, window_size=ref_W, downsample=DOWNSAMPLE)
+                cfg=ref_cfg, window_size=ref_W, downsample=DOWNSAMPLE,
+                blend=ref_blend)
             coords, reference_links, sparse = rp.to_per_frame(
-                raw_coords, raw_edges, DOWNSAMPLE, len(volumes), ISO_UM)
+                raw_coords, raw_edges, DOWNSAMPLE, n_frames, ISO_UM)
             probs_per_pair = rp.probs_as_matrices(coords, sparse)
             if ilp_prune:
                 # Applied here rather than through run_all's prune_fn so the
@@ -770,8 +806,8 @@ def run(
             # reaching it means something is wrong upstream — hence the warning.
             print("    WARNING: no detections; emitting one placeholder node",
                   flush=True)
-            centre = np.array([[s // 2 for s in volumes.shape[1:]]], dtype=np.int64)
-            coords = [centre] + [np.empty((0, 3), dtype=np.int64)] * (len(volumes) - 1)
+            centre = np.array([[s // 2 for s in vol_shape]], dtype=np.int64)
+            coords = [centre] + [np.empty((0, 3), dtype=np.int64)] * (n_frames - 1)
 
         def _make_prune(probs):
             # Solving the graph our relink already resolved, which is what the
@@ -784,8 +820,8 @@ def run(
             # and it keeps tracksdata off the inference path entirely.
             from volt_biohub.ilp_link import prune_dp as ilp_prune_fn
 
-            def _fn(c, lk):
-                return ilp_prune_fn(c, lk, probs, ISO_UM, **(ilp_kwargs or {}))
+            def _fn(pts, edges, probs=probs):
+                return ilp_prune_fn(pts, edges, probs, ISO_UM, **(ilp_kwargs or {}))
             return _fn
 
         # The reference's linker: greedy resolution of the edge head's own
@@ -812,7 +848,7 @@ def run(
             coords, links = ilp_solve(coords, candidates, ISO_UM,
                                       **(ilp_kwargs or {}))
 
-        def _intensity(t, coord):
+        def _intensity(t, coord, volumes=volumes):
             """Normalised image intensity at a node, for the division ranker.
 
             Clipped rather than bounds-checked: line-fit smoothing can push a
@@ -820,9 +856,9 @@ def run(
             produced the -1 coordinates the validator rejected), and a fork
             candidate is not worth losing over a rounding artefact at the edge.
             """
-            if t < 0 or t >= len(volumes):
+            if volumes is None or t < 0 or t >= len(volumes):
                 return None
-            z, y, x = (int(round(float(v))) for v in coord)
+            z, y, x = (int(round(float(v))) for v in coord)  # noqa: RUF046
             sz, sy, sx = volumes.shape[1:]
             return float(volumes[t,
                                  min(max(z, 0), sz - 1),
@@ -839,7 +875,7 @@ def run(
                 coords, ISO_UM,
                 divisions=division_gate_um is not None,
                 min_track_len=min_track_len,
-                shape=tuple(volumes.shape[1:]),
+                shape=vol_shape,
                 div_kwargs={**(div_kwargs or {}), "intensity": _intensity}
                            if (div_kwargs or {}).get("rise_weight") else div_kwargs,
                 links_per_t=(reference_links if reference_links is not None

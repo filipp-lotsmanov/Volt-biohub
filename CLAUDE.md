@@ -1359,6 +1359,37 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-21 — THE ENDGAME PLAN, and it follows from the 29 % split rather than
+from the rank table.** Board as of today: 3,778 teams, **Volt rank 2,038 at 0.908**.
+The cliff has hardened — **703 teams at exactly 0.947**, 170 at 0.946, 87 at 0.948 —
+so 0.9465 is rank 943 and 0.9475 is rank **240**. That table is seductive and it is
+the wrong thing to optimise, for one reason: it describes the **29 %** public sample,
+and 703 teams sitting on one number are 703 teams whose configuration was chosen
+against that sample. On the private 71 % that pile scatters, and nothing we do
+changes where it scatters to. Our rank is decided by our own private score.
+
+So the endgame rules are:
+
+1. **Choose both final submissions on CV, not on the public LB.** Ours is a
+   71/128-sample held-out-by-embryo estimate; theirs is four movies at effective
+   n ≈ 2 with a pre-registered rule that says "local CV only vetoes, it never
+   promotes". We have the better instrument and should use it as one.
+2. **Weight the folds.** Fold 0 is 85 % of the metric weight. A fold-1 number is
+   not the result — this file quoted one for days.
+3. **Detector-side changes cannot be ranked on our CV at all**, because the public
+   checkpoint trained on all 199 movies including both folds. Measured today: the
+   same 8-view TTA scores **−0.015 on the contaminated checkpoint and +0.0071 on our
+   honestly held-out one**. The hidden set is a third unseen embryo, i.e. the
+   held-out regime, so for anything touching detection the in-domain sign is the one
+   to distrust. Use E7_fold1 for those arms.
+4. **The two picks should differ in what could go wrong, not in tuning.** One is the
+   CV-best pipeline. The other should be the configuration whose failure mode is
+   uncorrelated with it — realistically the previous shipped stack, which is a
+   different linker end to end, so a systematic problem with the learned edge head
+   on an unseen embryo cannot take both slots down.
+5. **Identity verification is still open and is a human action** —
+   `requiresIdentityVerification: true`, and prize eligibility depends on it.
+
 **2026-09-20 — THE ENDGAME FACTS. Read these before planning any more work.**
 
 **1. The public leaderboard is 29 % of the test set; the final standing is the other

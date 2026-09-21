@@ -484,6 +484,7 @@ def predict_video(
     max_frames: int | None = None,
     unet_batch_size: int = 4,
     downsample: tuple[int, ...] = (1, 4, 4),
+    blend=None,
 ) -> tuple[np.ndarray, list[tuple[int, int, float, float]]]:
     """Run inference on a single video using sliding windows of W frames.
 
@@ -561,6 +562,19 @@ def predict_video(
                 del imgs_flip, det_flip
             for f in range(W):
                 det_logits[f] = det_logits[f] / 4
+
+        # The one addition to the copied body, and it is a no-op unless a
+        # second checkpoint is passed. Two independently trained detectors have
+        # no reason to share a logit scale, so the secondary is moment-matched
+        # to the primary before averaging, with the scale ratio clamped the way
+        # the reference clamps it and a per-frame retention guard that reverts
+        # to the primary if the blend loses more than 10% of its candidates --
+        # losing node recall is the one failure this pipeline cannot absorb.
+        # Measured through our own detect-and-link at weight 0.3: fold 0
+        # 0.8953 -> 0.8986, fold 1 0.8760 -> 0.8852.
+        if blend is not None:
+            for f in range(W):
+                det_logits[f] = blend(det_logits[f], imgs, f, cfg.det_threshold)
 
         del imgs
 
@@ -675,3 +689,53 @@ def predict_video(
 # =============================================================================
 # Prediction loop
 # =============================================================================
+
+
+def make_blend(secondary_path: Path, device, weight: float,
+               retention: float = 0.90):
+    """A ``blend`` callable for :func:`predict_video`, or ``None`` at weight 0.
+
+    Kept here rather than in ``kaggle/submit.py`` so the reference path owns
+    its own optional second detector and the two cannot drift: ``submit.py``'s
+    version blends a single duplicated frame, this one blends whichever frame
+    of the window the caller names, which is what a temporal trunk needs.
+
+    The guard is what makes it safe rather than merely plausible. A blend that
+    loses detections costs node recall, and node recall is the term this
+    pipeline can least afford -- it is what a misconfigured ILP cost us
+    (0.9419 against 0.9830). If the blended map yields fewer than *retention*
+    of the primary's candidates on a frame, that frame keeps the primary.
+    """
+    import math
+
+    if weight <= 0.0:
+        return None
+    cfg = json.loads((secondary_path.parent / "config.json").read_text())
+    unet2 = TemporalUNet3D(in_channels=1, out_channels=cfg["unet_out_channels"],
+                           layers=cfg["unet_layers"])
+    head2 = nn.Conv3d(cfg["unet_out_channels"], 1, kernel_size=1)
+    state = torch.load(secondary_path, map_location="cpu", weights_only=True)
+    unet2.load_state_dict({k[len("unet."):]: v for k, v in state.items()
+                           if k.startswith("unet.")})
+    head2.load_state_dict({k[len("detect_head."):]: v for k, v in state.items()
+                           if k.startswith("detect_head.")})
+    unet2.to(device).eval()
+    head2.to(device).eval()
+
+    def _blend(primary, imgs, f, det_threshold):
+        with torch.no_grad():
+            feats = unet2(imgs.unsqueeze(2))
+            out2 = head2(feats[:, f])
+        p_mean, p_std = primary.mean(), primary.std()
+        s_mean, s_std = out2.mean(), out2.std()
+        ratio = torch.clamp(p_std / (s_std + 1e-6), 0.5, 2.0)
+        aligned = (out2 - s_mean) * ratio + p_mean
+        blended = (1.0 - weight) * primary + weight * aligned
+        cut = math.log(det_threshold / (1.0 - det_threshold))
+        n_p = int((primary > cut).sum())
+        n_b = int((blended > cut).sum())
+        if n_p > 0 and n_b < retention * n_p:
+            return primary
+        return blended
+
+    return _blend
