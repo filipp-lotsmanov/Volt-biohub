@@ -1625,6 +1625,22 @@ splitting by the measured transfer rates: soup4-over-soup2 is detector-side (+0.
 ~100 %) and the edge pair is edge-head-side (+0.0026 at ~35 % → +0.0009), so ~+0.0025
 over whatever v14 scores.
 
+**THE MEMBER-COUNT CURVE, measured at three points, and it flattens at 4.** All with the
+same edge pair on fold 0:
+
+| soup members | score | adjJ | divJ |
+|---|---|---|---|
+| 2 | 0.9454 | 0.9352 | 0.1025 |
+| **4** | **0.9463** | 0.9361 | 0.1020 |
+| 8 | 0.9466 | **0.9370** | 0.0956 |
+
+adjJ rises **monotonically** with members while divJ falls, and the two cancel: +0.0009
+from 2→4, then **+0.0003** from 4→8, which is inside the noise floor. So the smoothing
+mechanism is confirmed across three points rather than inferred from two, and **4 members
+is the operating point** — indistinguishable from 8 on score, fewer artifacts to manage,
+and the only count confirmed on both folds. Do not chase more SWA epochs for this; the
+curve is flat and the division term is what pays for the edge term.
+
 **A TRAP THAT NEARLY COST THE ATTRIBUTION, and it constrains the order of operations.**
 A code competition's graded rerun executes **at submission time against the CURRENT
 dataset versions**, and `kernel-metadata.json` lists `volt-wheels`/`volt-code`/
