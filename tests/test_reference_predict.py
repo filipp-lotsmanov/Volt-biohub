@@ -137,3 +137,47 @@ def test_bidirectional_fusion_uses_the_reverse_pass_transposed(
         assert prob == pytest.approx(expected, rel=1e-6), (gi, gj)
 
     assert seen_asymmetric, "every pair was square; the transpose went untested"
+
+
+def test_secondary_ensembled_with_itself_is_a_no_op(tiny_checkpoint, clip):
+    """A model averaged with itself must change nothing, in either half.
+
+    This is the test that catches a mis-indexed feature lookup. ``_pair_probs``
+    has to index the secondary trunk at ``f_idx`` for sources and ``f_idx + 1``
+    for targets; off by one, or with the two swapped, it still returns a
+    plausible matrix of the right shape and the run completes. Passing the same
+    checkpoint as both primary and secondary makes the correct answer exactly
+    the unensembled one -- moment-matching a logit map against itself gives
+    ratio 1 and returns it unchanged, and averaging a probability matrix with
+    itself is the identity -- so any indexing error shows up as a difference.
+    """
+    dev = torch.device("cpu")
+    cfg = rp.PredictConfig(det_threshold=0.05, det_tta=False)
+    model, W, down = rp.load_model(tiny_checkpoint, dev)
+
+    plain_c, plain_e = rp.predict_video(model, clip, dev, cfg=cfg,
+                                        window_size=W, downsample=down)
+    sec = rp.make_secondary(tiny_checkpoint, dev, det_weight=0.5,
+                            edge_weight=0.5, window_size=W, downsample=down)
+    same_c, same_e = rp.predict_video(model, clip, dev, cfg=cfg,
+                                      window_size=W, downsample=down,
+                                      secondary=sec)
+
+    assert len(plain_e) > 0, "fixture emitted no edges; the test proves nothing"
+    np.testing.assert_array_equal(plain_c, same_c)
+    assert [(a, b) for a, b, _p, _d in plain_e] == \
+           [(a, b) for a, b, _p, _d in same_e]
+    np.testing.assert_allclose([p for _a, _b, p, _d in plain_e],
+                               [p for _a, _b, p, _d in same_e],
+                               rtol=1e-6, atol=1e-7)
+
+
+def test_secondary_rejects_a_mismatched_coordinate_space(tiny_checkpoint):
+    """Wrong downsample must raise, not read features from the wrong voxels."""
+    dev = torch.device("cpu")
+    with pytest.raises(ValueError, match="downsample"):
+        rp.make_secondary(tiny_checkpoint, dev, det_weight=0.5,
+                          downsample=(1, 2, 2))
+    with pytest.raises(ValueError, match="window"):
+        rp.make_secondary(tiny_checkpoint, dev, det_weight=0.5,
+                          window_size=5)
