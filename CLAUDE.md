@@ -1390,10 +1390,29 @@ contamination asymmetry already measured our CV *understates* it rather than inf
 it; and it costs **nothing** at inference and needs **no code change** — only a new
 weights-dataset version, since the kernel resolves `volt-weights` unpinned.
 
-It also un-gates the two edge-side arms. Both bidirectional fusion and the secondary
-edge head were division-gated (see below), and the soup restores divJ to 0.0950 on
-fold 0, so they are worth re-testing on top of it rather than on the old operating
-point.
+**Souping and blending are complementary, not substitutes — measured.** Turning the
+cross-run blend off *under* the soup gives 0.9392 against 0.9428 with it, so the blend
+still earns **+0.0036** on top of souping (adjJ 0.9298 vs 0.9333, recall 0.9809 vs
+0.9826). That is the decomposition it implies: **within-run averaging cancels
+checkpoint-selection noise, across-run blending cancels initialisation and data-order
+noise.** Different noise sources, so they add — and the secondary encode is therefore
+earning its ~20 % of detector runtime rather than being dead weight. Keep both.
+
+**And the soup does NOT un-gate the edge-side arms — I predicted it would and it does
+not.** On top of the soup, bidirectional fusion w=0.15 gives 0.9433 against 0.9428, i.e.
+**+0.0005**, essentially the +0.0008 it gave at the old operating point:
+
+| | adjJ Δ | divJ Δ | net |
+|---|---|---|---|
+| bidir at the shipped operating point | +0.0011 | −0.0025 | +0.0008 |
+| bidir on top of the soup | +0.0010 | −0.0052 | +0.0005 |
+
+So the division cost these arms carry is **not about headroom** — it is a roughly fixed
+fraction of forks suppressed regardless of how many exist. Handing them a larger
+division term did not let them keep it. That closes the edge-side family: **three
+ports, two operating points, every one worth ≤ +0.0008**, consistently, which is an
+order of magnitude below the reference's published deltas for the same components and
+the same story as every other port — their deltas repair a defect we do not have.
 
 Proxy set (the 4 movies the public notebooks validate on), everything else matched,
 same card:
