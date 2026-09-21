@@ -1453,6 +1453,41 @@ moment-matching (no shared scale); edge probabilities average *arithmetically* (
 question, so an ensemble mean). That is the opposite of the harmonic mean above, which
 combines complementary questions.
 
+**Measured on the full fold 0, one variable each against the shipped 0.9361 — and both
+edge-side additions buy the edge term by selling the division term.** That shared
+mechanism is the useful part, not the individual numbers:
+
+| fold 0, one variable | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| shipped (reference path + ILP prune + TTA + blend 0.15) | 0.9361 | 0.9279 | 0.0816 | 0.9789 |
+| **+ bidirectional fusion w=0.15** | **0.9369** | 0.9290 | 0.0791 | 0.9801 |
+| + secondary edge head w=0.3 | 0.9355 | 0.9289 | 0.0667 | 0.9790 |
+| det_threshold 0.98 instead of 0.965 | 0.9359 | 0.9277 | 0.0820 | 0.9788 |
+
+**Bidirectional fusion is real but a tenth of its published size.** The 2026-09-19
+verdict of −0.001 was void (measured through `edge_head.pair_probs`), and the corrected
+sign is **positive at +0.0008** — against the reference's +0.0053. Bankable, not worth a
+slot alone.
+
+**The secondary checkpoint's edge head is flat-to-negative** (−0.0006), and the 4-movie
+proxy that showed 0.9457 → 0.9579 was exactly the effective-n≈2 noise flagged when it
+was taken — most of that "gain" was the division term on ~4 events. Two edge heads of
+the same architecture trained on the same 199 movies are too correlated for averaging to
+reduce much variance, and the secondary is the weaker run. Kept at weight 0 because
+`Secondary` also carries the detection blend that does ship.
+
+**`det_threshold` is exhausted**, as the reference's own analysis says: 0.98 lands inside
+the noise floor of 0.965, because the misses are displaced peaks rather than
+below-threshold ones.
+
+**The shared mechanism, and why it makes the division gate worth more than its own
+headroom.** Both edge-side arms move adjJ up (+0.0011, +0.0010) and divJ down (−0.0025,
+−0.0149). Averaging edge probabilities makes the dominant assignment more confident,
+which is exactly what suppresses a fork's second child. So these two are not
+independently small — they are *gated on the division term*, and if loosening forward
+divergence raises divJ with headroom to spare, both flip to net positive on top of it.
+**Test the combination, not the winners.**
+
 **And the detection objective we default to is NOT the one that trained the field's
 best detector — measured, not inferred.** Warm-starting their epoch-400 weights and
 reading the loss on 12 iterations of all-train:
