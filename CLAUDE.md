@@ -1610,7 +1610,30 @@ and is merely slightly over-tuned; the optimum is interior and flat between 1.0
 and 2.0. Both gains are ~0.001, i.e. above the 0.0002 noise floor and below the
 0.005 that justifies a submission slot on its own — bank them.
 
-**What does move the division term is the appearance feature, and it is the one
+**The dual-seed blend is the largest increment on top of the reference path, and
+it gains on both terms.** Fold 0, against the shipped 0.9296:
+
+| | shipped | + blend w=0.3 |
+|---|---|---|
+| score | 0.9296 | **0.9336** |
+| adjJ | 0.9236 | **0.9259** |
+| divJ | 0.0597 | **0.0775** |
+| node recall | 0.9764 | 0.9772 |
+| node ratio | −0.0430 | −0.0402 |
+
+**+0.0040 on the fold that carries 85 % of the weight**, and unlike the
+node-retention knobs it moves adjusted edge Jaccard *and* the division term
+while barely touching the node count — so it is not trading one against the
+other. `reference_predict.make_blend` runs it inside the copied path, blending
+whichever frame of the window the caller names rather than a duplicated one.
+
+Two reasons to expect the leaderboard to like it more than this number does.
+It is **detector-side**, so our contaminated fold understates it by the argument
+above; and it is variance reduction across two independently-seeded nets, which
+pays more on an unseen embryo than in-domain. Under the old detect-and-link it
+was +0.0033 on fold 0 and **+0.0092 on fold 1**.
+
+**What does move the division term is the appearance feature,**What does move the division term is the appearance feature, and it is the one
 increment today with a clean mechanism.** Fold 0, against the shipped 0.9296:
 
 | `--div-rise-weight` | 0 | 10 |
