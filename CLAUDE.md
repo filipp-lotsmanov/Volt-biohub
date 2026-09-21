@@ -1418,10 +1418,34 @@ The blend weight did **not** move under the new primary, which is worth noting b
 moved twice before when an upstream component changed: 0.00 → 0.9392, **0.15 → 0.9428**,
 0.25 → 0.9401. A clean interior optimum in the same place.
 
-Best fold-0 configuration measured: **soup + blend 0.15 + secondary edge head 0.5 =
-0.9439.** Every non-soup increment is still ≤ +0.0011, an order of magnitude below the
-reference's published deltas for the same components, which remains the standing story:
-their deltas repair a defect we do not have.
+**AND THE TWO ARMS ARE EXACTLY ADDITIVE, WITH AN INTERACTION ON THE DIVISION TERM I
+WOULD NOT HAVE PREDICTED.** Both together, with bidir at its own measured optimum of
+0.25 rather than the 0.15 tested first:
+
+| fold 0 | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| soup + blend 0.15 | 0.9428 | 0.9333 | 0.0950 | 0.9826 |
+| + edge head 0.5 | 0.9439 | 0.9350 | 0.0891 | 0.9820 |
+| + bidir 0.15 | 0.9433 | 0.9343 | 0.0898 | 0.9834 |
+| **+ both, bidir 0.25** | **0.9454** | **0.9352** | **0.1025** | **0.9839** |
+
++0.0011 and +0.0015 sum to the measured +0.0026, so they cancel *different* noise rather
+than the same noise twice. But the division term is the surprise: each arm **alone**
+drops divJ (0.0950 → 0.0891 and → 0.0898), and the two **together** raise it to 0.1025,
+the highest since before the reference-path port. All three terms are simultaneously at
+their project maxima. The reading that fits: two different disagreement signals in
+combination preserve forks that either one alone suppresses, because a fork only loses
+its second child when a single signal is confidently wrong about it.
+
+Note also that bidir's own optimum on fold 0 is **0.25** (0.9375) rather than 0.15
+(0.9369) at the shipped operating point — the first sweep bracketed it too narrowly and
+the 0.40 arm was killed early for cards, so the upper side is still unmeasured.
+
+Best fold-0 configuration measured: **soup + blend 0.15 + edge head 0.5 + bidir 0.25 =
+0.9454**, which is +0.0026 over the submitted soup and +0.0093 over this morning's
+baseline. Individually every non-soup increment is still ≤ +0.0015, an order of magnitude
+below the reference's published deltas for the same components — their deltas repair a
+defect we do not have — but in combination they are worth having.
 
 Proxy set (the 4 movies the public notebooks validate on), everything else matched,
 same card:
