@@ -1640,13 +1640,21 @@ and 2.0. Both gains are ~0.001, i.e. above the 0.0002 noise floor and below the
 **The dual-seed blend is the largest increment on top of the reference path, and
 it gains on both terms.** Fold 0, against the shipped 0.9296:
 
-| | shipped | + blend w=0.3 |
-|---|---|---|
-| score | 0.9296 | **0.9336** |
-| adjJ | 0.9236 | **0.9259** |
-| divJ | 0.0597 | **0.0775** |
-| node recall | 0.9764 | 0.9772 |
-| node ratio | −0.0430 | −0.0402 |
+| blend weight | 0 | 0.20 | 0.30 | 0.45 |
+|---|---|---|---|---|
+| score | 0.9296 | **0.9345** | 0.9336 | 0.9310 |
+| adjJ | 0.9236 | **0.9267** | 0.9259 | 0.9246 |
+| divJ | 0.0597 | 0.0775 | 0.0775 | 0.0639 |
+| node recall | 0.9764 | 0.9780 | 0.9772 | 0.9770 |
+| node ratio | −0.0430 | −0.0390 | −0.0402 | −0.0407 |
+
+**The optimum moved, and we submitted the old one.** 0.3 was found under the
+old detect-and-link on fold 1 (0.2 → 0.8765, 0.3 → 0.8852, 0.4 → 0.8816); under
+the reference path on fold 0 it is **0.20**, worth another +0.0009 with adjJ
+higher at equal divJ. Since w = 0 must return to 0.9296 the peak is interior,
+somewhere in 0.10–0.25, and `56432361` went out at 0.30 — a reminder that a
+knob tuned against one linker does not carry to another, which is the same
+lesson as the division gates and the disappearance cost.
 
 **+0.0040 on the fold that carries 85 % of the weight**, and unlike the
 node-retention knobs it moves adjusted edge Jaccard *and* the division term
