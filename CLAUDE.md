@@ -1547,7 +1547,34 @@ level (0.8924 against 0.908), which would put this at ~0.943, while the two
 observed *deltas* transferred at only 40–70 %, which would put it at
 0.922–0.932.
 
-**Submitted as kernel version 11** (git `fc5090c`). The visible run is clean —
+**SCORED 0.920, rank 2038 -> 1647 of 3781.** Submission `56426110`, kernel v11,
+git `fc5090c`. The first time this project has been in the top half of the
+board, and +391 places.
+
+**But the transfer rate is the worst of the three we have, and it is the
+contamination showing up exactly where the decomposition said it would.**
+
+| change | CV | LB | CV Δ | LB Δ | transfer |
+|---|---|---|---|---|---|
+| post-processing stack | 0.8687 | 0.905 | +0.086 | +0.059 | 69 % |
+| relink learned bonus | 0.8760 | 0.908 | +0.007 | +0.003 | 43 % |
+| **reference path + ILP** | **0.9270** | **0.920** | **+0.0346** | **+0.012** | **35 %** |
+
+**And the sign of the CV/LB level gap has flipped.** Our CV sat 0.016–0.036
+*below* the LB for every geometric configuration; it is now **0.007 above** it.
+That is the predicted consequence of leaning on the contaminated half: the
+decomposition put 96 % of this gain on a learned edge head that trained on both
+our folds, so the more weight the pipeline puts on that head, the more our CV
+inflates. **Operational rule from here: discount any further gain measured on
+the edge-head side, and treat the CV as an upper bound rather than a
+conservative estimate.** The detector-side arms (blend, TTA) are the ones our
+CV still *understates*, for the opposite reason.
+
+So the reference path is genuinely better on an unseen embryo — +0.012 is far
+above the board's 0.001 resolution — and roughly two thirds of what it looked
+like locally was memorisation. Both halves of that were predicted before the
+submission, which is the first time this project has called a transfer rate in
+advance. The visible run is clean —
 validator PASS, 115,196 nodes and 109,905 edges over the four placeholders —
 and it settles the runtime question with a measurement rather than an
 extrapolation from this box: **78.5 s/video on the T4, 4.34 h for a
