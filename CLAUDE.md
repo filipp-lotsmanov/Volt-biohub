@@ -3185,111 +3185,64 @@ scoring bug.
 
 ## Plan
 
-**Gate 0 — DONE. The team exists** (Kaggle team "Volt", confirmed 2026-09-20 from the
-leaderboard: rank 2023 of 3761, 7 submissions). The entry and team-merger deadline of
-2026-09-22 is therefore satisfied. Earlier copies of this file listed it as the last
-open human action and a fresh session kept resurfacing it — it is closed.
+**Rewritten 2026-09-21 (end of day). Steps 1–7 of the old plan are done or superseded;
+the historical reasoning is preserved in Status, which is where the measurements live.**
+Eight days to the 2026-09-29 deadline. **Public LB 0.925**; best measured weighted LOEO
+CV **0.9449**.
 
-1. **Measure before designing — substantially done, needs committing.** The sweep over
-   all 199 samples is complete and its findings are folded into Data (counts vs
-   `estimated_number_of_nodes`, pooled displacement percentiles, single-lineage count,
-   sparsity by embryo, per-sample metric weight). What remains is turning it into
-   `scripts/inspect_data.py` so it is reproducible and re-runnable, emitting a per-sample
-   CSV — that table is the input to the split design in step 2 and to the node-budget
-   sweep in step 7, and it is also a portfolio artifact. Still genuinely open from this
-   step: **residual displacement after global registration** (the number that decides
-   whether step 6a is worth anything), and the nucleus radius σ that step 5's Gaussian
-   heatmap targets need.
-2. **CV harness** — `scripts/make_splits.py` emitting **both** splits described in Data:
-   the 2-fold leave-one-embryo-out (the honest number) and a within-embryo FOV split (the
-   fast one). Every experiment scored through it, one row per run in `experiments.csv`,
-   both numbers recorded.
-3. **First submission, classical** — DoG local maxima + Hungarian on µm distance,
-   gated at ~2× median displacement, no divisions. The point is a scored end-to-end
-   chain and a floor. Teams that skip this find their CSV bugs on Sept 28.
-4. **Offline submission chain** (parallel with 3) — a directory-mode `predict`,
-   `validate_submission()` diffed against `sample_submission.csv`, wheels/code/weights
-   datasets, thin notebook. Confirm the LB score matches local CV. **A CV/LB
-   disagreement here is the most important bug in the project;** chase it down before any
-   modelling. Also time one video end to end and extrapolate to a train-sized hidden test
-   set against the 12 h cap.
-5. **Detection — REWRITTEN AGAIN 2026-09-08. Read this ordering before starting any
-   detector work; it has now been wrong twice.** What changed: retuning four scalars
-   moved the *classical* baseline +0.068 and +0.109, more than any model change has, and
-   it invalidated the previous day's model comparison entirely. So:
-   **(0) RETUNE THE BASELINE WHENEVER YOU RETUNE A MODEL.** A model scored against a
-   baseline frozen at old defaults tells you nothing. This is the single cheapest way to
-   avoid wasting a week.
-   **(1) Per-sample node budget.** Edge Jaccard keeps rising with budget (0.7008 at 1.5×)
-   while the score peaks at 1.0× purely because of the node penalty. `T_true` is
-   predictable from stored quantiles at Spearman 0.856, so this is reachable upside with
-   no modelling at all — the best remaining lever.
-   **(2) Prefer the U-Net on generalisation, not on average.** The two methods tie on
-   weighted CV but the U-Net's fold spread is 0.003 against DoG's 0.199, and the hidden
-   test set is a third unseen embryo.
-   **(3) Then the loss/metric divergence** (below), now measurable via `--save-every`
-   and `epoch_metrics.csv`.
-   *Superseded ordering from 2026-09-07, kept because the reasoning still holds:*
-   **(a) sweep the linking gate per detector.** Worth **+0.082** on model A from one
-   scalar, and it is what takes the learned detector past the classical floor. Nothing
-   else measured today comes close to that return. Then re-sweep the budget *jointly*,
-   since detector and linker are coupled through the FP-exposure mechanism in metric
-   fact 3.
-   **(b) find out why the detection loss is anti-correlated with the score.** Model A's
-   loss fell 4.4x while its CV fell; best epoch is 0. Until that is understood, longer
-   training makes the model worse and every detector experiment is fighting it. Score
-   per-epoch checkpoints, not just the best one — the harness makes this cheap.
-   **(c) sweep `det_neg_weight` and `bright_threshold`**, still unswept and still the
-   cheapest remaining detector knobs.
-   **(d) drop or fix the learned linker.** Deprioritised on geometry, then partly
-   rehabilitated: precision 0.755 says the *atypical* cases are where the score now
-   leaks, which is what a learned edge cost is for. But it emits zero edges today, so
-   fix the gate sweep first and revisit only if (a)–(c) plateau.
-   **Not a priority: more labels.** Pseudo-supervising the unannotated 96.5 % bought
-   +0.004, and closing every joinable annotation gap is worth ~+1.4 % more edges.
-   **Also not a priority: node recall.** It is a bad proxy target — three independent
-   knobs raise it while lowering the score (see Status). Score, or do not measure.
+### The three things that actually matter now
 
-   *Previous framing, kept because the reasoning is still sound:* the loss is written,
-   the evidence is not.
-   `src/volt_biohub/detection_targets.py` implements Gaussian targets at the measured
-   sigma plus positive-unlabeled masking, defaulted on, with `--det-target voxel` /
-   `--no-det-pu-mask` retained so each half can be ablated. All three paths train and
-   detect on the fixture. **What is missing is the only thing that matters: a CV number.**
-   The fixture is a 5-frame overfit and proves nothing about generalisation, so this
-   stays open until step 2 exists and the ablation runs through it. Still to do here,
-   in the order that unblocks the most:
-   **(a) switch checkpoint selection to the real scorer** — this is now the gating item,
-   not a tidy-up: `test_acc × test_recall` reads 0.9943/0.9408 after *20 iterations*
-   (see Known defects), so nothing printed during training can rank a loss variant, and
-   until it is replaced the ablation cannot be run at all;
-   **(b) sweep `bright_threshold`** — measured to over-mask by 4.5× at the median while
-   correctly tracking density at ρ +0.87, so it is one scalar with a known direction
-   (raise it), the cheapest open knob here;
-   **(c) re-sweep `--det-threshold`** now that calibration has changed, reconciling the
-   logit-vs-sigmoid mismatch noted under Known defects.
-   Fallback if the UNet
-   will not converge in budget: Spotiflow 3D, which trains natively from point labels
-   and is legal here (pre-trained models are explicitly allowed).
-6. **Linking (week 3)** — note (a) below is now partly superseded: the 12 µm gate was
-   derived from motion percentiles and turned out to be 4 µm too generous once the
-   detector improved, so *gate sweeping* moved into step 5a. The rest stands, in
-   priority order: (a) **global frame-to-frame registration
-   before association** — bulk motion removed makes a dense assignment easy, and most
-   teams skip it; temper the expectation, though, since these are ~104 µm crops rather
-   than whole embryos, so measure the residual displacement in step 1 before investing.
-   (b) candidate graph + ILP (`tracksdata.solvers.ILPSolver`, already wired as
-   `--use-ilp`), weights tuned on CV and never on the leaderboard. (c) gap handling by
-   interpolated node insertion. (d) learned edge costs (`SimpleNodeTransformer`) last,
-   only if a–c plateau.
-7. **Freeze week (Sept 22–29)** — tune total node count (metric fact 4), full
-   test-set timing on Kaggle hardware, ≥2 submissions banked before the final day,
-   nothing new on Sept 29.
+**1. Get the measured configurations onto the board, in order.** Two are ready and the
+ordering is a hard constraint, not a preference — a graded rerun executes at *submission*
+time against the **current** dataset versions, and `kernel-metadata.json` lists all three
+datasets unpinned:
 
-Rejected, so they don't get re-proposed: **Trackastra** needs instance masks we don't
-have, and synthesizing spheres from centroids discards the appearance features that
-make it strong. **Ultrack** duplicates in-repo tracksdata functionality and adds
-offline-install burden.
+- **v14** — soup2, weighted CV 0.9407, pushed and run clean (validator PASS, 97.4 s/video
+  → 5.38 h). Blocked on a `CompetitionApiService` 403; see Status. **Until it is
+  submitted and scored, nothing may be uploaded to volt-weights or volt-code**, or v14
+  stops measuring what it was built to measure.
+- **v15** — soup4 + edge head 0.5 + bidir 0.25, weighted CV **0.9449**, both folds. The
+  weights are already persisted and md5-verified at `weights/soup_members/`.
+
+**2. Select both final submissions by hand, on CV rather than on the public LB.** The
+public board is 29 % of the test set and the 0.947 pile is 700 teams fitted to that 29 %.
+Our instrument is a 199-sample held-out-by-embryo estimate; theirs is four movies at
+effective n ≈ 2. Pick the CV-best pipeline for one slot, and for the other a
+configuration whose **failure mode is uncorrelated** — realistically the 0.925 stack,
+which differs in the whole detector, so one systematic problem cannot take both down.
+
+**3. Identity verification — human action, prize eligibility depends on it**
+(`requiresIdentityVerification: true`). Still open.
+
+### What is measured out, so it does not get re-proposed
+
+- **Divisions by gating: closed by elimination.** Every structural gate in
+  `add_safe_divisions` tested individually, none binds (see Status). The caps rank by
+  geometric features measured as non-separating, so more candidates makes it worse. Needs
+  a **new signal** — nuclear shape, or a learned fork classifier — not another threshold.
+  The only separating feature found is the parent's two-frame intensity drop (AUC 0.632),
+  worth +0.0008 and subsumed by the blend.
+- **det_threshold**: exhausted in both directions (0.95 / 0.965 / 0.98 all within noise).
+- **The port inventory**: every remaining component is worth ≤ +0.0015 here against the
+  reference's published ≥ +0.005, because their deltas repair a defect we do not have.
+  Do not port another on the strength of its published delta.
+- **Sub-0.005 CV arms are invisible on the board** — measured, not inferred: two configs
+  0.0024 apart in CV both scored exactly 0.925, and `scoreTruncationNumDecimals: 3`
+  explains why. Hold them and bundle.
+- **Trackastra / Ultrack**: need instance masks we do not have.
+
+### The levers that remain, best first
+
+- **More soup members, but measure — member count has an INTERIOR optimum** (2 → 0.9428,
+  4 → 0.9440 on fold 0), because averaging smooths the map and sisters at p5 5.41 µm
+  merge. SWA is producing members; `scripts/soup_checkpoints.py` builds any subset.
+- **A genuinely independent third detector** for the blend. Souping cancels
+  checkpoint-selection noise and blending cancels initialisation noise, and the two were
+  measured to *add* (+0.0036 for the blend on top of the soup). A third run would extend
+  the second axis, which is the only axis with headroom left.
+- **The decision rule for spending a slot**, from the measured transfer rates: a
+  detector-side +0.005 is a real +0.005 on the board; an edge-head-side +0.005 is +0.002.
+  Weight arms accordingly.
 
 **Division of labour.** A: data inspection, CV harness, detection. B: CSV writer +
 validator + offline chain, linking + ILP tuning, LB probes. Both: local scorer from
