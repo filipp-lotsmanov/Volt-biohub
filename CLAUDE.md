@@ -1581,6 +1581,18 @@ say the same thing:
 | score | 0.9140 | **0.9140** | 0.9124 |
 | node recall | 0.9817 | 0.9817 | 0.9700 |
 
+**Both together are worth nothing on the weighted metric, and the reason is the
+node-count penalty.** `min_track_len 4 + disappearance 1.5` on fold 1 gives
+**0.9145** (+0.0021, the two partly add), and on fold 0 it gives **0.9294
+against 0.9296** — nothing. Weighted, 0.9272 against 0.9270: **+0.0002, exactly
+the noise floor.** The mechanism is visible in the node ratio. Fold 1 sits at
+**−0.238**, deep in the multiplier's bonus region, so keeping more nodes is free
+there; fold 0 sits at −0.043 and keeping more nodes pushes it to **+0.0149**,
+across zero and into the penalty. **So every node-retention knob has a per-fold
+optimum set by where that embryo sits on the node-count curve**, and tuning them
+on fold 1 — 15 % of the weight — and carrying the result to fold 0 is precisely
+the mistake this file warns about. Both increments are dropped, not banked.
+
 **3 and 4 are bit-identical on all five metrics**, which is not a coincidence and
 pins the mechanism: a chain of L nodes carries L−1 edges worth at most 1.0 each
 against a disappearance cost of 2.0, so a 3-node component is break-even at
