@@ -1455,9 +1455,20 @@ Note also that bidir's own optimum on fold 0 is **0.25** (0.9375) rather than 0.
 (0.9369) at the shipped operating point — the first sweep bracketed it too narrowly and
 the 0.40 arm was killed early for cards, so the upper side is still unmeasured.
 
-Best fold-0 configuration measured: **soup + blend 0.15 + edge head 0.5 + bidir 0.25 =
-0.9454**, which is +0.0026 over the submitted soup and +0.0093 over this morning's
-baseline. Individually every non-soup increment is still ≤ +0.0015, an order of magnitude
+**CONFIRMED ON BOTH FOLDS, with the same delta on each.** Fold 1 gives 0.9316 against
+the soup's 0.9290 — **+0.0026**, identical to fold 0's +0.0026, which is what a real
+effect looks like rather than a fold artefact:
+
+| | fold 0 | fold 1 | **weighted** |
+|---|---|---|---|
+| soup + blend 0.15 (submitted as kernel v14) | 0.9428 | 0.9290 | 0.9407 |
+| **+ edge head 0.5 + bidir 0.25** | **0.9454** | **0.9316** | **0.9433** |
+
+**+0.0101 over this morning's 0.9332.** One caveat to state rather than hide: the
+division term moves in *opposite* directions on the two folds (+0.0075 on fold 0,
+−0.0064 on fold 1) while the net is the same. Fold 1 holds only 26 divisions against
+fold 0's ~125, so fold 0 is the division measurement to trust and fold 1's divJ is
+close to noise at that n. Individually every non-soup increment is still ≤ +0.0015, an order of magnitude
 below the reference's published deltas for the same components — their deltas repair a
 defect we do not have — but in combination they are worth having.
 
