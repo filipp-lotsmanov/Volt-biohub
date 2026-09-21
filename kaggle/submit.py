@@ -755,7 +755,18 @@ def run(
         learned_links = None
         candidates = None
         probs_per_pair = None
-        if reference:
+        # A video shorter than one window has no consecutive pair to slide
+        # over, and reference_predict would index past the end building its
+        # first one. Every sample measured is exactly 100 frames and the hidden
+        # set is described as train-sized, so this is latent -- but a crash in
+        # hour two of a graded rerun is unrecoverable and the fallback is one
+        # branch we already maintain.
+        use_reference = reference and n_frames >= 2
+        if reference and not use_reference:
+            print(f"    WARNING: {name} has {n_frames} frame(s); falling back "
+                  f"to the single-frame detector", flush=True)
+            volumes, _q = load_volumes(test_dir / f"{name}.zarr")
+        if use_reference:
             from volt_biohub import reference_predict as rp
             from volt_biohub.ilp_link import prune_dp
             raw_coords, raw_edges = rp.predict_video(
@@ -773,7 +784,7 @@ def run(
                     **(ilp_kwargs or {}))
             picked = "ref"
 
-        want_pair_probs = (not reference) and (
+        want_pair_probs = (not use_reference) and (
             ilp or ilp_prune or learned_bonus or (learned_edges and postprocess))
         if want_pair_probs and edge_head is not None and use_map is not None:
             coords, candidates, probs_per_pair = detect_and_candidates(
@@ -788,13 +799,13 @@ def run(
             )
             if not ilp:
                 candidates = None
-        elif (not reference) and edge_head is not None and use_map is not None:
+        elif (not use_reference) and edge_head is not None and use_map is not None:
             coords, learned_links = detect_and_link_learned(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
                 DOWNSAMPLE, refine=refine, threshold=det_threshold,
                 edge_threshold=edge_threshold,
             )
-        elif not reference:
+        elif not use_reference:
             coords = detect_video(volumes, n_per_frame, separation_um, use_map,
                                   refine, threshold=det_threshold)
         if not any(len(c) for c in coords):
@@ -888,11 +899,11 @@ def run(
                     **(relink_kwargs or {}),
                     **({"probs_per_pair": probs_per_pair,
                         "learned_bonus": learned_bonus}
-                       if probs_per_pair is not None and not reference else {}),
+                       if probs_per_pair is not None and not use_reference else {}),
                 } or None,
                 gap_kwargs=gap_kwargs,
                 prune_fn=(_make_prune(probs_per_pair)
-                          if ilp_prune and not reference else None),
+                          if ilp_prune and not use_reference else None),
             )
         elif learned_links is not None:
             links = learned_links
