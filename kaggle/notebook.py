@@ -62,8 +62,12 @@ assert int(zarr.__version__.split(".")[0]) >= 3, "need zarr 3.x for Zarr v3 stor
 
 TEST = kaggle_env.find_test_dir()
 WEIGHTS = kaggle_env.find_weights()
+# None means one detector; the blend is a bonus, never a requirement, so a
+# volt-weights version without secondary/ degrades to the 0.920 configuration
+# rather than failing.
+SECONDARY = kaggle_env.find_secondary_weights()
 USE_UNET = WEIGHTS is not None and kaggle_env.gpu_is_usable()
-print(f"test {TEST} · weights {WEIGHTS} · "
+print(f"test {TEST} · weights {WEIGHTS} · secondary {SECONDARY} · "
       f"detector {'unet' if USE_UNET else 'DoG fallback'}", flush=True)
 if WEIGHTS is not None:
     # Say WHICH checkpoint this is. Every checkpoint of this architecture is the
@@ -134,12 +138,43 @@ if WEIGHTS is not None:
 # CV node recall spanned 0.65 to 0.98, and the one thing they shared was
 # predict_n_true(q0.9). A threshold removes N_true from inference entirely.
 #
-# Still not included: the dual-seed blend (+0.0042 weighted CV) only reaches
-# `load_detector`, which the reference path bypasses -- worth wiring into
-# reference_predict's detection next, not worth delaying this for.
+# THE DUAL-SEED BLEND is the change over the 0.920 submission, and it is now
+# inside the reference path (reference_predict.make_blend) rather than in
+# load_detector, which that path bypasses. The public cluster blends two
+# checkpoints; we had been running one of them alone, having never downloaded
+# the other. Moment-matched in logit space, scale ratio clamped to [0.5, 2.0],
+# with a per-frame guard that reverts to the primary if the blend loses more
+# than 10% of its candidates -- because losing node recall is the one failure
+# this pipeline cannot absorb.
+#
+#   fold 0 (85% of weight)   0.9296 -> 0.9336   adjJ 0.9236 -> 0.9259
+#                                                divJ 0.0597 -> 0.0775
+#   fold 1                   0.9124 -> 0.9150
+#   weighted                 0.9270 -> 0.9308
+#
+# It gains on the edge term AND the division term while the node count barely
+# moves, so it is not trading one against the other -- unlike the node-retention
+# knobs, which gain 0.002 on fold 1 and nothing on fold 0 because the
+# node-count multiplier sits on opposite sides of zero in the two embryos.
+#
+# And this is the one class of change our CV UNDERSTATES. The 0.920 submission
+# transferred at 35% (CV +0.0346 -> LB +0.012) because 96% of that gain was a
+# learned edge head trained on both our folds. A blend of two independently
+# seeded detectors is variance reduction, which pays more on an unseen embryo
+# than in domain -- the same reason 8-view TTA reads -0.015 on the contaminated
+# checkpoint and +0.0071 on our honestly held-out one.
+#
+# NOT included: the appearance fork ranker. It is the only fork feature this
+# project has found that separates (AUC 0.632 over all 151 GT divisions against
+# 1,729 controls -- a dividing parent DIMS, median two-frame intensity ratio
+# 0.901 against 1.002) and worth +0.0008 alone, but it is subsumed by the blend:
+# 0.9336 against 0.9337 together, because both act on the division term and the
+# blend has already taken it.
 submit.run(
     TEST, Path("/kaggle/working/submission.csv"),
     weights=WEIGHTS if USE_UNET else None,
+    secondary_weights=SECONDARY if USE_UNET else None,
+    secondary_weight=0.3 if (USE_UNET and SECONDARY) else 0.0,
     budget=1.0,
     det_threshold=0.965 if USE_UNET else None,
     reference=USE_UNET,
