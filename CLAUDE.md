@@ -1361,6 +1361,105 @@ Consequences:
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
 
+**2026-09-21 (later) — THE CHECKPOINT THE WHOLE FIELD FORKS IS THE ARGMAX OF NOISE,
+and averaging it with its own successor is free.** Read out of the pack's own
+`history.csv`: over epochs 370–400 their `validation_score` oscillates between
+**0.9696 and 0.9781 with no trend**, and that score is `validation_acc ×
+validation_recall` with `validation_acc` pinned at 0.9999 — i.e. effectively
+edge-matrix recall, the quantity this project measured as worthless for selection
+(2026-09-16). So `edge_predictor_best.pth` at epoch 381 is the maximum of a noisy
+sequence, not the best model. `checkpoint_last.pth` ships in the same directory at
+epoch **400** (pack50's at **402**) and **all 136 tensors differ**; nobody had looked.
+
+Proxy set (the 4 movies the public notebooks validate on), everything else matched,
+same card:
+
+| primary | score | adjJ | divJ | node recall | ratio |
+|---|---|---|---|---|---|
+| epoch 381 — `best`, what the field ships | 0.9457 | 0.9314 | 0.1429 | 0.9728 | −0.045 |
+| epoch 400 — `checkpoint_last` | 0.9409 | 0.9298 | 0.1111 | 0.9845 | +0.065 |
+| **soup(381, 400)** | **0.9759** | **0.9359** | 0.4000 | 0.9832 | +0.048 |
+
+**The control is the point: epoch 400 alone is WORSE than 381, so the gain is
+averaging cancelling selection noise, not a later checkpoint being better.** Read the
+magnitude honestly, though — most of that 0.030 is the division term on ~4 GT
+divisions, which is near-binary at this n. The defensible claim is **adjJ +0.0045 with
+node recall +0.010 at zero inference cost**, and a full fold is what settles it. A soup
+is strictly cheaper than an activation ensemble: one model, same size, no extra forward
+pass — which matters at 5.7 h of a 12 h cap.
+
+`scripts/soup_checkpoints.py` is the provenance, verified to reproduce the measured
+soup bit-for-bit. Two traps in it: `checkpoint_last.pth` is a 25 MB *training*
+checkpoint with the weights under `model_state_dict`, and `num_batches_tracked` is an
+int64 counter that differs by **8.9e4** between members — large enough to look alarming
+in a naive per-tensor diff, and meaningless to average, so it is copied. **Souping
+across packs is invalid**: `pubfull` is `unet_transformer_alltrain_seed314159_v1` and
+`pack50` is `unet_transformer_5090_50ep_v1` with no seed recorded, so different inits,
+different basins under permutation symmetry, and averaging them would destroy both.
+They are combined at the activation level instead — that is what the detector blend is.
+
+**Contamination caveat, stated plainly:** both members trained on all 199 movies, so
+*no* held-out set exists for them and a soup's CV gain cannot be separated from sharper
+memorisation. Only the leaderboard can arbitrate this one.
+
+**2026-09-21 (later) — THE DIVISION FNs DECOMPOSED, AND IT REVERSES THIS FILE'S OWN
+2026-09-18 VERDICT.** That verdict — "the remaining division loss needs a better ranker
+or a new feature, not a different threshold" — came from sweeps that *tightened* the
+structural gates, on the unstated assumption that the admissible candidate pool was
+already exhausted. `scripts/division_audit.py` measures it. On the 21 fold-1 samples
+that contain a GT division (26 divisions, TP 5 / FP 19 / FN 21, divJ 0.1111):
+
+| of the 21 FN divisions | |
+|---|---|
+| a node was never detected | **6** — detection-limited |
+| all three nodes detected | **15** — the cells are there, no fork was emitted |
+| …of those, divider out-degree 1 | 14 — i.e. inside `add_safe_divisions`' pool |
+| …second daughter a genuine **orphan** | **11 — fully admissible, a gate rejected it** |
+| …second daughter parented by a foreign node | 4 — the orphan rule; no distance gate reaches these |
+
+So the largest bucket is a structural gate throwing away candidates it was handed, and
+**loosening has never been measured** — 2026-09-18 established forward divergence as the
+active filter precisely by halving divJ when tightening it to 3.5 µm. Headroom, if k of
+the 11 convert at two new FPs each: `(5+k)/(45+2k)`, i.e. divJ 0.111 → 0.239 and
+**+0.013 of score** at k=11. That is larger than the whole remaining port inventory.
+Sweeping `--div-diverge-um` −2.0 / 0.0 / 1.0 against the 2.25 default **on fold 0**,
+which carries ~125 divisions against fold 1's 26.
+
+One counting trap, because the first version of this analysis fell into it: a divider
+with out-degree 1 *necessarily* parents one daughter, so "a daughter already has a
+parent" is the normal case and evidence of nothing. Subtracting the daughters linked to
+the divider itself is what separates the 11 from the 4.
+
+**2026-09-21 (later) — TWO WAYS TO SPEND A SECOND MODEL, both on the linking axis.**
+Implemented in `reference_predict`, both no-ops at weight 0, both touching only which
+links are believed and never which cells exist.
+
+- **Bidirectional harmonic fusion.** Swapping the frame pair makes the same
+  source-softmax answer the complementary question, and the transpose puts it back on
+  the same index grid; a weighted harmonic mean is then an agreement test rather than an
+  average. **The −0.001 recorded for this on 2026-09-19 is void** — it was measured
+  through `edge_head.pair_probs`, the reimplementation now known to lose 0.04.
+- **The secondary checkpoint's edge head, which was being thrown away.** `make_blend`
+  hand-assembled only the secondary's UNet and 1×1 detection head, ran the trunk once
+  *per frame*, and discarded the features — so its trained transformer was never
+  consulted at all, on the axis carrying half our remaining loss. `Secondary` now loads
+  the whole checkpoint: one encode per window instead of W, the edge head reachable, and
+  the coordinate space validated (two models indexed at shared coordinates would
+  otherwise read the wrong voxels silently). Proxy at weight 0.5, matched baseline on
+  the same card: 0.9457 → **0.9579**, adjJ 0.9314 → 0.9356.
+
+Two combiners, deliberately: detection maps average in *logit* space after
+moment-matching (no shared scale); edge probabilities average *arithmetically* (same
+question, so an ensemble mean). That is the opposite of the harmonic mean above, which
+combines complementary questions.
+
+**`--unet-weights` is a silent no-op on a full checkpoint** and `--init-weights` is the
+fix. The old flag loads into `unet` with `strict=False`, a full checkpoint's keys are
+`unet.`-prefixed, so nothing matches and training proceeds from scratch after printing a
+reassuring count. `--init-weights` loads trunk, detection head and transformer strictly,
+from either a bare state dict or a training checkpoint — which is what continuing the
+public 400-epoch run for more soup members requires.
+
 **2026-09-21 — THE ENDGAME PLAN, and it follows from the 29 % split rather than
 from the rank table.** Board as of today: 3,778 teams, **Volt rank 2,038 at 0.908**.
 The cliff has hardened — **703 teams at exactly 0.947**, 170 at 0.946, 87 at 0.948 —
