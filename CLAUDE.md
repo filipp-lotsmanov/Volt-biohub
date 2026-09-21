@@ -1512,7 +1512,34 @@ They are combined at the activation level instead — that is what the detector 
 
 **Contamination caveat, stated plainly:** both members trained on all 199 movies, so
 *no* held-out set exists for them and a soup's CV gain cannot be separated from sharper
-memorisation. Only the leaderboard can arbitrate this one.
+memorisation. Only the leaderboard can arbitrate this one — **but the calibration now
+favours it.** See the two blend submissions below: a *detector-side* change transferred
+at 80–130 % where the edge-head-side reference-path change transferred at 35 %, which is
+the asymmetry this file predicts. At that rate the soup's +0.0075 lands near 0.932–0.933.
+
+**2026-09-21 (later) — LB 0.920 → 0.925, AND THE BOARD'S OWN RESOLUTION IS NOW A
+MEASURED FACT RATHER THAN AN INFERENCE.** Both queued blend submissions scored, and both
+scored **0.925**:
+
+| change | CV | LB | CV Δ | LB Δ | transfer |
+|---|---|---|---|---|---|
+| reference path + ILP (kernel v11) | 0.9270 | 0.920 | — | — | — |
+| blend 0.30 (kernel v12) | 0.9308 | **0.925** | +0.0038 | +0.005 | ~130 % |
+| blend 0.15 (kernel v13) | 0.9332 | **0.925** | +0.0062 | +0.005 | ~80 % |
+
+**The two blend weights are indistinguishable on the board.** Their CV differs by 0.0024
+and `scoreTruncationNumDecimals: 3` puts anything in 0.9245–0.9254 at 0.925. This file
+already said so — "a CV gain below ~0.005 is not worth a submission slot, because it
+lands inside the leaderboard's own resolution" — and a slot was spent confirming it
+anyway. **Hold sub-0.005 arms; the board cannot see them.**
+
+**The transfer rate split by side, exactly as predicted.** Detector-side changes land at
+80–130 % while the edge-head-side reference-path change landed at 35 %, because the
+public checkpoint trained on both our folds: our CV *understates* detector work and
+*overstates* edge-head work. That rule was written on 2026-09-21 before either
+submission scored, and it is now confirmed on both sides. **Use it to decide what is
+worth a slot**: a detector-side +0.005 is a real +0.005 on the board, an edge-head-side
++0.005 is +0.002.
 
 **2026-09-21 (later) — THE DIVISION FNs DECOMPOSED, AND IT REVERSES THIS FILE'S OWN
 2026-09-18 VERDICT.** That verdict — "the remaining division loss needs a better ranker
