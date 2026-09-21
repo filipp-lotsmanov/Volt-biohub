@@ -1610,6 +1610,24 @@ and is merely slightly over-tuned; the optimum is interior and flat between 1.0
 and 2.0. Both gains are ~0.001, i.e. above the 0.0002 noise floor and below the
 0.005 that justifies a submission slot on its own — bank them.
 
+**What does move the division term is the appearance feature, and it is the one
+increment today with a clean mechanism.** Fold 0, against the shipped 0.9296:
+
+| `--div-rise-weight` | 0 | 10 |
+|---|---|---|
+| score | 0.9296 | **0.9304** |
+| divJ | 0.0597 | **0.0669** |
+| adjJ | 0.9236 | 0.9237 |
+| node recall | 0.9764 | 0.9764 |
+| node ratio | −0.0430 | −0.0430 |
+
+**adjJ, node recall and the node ratio are unchanged to four decimals** — this
+only reorders which forks win the cap, so it is a pure division-term effect and
+**cannot reverse between folds the way the node-retention knobs did**, since
+those reversed through the node-count multiplier. +0.0008 of score for +12 %
+relative on divJ, and 10 was a first guess at a weight for a feature measured
+at AUC 0.632, so the sweep is worth finishing.
+
 **Not the caps.** divJ fell 0.1034 → 0.0822 when the prune landed and the
 obvious suspect was the fork caps, which are fractions of node and edge counts
 that the prune cut by a fifth. Scaling both by 1.25 gives 0.9123 against
