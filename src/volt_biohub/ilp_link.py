@@ -435,7 +435,13 @@ def prune_dp(
             base = sum(free[c[0]] for c in children)
             best = w_app + node_weight + w_dis + base   # v selected, no successor
             chosen: list = []
-            gains = [(edge_weight * p + on[c] - free[c], (c, p, t, a, b))
+            # `on[c]` charges the appearance cost, because a selected node
+            # either has an incoming edge or appears. A child its parent
+            # connects to has the edge, so it does not appear -- subtract the
+            # term back out. Exactly zero at the reference's appearance_weight
+            # of 0.0, and wrong by w_app per edge at any other setting, which
+            # is a knob we expose.
+            gains = [(edge_weight * p + (on[c] - w_app) - free[c], (c, p, t, a, b))
                      for c, p, t, a, b in children]
             if gains:
                 g1, e1 = min(gains, key=lambda x: x[0])

@@ -39,11 +39,17 @@ def random_forest(rng, n_frames=6, per_frame=5, p_link=0.7):
 
 
 @pytest.mark.parametrize("seed", range(6))
-def test_dp_matches_the_solver(seed):
+@pytest.mark.parametrize("weights", [
+    {},                                        # the reference costs
+    {"appearance_weight": 1.0},                # the term the DP nearly got wrong
+    {"disappearance_weight": 3.0},             # the retune their ablation prices
+    {"division_weight": 0.4, "appearance_weight": 0.5},
+])
+def test_dp_matches_the_solver(seed, weights):
     rng = np.random.default_rng(seed)
     coords, links, probs = random_forest(rng)
-    _, a = prune(coords, links, probs, ISO)
-    _, b = prune_dp(coords, links, probs, ISO)
+    _, a = prune(coords, links, probs, ISO, **weights)
+    _, b = prune_dp(coords, links, probs, ISO, **weights)
     got = {(t, i, j) for t, lk in enumerate(a) for i, j, _ in lk}
     exp = {(t, i, j) for t, lk in enumerate(b) for i, j, _ in lk}
     assert got == exp, f"solver {len(got)} edges, DP {len(exp)}, symmetric diff {got ^ exp}"
