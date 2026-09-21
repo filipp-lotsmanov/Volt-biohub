@@ -783,6 +783,15 @@ def run(
                     coords, reference_links, probs_per_pair, ISO_UM,
                     **(ilp_kwargs or {}))
             picked = "ref"
+            if learned_bonus:
+                # Reference DETECTION, our linker. The decomposition that says
+                # where the +0.036 on fold 1 comes from: their edge head
+                # choosing the topology, or their peak picker and flip TTA
+                # feeding a better node set into ours. It matters because the
+                # edge head is the memorisation-exposed half -- it is part of a
+                # checkpoint that trained on both our folds -- while the
+                # detection half helps our own held-out detector too.
+                reference_links = None
 
         want_pair_probs = (not use_reference) and (
             ilp or ilp_prune or learned_bonus or (learned_edges and postprocess))

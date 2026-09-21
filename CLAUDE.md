@@ -1521,6 +1521,39 @@ already exists faithfully in this repo, and the rewrite loses 0.129 … Stop mai
 the rewrite; ship the path that already works."* We rebuilt the rewrite instead. The
 same 0.04 is still there.
 
+**Confirmed on the full fold, and the control is a warning.** Full 71-sample
+fold 1, same checkpoint throughout:
+
+| arm | score | adjJ | divJ | node recall | node ratio |
+|---|---|---|---|---|---|
+| shipped stack (LB 0.908) | 0.8760 | 0.8657 | 0.1034 | 0.9841 | −0.071 |
+| **reference path + prune + our post-processing** | **0.9124** | **0.9042** | 0.0822 | 0.9700 | −0.238 |
+
+**+0.036 on the fold, which is five times the largest gain this project has
+banked since the clamp.** But the same pipeline on our **honestly held-out**
+detector (E7 fold 1 epoch 99) scores **0.7579 against our own stack's 0.7799**
+— i.e. −0.022, the opposite sign.
+
+**Read that control carefully, because it confounds three things.** Our E7
+model is 100 epochs against the pack's 400 and scores 0.80 against 0.876
+through the identical stack, so its *edge head* is undertrained in exactly the
+way its detector is; the reference path also changes the peak window (3-voxel
+against our 5) and adds flip TTA, and on our weaker map that combination took
+node recall to 0.8789 against 0.9377. So it does not isolate contamination. What
+it does establish is that the reference path is **not** unconditionally better —
+it is better *with this checkpoint*.
+
+**And the specific risk is nameable.** Both the 0.8760 baseline and the 0.9124
+candidate use the same contaminated detector, so the detector half is not what
+differs. What differs is the linker: ours is geometric, theirs is a learned edge
+head choosing the topology — and that head is part of a checkpoint that trained
+on these 71 videos. If its advantage is association memorised from them, the
+hidden embryo will not reproduce it. **There is no local instrument that can
+settle this**, because the public checkpoint saw all 199 training videos and
+there is no held-out fold for it. The leaderboard is the only test, which makes
+this exactly the kind of genuinely uncertain change a submission slot is for —
+and the 0.908 submission stays banked as one of the two final picks regardless.
+
 **The gain is concentrated in the tail, which is the shape that should
 transfer.** Per sample, adjusted edge Jaccard, ours against the reference path
 plus our post-processing:
