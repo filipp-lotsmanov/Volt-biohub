@@ -1521,6 +1521,24 @@ already exists faithfully in this repo, and the rewrite loses 0.129 … Stop mai
 the rewrite; ship the path that already works."* We rebuilt the rewrite instead. The
 same 0.04 is still there.
 
+**The gain is concentrated in the tail, which is the shape that should
+transfer.** Per sample, adjusted edge Jaccard, ours against the reference path
+plus our post-processing:
+
+| sample | ours | reference path + our stack | Δ |
+|---|---|---|---|
+| `6bba_062c8d37` | 0.9908 | 0.9864 | **−0.004** |
+| `44b6_12dfb391` | 0.8971 | 0.9454 | +0.048 |
+| `6bba_07e24132` | 0.7637 | 0.8483 | +0.085 |
+| `44b6_267148e4` | 0.7297 | 0.8647 | **+0.135** |
+
+It does nothing on the sample we already score 0.99 on and the most on the two
+worst. That matters for the hidden embryo specifically: this file's own
+decomposition found that lifting the worst 20 samples of fold 1 to our p90
+would move weighted adjJ 0.863 → 0.919, and a third unseen embryo puts *more*
+samples in that tail, not fewer. A change that only raised the mean would be
+the one to distrust.
+
 **Where our stack is genuinely ahead: divisions.** The reference-with-ILP scores divJ
 **0.0000** on this set — its `division_weight` 1.2 is a cost and it prunes the forks —
 against our **0.1250**. At the 0.1 weight that is +0.0125 of score we hold and they do
