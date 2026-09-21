@@ -1636,13 +1636,17 @@ was +0.0033 on fold 0 and **+0.0092 on fold 1**.
 **What does move the division term is the appearance feature,**What does move the division term is the appearance feature, and it is the one
 increment today with a clean mechanism.** Fold 0, against the shipped 0.9296:
 
-| `--div-rise-weight` | 0 | 10 |
-|---|---|---|
-| score | 0.9296 | **0.9304** |
-| divJ | 0.0597 | **0.0669** |
-| adjJ | 0.9236 | 0.9237 |
-| node recall | 0.9764 | 0.9764 |
-| node ratio | −0.0430 | −0.0430 |
+| `--div-rise-weight` | 0 | 10 | 30 |
+|---|---|---|---|
+| score | 0.9296 | **0.9304** | 0.9303 |
+| divJ | 0.0597 | **0.0669** | 0.0664 |
+| adjJ | 0.9236 | 0.9237 | 0.9237 |
+| node recall | 0.9764 | 0.9764 | 0.9765 |
+| node ratio | −0.0430 | −0.0430 | −0.0430 |
+
+Flat from 10 to 30, so the term saturates: by weight 10 it already dominates
+the geometric ordering wherever it disagrees, and tripling it reorders nothing
+further. No more sweeping.
 
 **adjJ, node recall and the node ratio are unchanged to four decimals** — this
 only reorders which forks win the cap, so it is a pure division-term effect and
