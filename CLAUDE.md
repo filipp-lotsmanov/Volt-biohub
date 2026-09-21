@@ -1524,13 +1524,28 @@ same 0.04 is still there.
 **Confirmed on the full fold, and the control is a warning.** Full 71-sample
 fold 1, same checkpoint throughout:
 
-| arm | score | adjJ | divJ | node recall | node ratio |
+| fold 1 (71 samples, 15 % of weight) | score | adjJ | divJ | node recall | node ratio |
 |---|---|---|---|---|---|
 | shipped stack (LB 0.908) | 0.8760 | 0.8657 | 0.1034 | 0.9841 | −0.071 |
 | **reference path + prune + our post-processing** | **0.9124** | **0.9042** | 0.0822 | 0.9700 | −0.238 |
 
-**+0.036 on the fold, which is five times the largest gain this project has
-banked since the clamp.** But the same pipeline on our **honestly held-out**
+| fold 0 (128 samples, **85 % of weight**) | score | adjJ | divJ | node recall | node ratio |
+|---|---|---|---|---|---|
+| shipped stack | 0.8953 | 0.8879 | 0.0738 | 0.9859 | +0.066 |
+| **reference path + prune + our post-processing** | **0.9296** | **0.9236** | 0.0597 | 0.9764 | −0.043 |
+
+**Weighted LOEO CV 0.8924 → 0.9270, +0.0346** — the largest validated gain in
+the project since the post-processing stack, and four times the sum of every
+increment banked since. Both folds move by the same amount, which is what a
+real effect looks like. The division term gives a little back on both
+(0.1034 → 0.0822 and 0.0738 → 0.0597), so ~0.002 of the edge gain is being
+spent there and the division pass is worth re-tuning against the new topology.
+Runtime 19.6 s/video on a shared card, 1.09 h for a train-sized test set.
+
+Extrapolating is the honest part: our CV has sat **0.0156** below the LB in
+level (0.8924 against 0.908), which would put this at ~0.943, while the two
+observed *deltas* transferred at only 40–70 %, which would put it at
+0.922–0.932. But the same pipeline on our **honestly held-out**
 detector (E7 fold 1 epoch 99) scores **0.7579 against our own stack's 0.7799**
 — i.e. −0.022, the opposite sign.
 
