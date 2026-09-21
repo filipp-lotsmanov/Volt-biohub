@@ -703,8 +703,10 @@ than silently extracting nothing.
 | `src/volt_biohub/detection_targets.py` | 452 | Gaussian targets, PU mask, pseudo-labels, detection loss | ours; keep |
 | `src/volt_biohub/linking.py` | 195 | Hungarian linking in µm, ≤2 children, graph build | ours; keep |
 | `src/volt_biohub/detectors.py` | 132 | DoG and score-map front-ends behind one signature | ours; keep |
-| `src/volt_biohub/postprocess.py` | 546 | two-pass relink, gap closing, safe divisions, filter, smoothing | **+0.076; the score lives here** |
-| `src/volt_biohub/edge_head.py` | 174 | tracksdata-free port of the transformer edge linker | measured worse; kept as the artefact |
+| `src/volt_biohub/postprocess.py` | 620 | relink (now bypassed), gap closing, safe divisions, filter, smoothing | **the division term lives here** |
+| `src/volt_biohub/edge_head.py` | 217 | our port of the transformer edge linker | **superseded** — loses 0.04 against the copy below |
+| `src/volt_biohub/reference_predict.py` | 676 | the upstream inference path verbatim, tracksdata removed | **this is the detector+linker now** |
+| `src/volt_biohub/ilp_link.py` | 480 | ILP over the resolved graph; `prune_dp` solves it exactly by tree DP | ours; keep |
 | `src/volt_biohub/scoring.py` | 165 | video-level detect→link→score, shared by train and CLI | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |

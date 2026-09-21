@@ -162,8 +162,13 @@ point of recording the SHA.
 
 The checkpoint **and its `config.json`**. The config is not optional:
 architecture is not inferable from a state dict, and `submit.py` refuses to run
-without it. The transformer weights in the checkpoint are unused (the geometric
-linker replaced it) but harmless.
+without it. The transformer weights **are used**: the shipped configuration
+runs `volt_biohub.reference_predict`, whose edge head is that transformer, so a
+checkpoint without `transformer.*` now fails rather than quietly degrading.
+A `secondary/` subdirectory holding a second checkpoint and its config enables
+the dual-seed blend; `kaggle_env.find_weights` refuses to return that file as
+the primary, so which model sets the operating point is a property of the
+layout rather than of glob order.
 
 ```bash
 rm -rf /tmp/volt-weights && mkdir -p /tmp/volt-weights
