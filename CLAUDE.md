@@ -1663,7 +1663,13 @@ while barely touching the node count — so it is not trading one against the
 other. `reference_predict.make_blend` runs it inside the copied path, blending
 whichever frame of the window the caller names rather than a duplicated one.
 
-Fold 1 with both is **0.9150** (adjJ 0.9042 -> 0.9092, a +0.005 jump, while divJ
+**Confirmed on both folds at w = 0.15: fold 0 0.9361, fold 1 0.9168, weighted
+0.9332** — against 0.9308 for the w = 0.30 configuration sitting in the graded
+queue and 0.9270 for the one that scored 0.920. Fold 1 prefers 0.15 to 0.30 too
+(0.9168 against 0.9150), so the retune is not a fold-0 artefact the way the
+node-retention knobs were.
+
+Fold 1 with the w = 0.30 blend and the appearance term is **0.9150** (adjJ 0.9042 -> 0.9092, a +0.005 jump, while divJ
 falls 0.0822 -> 0.0580 on that fold's handful of division events). Weighted with
 fold 0's 0.9336 that is **0.9308 against the shipped 0.9270, +0.0038.**
 
