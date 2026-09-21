@@ -1762,7 +1762,11 @@ confirming they trained the inherited loss for all 400 epochs.
 Two things follow and a third does not. **Any continuation of their run must pass
 `--det-target voxel --no-det-pu-mask`**, or gradient descent immediately drags the
 detector off the optimum it spent 137 GPU-hours reaching; this is what gated the SWA
-run rather than being discovered eight hours into it. And **the best detector in this
+run rather than being discovered eight hours into it. **And the compatibility held for
+the whole run, not just its start**: 8 epochs over 6 h 04 m stayed at `det=0.0023`
+against their recorded 0.0025, so continuing their training neither improved nor
+degraded the detection objective — which is exactly what makes the resulting checkpoints
+usable as soup members rather than as a different model. And **the best detector in this
 project was trained with the loss `detection_targets.py` was written to replace**,
 which is at least a reason to stop treating the Gaussian+PU default as settled — every
 ablation of it ran inside their first epoch (see 2026-09-14). What does *not* follow is
