@@ -1545,7 +1545,17 @@ Runtime 19.6 s/video on a shared card, 1.09 h for a train-sized test set.
 Extrapolating is the honest part: our CV has sat **0.0156** below the LB in
 level (0.8924 against 0.908), which would put this at ~0.943, while the two
 observed *deltas* transferred at only 40–70 %, which would put it at
-0.922–0.932. But the same pipeline on our **honestly held-out**
+0.922–0.932.
+
+**Submitted as kernel version 11** (git `fc5090c`). The visible run is clean —
+validator PASS, 115,196 nodes and 109,905 edges over the four placeholders —
+and it settles the runtime question with a measurement rather than an
+extrapolation from this box: **78.5 s/video on the T4, 4.34 h for a
+train-sized test set**. That is 4× the 19.6 s/video here, so the A6000-to-T4
+ratio for this path is much worse than the 1.5× the detector alone showed, and
+4.34 h against a 12 h cap is comfortable but no longer generous. Anything that
+multiplies the detector cost again — eight-view TTA, a second seed — has to be
+budgeted against that number, not against the old one. But the same pipeline on our **honestly held-out**
 detector (E7 fold 1 epoch 99) scores **0.7579 against our own stack's 0.7799**
 — i.e. −0.022, the opposite sign.
 
