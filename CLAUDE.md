@@ -1371,6 +1371,30 @@ edge-matrix recall, the quantity this project measured as worthless for selectio
 sequence, not the best model. `checkpoint_last.pth` ships in the same directory at
 epoch **400** (pack50's at **402**) and **all 136 tensors differ**; nobody had looked.
 
+**CONFIRMED ON BOTH FULL FOLDS: weighted LOEO CV 0.9332 -> 0.9407, +0.0075, and every
+term moves the same way on both embryos.**
+
+| | fold 0 shipped | **fold 0 soup** | fold 1 shipped | **fold 1 soup** |
+|---|---|---|---|---|
+| score | 0.9361 | **0.9428** | 0.9168 | **0.9290** |
+| adjJ | 0.9279 | **0.9333** | 0.9104 | **0.9207** |
+| divJ | 0.0816 | **0.0950** | 0.0641 | **0.0833** |
+| node recall | 0.9789 | **0.9826** | 0.9758 | **0.9830** |
+| node ratio | -0.0391 | -0.0163 | -0.2247 | -0.1671 |
+
+0.9333 is the highest adjusted edge Jaccard measured in this project. Three properties
+make this the best change of the day rather than merely the biggest: it moves the edge
+term **and** the division term **and** node recall together, which is a better detector
+rather than a redistribution between terms; it is **detector-side**, so by the
+contamination asymmetry already measured our CV *understates* it rather than inflating
+it; and it costs **nothing** at inference and needs **no code change** — only a new
+weights-dataset version, since the kernel resolves `volt-weights` unpinned.
+
+It also un-gates the two edge-side arms. Both bidirectional fusion and the secondary
+edge head were division-gated (see below), and the soup restores divJ to 0.0950 on
+fold 0, so they are worth re-testing on top of it rather than on the old operating
+point.
+
 Proxy set (the 4 movies the public notebooks validate on), everything else matched,
 same card:
 
