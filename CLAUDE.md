@@ -1419,6 +1419,119 @@ flat, not slow.
 alone and had never downloaded the primary.** Different md5, identical architecture and
 byte size. Measuring it now.
 
+**2026-09-21 — THE 0.04 IS THE LINKER, AND IT IS OUR REWRITE THAT LOSES IT. Measured
+against the reference's own code on the exact movies the public notebooks validate
+on.** This is the most important entry in this file since the clamp, and it reverses
+three standing conclusions at once.
+
+**The comparable instrument.** The public 0.942/0.948 notebooks carry a local
+validator that selects **2 held-out train movies per embryo prefix, division-preferring,
+alphabetical** — four movies, effective n ≈ 2 — and scores them with a scorer that is
+term-for-term ours (same 7 µm bipartite match, same `TP+FP+FN` weights, same
+`J*(1 − 0.1*(N_pred − N_true)/N_true)`, same micro-averaged division Jaccard). Their
+title claims **proxy 0.9417 for LB 0.942**. Reproducing their selection rule exactly
+gives `44b6_12dfb391, 44b6_267148e4, 6bba_062c8d37, 6bba_07e24132` on a visible run
+(the four placeholder test stems are excluded from candidates) and
+`…, 6bba_05db0fb1, 6bba_062c8d37` at rerun. **So we can put our pipeline and theirs on
+the same four movies and compare directly**, which no measurement in this file had
+done.
+
+| on their 4-movie proxy set | score | adjJ | edge J | divJ | node recall | n_pred (44b6_12dfb391) |
+|---|---|---|---|---|---|---|
+| **reference path, `--use-ilp`** | **0.9299** | **0.9299** | 0.9228 | 0.0000 | 0.9812 | **42,184** |
+| reference path, ILP off | 0.8876 | 0.8830 | 0.8927 | 0.0455 | 0.9896 | 50,994 |
+| **our shipped stack** | 0.9013 | 0.8888 | ~0.905 | **0.1250** | 0.9809 | 52,070 |
+| our stack + ILP prune of the relink | 0.8970 | 0.8858 | 0.8909 | 0.1111 | 0.9759 | — |
+| our stack, our edge head + ILP prune | 0.8677 | 0.8600 | — | 0.0769 | **0.9428** | — |
+
+Read the first two rows first. **The ILP is worth +0.047 of adjusted edge Jaccard in
+the reference's own implementation**, close to the +0.037 their published ablation
+claims and the exact opposite of the −0.057 we recorded on 2026-09-18. It is spent on
+*precision*: edge false positives roughly halve (71/29/13/35 → 38/16/3/20) while true
+positives move by single digits, and the node count falls 51k → 42k, which also earns
+back the node-count multiplier. **Node recall stays 0.9812**, so the over-deletion we
+measured was never inherent to the solver.
+
+**What we had wrong, in two layers.**
+
+1. **The input to the solver.** The reference thresholds the source-softmax at 0.5 and
+   resolves greedily to ≤1 parent / ≤2 children *first*, then hands the solver that
+   graph — so the ILP only decides what to **keep**. We handed it every pair above a
+   probability threshold and asked it to choose the topology as well; with
+   `node_weight` 0.0 a marginal node is then always cheaper to delete than to keep, and
+   recall fell to 0.9419. `ilp_link.py`'s own docstring asserted the opposite ("the
+   candidate graph must be the raw, ungated one"; solving a resolved set is "measured
+   worthless") — it was reasoning from a *description* of their pipeline rather than
+   from their code, and the description was right while the inference was backwards.
+   Corrected, with `ilp_link.prune` and a `prune_fn` hook in `run_all`.
+2. **And fixing that is not enough, which is the more important half.** Our own
+   edge head + our own ILP prune reaches only 0.8600 with node recall **0.9428**, while
+   the reference's identical-in-principle arrangement reaches 0.9299 at 0.9812 on the
+   same weights and the same movies. So the residual is in how **`kaggle/submit.py`
+   computes the probabilities**, not in how they are spent.
+
+**The leading suspect, and it is a defect this file previously cleared.**
+`load_detector._forward` duplicates one frame into a fake pair
+(`torch.stack([t, t])`) and reads the trunk features from slot 0. That was measured and
+justified — *for detection* — at node recall 0.9973 fake against 0.9967 real. **For the
+edge head it is not the same question at all**: the head's entire job is to compare a
+cell's trunk representation at t against candidates at t+1, and a temporal trunk told
+that nothing moved between the two frames has had exactly that signal removed. The
+reference runs the U-Net on a real `(t, t+1)` window and reads slots 0 and 1.
+`--real-pairs` now does that here, and it is the one-variable test.
+
+**Consequences if it holds.** "The learned transformer edge head is worse" (recorded
+twice, believed twice, 0.7632 against 0.7830) and "the ILP loses by 0.05" would both be
+statements about the rewrite, not about the method — and this file already reached that
+verdict once, on 2026-09-14: *"`kaggle/submit.py` reimplements an inference path that
+already exists faithfully in this repo, and the rewrite loses 0.129 … Stop maintaining
+the rewrite; ship the path that already works."* We rebuilt the rewrite instead. The
+same 0.04 is still there.
+
+**Where our stack is genuinely ahead: divisions.** The reference-with-ILP scores divJ
+**0.0000** on this set — its `division_weight` 1.2 is a cost and it prunes the forks —
+against our **0.1250**. At the 0.1 weight that is +0.0125 of score we hold and they do
+not, and it is why `0.9299 + 0.1 × our divisions ≈ 0.942` reproduces their proxy almost
+exactly. **The target configuration is their linker with our division pass**, not one
+or the other.
+
+**Runtime, measured rather than feared.** The reference path costs ~10 s/video without
+the ILP and ~25–30 s/video with it on an A6000, the solver being single-threaded SCIP.
+Extrapolating from the T4 detector measurement that is roughly 3 h for a train-sized
+199-video test set against the 12 h cap. `tracksdata`, `ilpy`, `pyscipopt` and
+`rustworkx` wheels all ship in the public pack, so the offline constraint that kept the
+ILP out is not a constraint.
+
+**A second measurement error of the same shape: our "TTA" is not their TTA.** Their
+`PredictConfig.det_tta` is **flip-xy, four views**. Ours averages the full **eight-view
+D4 group**, rotations included — and a 90° turn through an anisotropic PSF is a far
+stronger perturbation than a mirror. Our −0.015 and their +0.009 are not measurements
+of the same operation. `--tta-views 4` restricts to the flip subgroup
+(`k ∈ {0, 2}` with the x-flip is exactly {id, flip-x, flip-y, flip-xy}).
+
+**Also settled today: the dual-seed blend transfers to the heavy fold.** w = 0.3,
+moment-matched in logit space with the 0.90 retention guard: fold 0 **0.8953 → 0.8986**
+(adjJ 0.8879 → 0.8913), fold 1 **0.8760 → 0.8852** (adjJ 0.8657 → 0.8735), weighted
+**0.8924 → 0.8966**. Both folds gain on adjJ, so it is not the division lottery. Weight
+0.2 and 0.4 bracket it (fold 1: 0.8765 / 0.8816), and 0.5 and 0.8 fall back — a clean
+interior optimum. `kaggle_env.find_secondary_weights` looks for
+`secondary/edge_predictor_best.pth` beside its config, and `find_weights` now refuses
+to return that file as the primary.
+
+**And a new division feature, the first one that separates.** `CLAUDE.md` has recorded
+since 2026-09-12 that geometric fork features overlap at the quartiles and named
+appearance as the untested axis. Measured over **all 151 GT divisions against 1,729
+same-frame controls** (`scripts/division_appearance.py`): absolute brightness barely
+separates (AUC 0.53–0.59), but the **two-frame intensity *rise* does, inverted** — a
+parent about to divide has *lost* ~10 % of its peak intensity relative to itself two
+frames earlier (median 0.901) while a non-dividing cell is flat (1.002), giving
+**AUC 0.632**. My stated prediction was the opposite (condensing chromatin should
+brighten), and the direction that actually shows up is the one the mechanism implies:
+the mass is already splitting, so the single centroid dims. It is the strongest fork
+feature measured in this project against a field of ~0.50, and it is free at inference
+— the volumes are already in memory. Not yet wired into `add_safe_divisions`, whose
+ranking is still `d_par + 0.15 * d_sis`.
+
 **2026-09-19 — SEVEN POST-PROCESSING IDEAS, ONE WIN, AND THE PIPELINE IS AT A
 LOCAL OPTIMUM IN EVERY DIRECTION TESTED.** All on the full 71-sample fold against
 the shipped **0.8760** (LB 0.908). Recording the negatives in one place because

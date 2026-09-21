@@ -12,13 +12,17 @@ climb to it, not to the model:
     + short-track filter (>= 6 nodes)                0.834   (+0.007)
     + two-pass Hungarian with velocity               0.848   (+0.014)
 
-**What is deliberately NOT here: the ILP.** Those notebooks do run it, and then
-discard its edge set wholesale — it survives only as a per-pair probability fed
-into the Hungarian cost as a small bonus. Their final edges come from
-``motion_relink`` below. We measured the same thing from the other side: the
-trained transformer edge head scores 0.7632 on our full fold against plain
-Hungarian's 0.7830, because abstaining leaves isolated nodes that pruning then
-deletes. Two independent routes to the same conclusion, so the ILP is skipped.
+**The ILP is not implemented here, but it is no longer skipped — see
+``run_all``'s *prune_fn*.** This module twice recorded the solver as measured
+worthless, and both measurements were of the wrong thing. Running the
+reference's own path on the four movies the public notebooks validate on gives
+adjusted edge Jaccard **0.9299 with the ILP against 0.8830 without**, spent
+almost entirely on precision: edge false positives roughly halve while true
+positives move by single digits. What we had measured instead was a solver
+handed the *raw* candidate graph, which must then choose the node set too and
+deletes anything marginal. ``volt_biohub.ilp_link.prune`` solves the resolved
+graph, the way the reference does, and ``run_all`` applies it immediately after
+the relink.
 
 Everything operates on the ``(coords_per_t, links_per_t)`` pair the submission
 writer already consumes, in *downsampled voxel* coordinates, with distances in
@@ -282,6 +286,41 @@ def close_single_frame_gaps(
     return _unflatten(ts, pos, edges | new_edges, n_frames)
 
 
+
+def _self_rise(node: int, t: int, pos, parents, intensity, lag: int = 2):
+    """Peak intensity at *node* relative to its own track *lag* frames back.
+
+    The only fork feature measured to separate. Over all 151 GT divisions
+    against 1,729 same-frame controls (``scripts/division_appearance.py``), the
+    two-frame rise has **AUC 0.632** -- a dividing parent has *lost* about 10 %
+    of its peak (median 0.901) while a non-dividing cell is flat (1.002) --
+    against ~0.50 for every geometric feature this project has tried (sister
+    separation, symmetry, both daughter distances, all overlapping at the
+    quartiles). Absolute brightness does not separate (AUC 0.53-0.59); the
+    ratio does, because it cancels the 11x per-sample brightness spread.
+
+    The direction is the opposite of the obvious guess. Condensing chromatin
+    ought to brighten a mitotic nucleus; what the measurement shows is the
+    parent *dimming*, which is what a mass already splitting into two does to
+    the intensity at a single centroid.
+
+    Returns ``None`` when the track does not reach back *lag* frames, which is
+    a fifth of candidates -- the caller must treat that as "no evidence",
+    never as a score of zero.
+    """
+    anc = node
+    for _ in range(lag):
+        ps = parents.get(anc)
+        if not ps:
+            return None
+        anc = ps[0]
+    now = intensity(t, pos[node])
+    before = intensity(t - lag, pos[anc])
+    if before is None or now is None or before <= 0:
+        return None
+    return float(now / before)
+
+
 def add_safe_divisions(
     coords_per_t: list[np.ndarray],
     links_per_t: list[list[tuple[int, int, float]]],
@@ -293,6 +332,8 @@ def add_safe_divisions(
     symmetry_tau: float = DIV_SYMMETRY_TAU,
     frame_frac: float = DIV_FRAME_FRAC,
     global_frac: float = DIV_GLOBAL_FRAC,
+    intensity=None,
+    rise_weight: float = 0.0,
 ):
     """Attach a second daughter, gated structurally rather than by distance alone.
 
@@ -370,7 +411,12 @@ def add_safe_divisions(
                 continue
             if _dist(pos[g1[0]], pos[g2[0]], iso_um) - d_sis < diverge_um:
                 continue
-            props.append((d_par + 0.15 * d_sis, p, cand))
+            rise_term = 0.0
+            if rise_weight and intensity is not None:
+                r = _self_rise(p, t, pos, parents, intensity)
+                if r is not None:
+                    rise_term = rise_weight * r
+            props.append((d_par + 0.15 * d_sis + rise_term, p, cand))
 
         for _s, p, cand in sorted(props)[:frame_cap]:
             if len(added) >= global_cap or cand in claimed:
@@ -557,6 +603,7 @@ def run_all(
     relink_kwargs: dict | None = None,
     gap_kwargs: dict | None = None,
     smooth_kwargs: dict | None = None,
+    prune_fn=None,
 ):
     """The reference's ordering, which is load-bearing — see each step's docstring.
 
@@ -583,6 +630,17 @@ def run_all(
     links = (motion_relink(coords_per_t, iso_um, **(relink_kwargs or {}))
              if links_per_t is None else links_per_t)
     coords = coords_per_t
+    if prune_fn is not None:
+        # An integer program over the *resolved* link set, before anything adds
+        # edges back. Measured on the reference's own path: solving the graph
+        # its greedy edge head already resolved lifts adjusted edge Jaccard
+        # 0.8830 -> 0.9299 by roughly halving edge false positives, while
+        # solving the raw candidate graph instead costs 0.05 (see
+        # volt_biohub.ilp_link). It runs here rather than at the end because
+        # gap closing and the division pass add edges under their own local
+        # guards, and a solver that saw those would be asked to re-judge
+        # decisions made on evidence it does not have.
+        coords, links = prune_fn(coords, links)
     if gaps:
         coords, links = close_single_frame_gaps(coords_per_t, links, iso_um,
                                                **(gap_kwargs or {}))

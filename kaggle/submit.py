@@ -188,7 +188,8 @@ def load_detector(weights: Path, device, tta: bool = False,
                   secondary: Path | None = None,
                   secondary_weight: float = 0.0,
                   retention: float = 0.90,
-                  det_threshold_for_guard: float | None = None):
+                  det_threshold_for_guard: float | None = None,
+                  tta_views: int = 8):
     """Rebuild just the detection half of the trained model.
 
     The checkpoint is a joint ``UNetNodeTransformer`` state dict: ``unet.*``,
@@ -340,7 +341,15 @@ def load_detector(weights: Path, device, tta: bool = False,
             acc = None
             facc = None
             feats = None
-            for k in (0, 1, 2, 3) if square else (0,):
+            # Rotations are a far stronger perturbation than flips for an
+            # anisotropic microscope, and the reference only ever used flips:
+            # PredictConfig.det_tta is flip-xy, four views. Our -0.015 for
+            # "TTA" was measured on the full eight-view D4 group, which is not
+            # the thing their +0.009 refers to. k in (0, 2) with the x-flip is
+            # exactly the four-element flip subgroup {id, flip-x, flip-y,
+            # flip-xy}, since flip-y = rot180 . flip-x.
+            ks = ((0, 1, 2, 3) if tta_views >= 8 else (0, 2)) if square else (0,)
+            for k in ks:
                 rot = torch.rot90(t, k, dims=(-2, -1)) if k else t
                 for flip in (False, True):
                     identity = k == 0 and not flip
@@ -367,12 +376,49 @@ def load_detector(weights: Path, device, tta: bool = False,
                         # Detection TTA is off: keep the sharp identity map and
                         # stop accumulating, so the peaks are unblurred.
                         sharp = acc
-            n_views = 8 if square else 2
+            n_views = (len(ks) * 2) if square else 2
             logits = ((acc / n_views) if tta else sharp).cpu().numpy()
             if avg_feats:
                 feats = facc / n_views
             return (logits, feats) if want_features else logits
 
+    def detect_pair(frame_a: np.ndarray, frame_b: np.ndarray):
+        """Logits and trunk features for a **real** consecutive pair.
+
+        This exists because ``detect_map`` duplicates one frame into a fake
+        pair, and that is the single largest divergence between this file and
+        the reference inference it reimplements. For *detection* the fake pair
+        is free -- the temporal attention degenerates cleanly on two identical
+        tokens, node recall 0.9973 against 0.9967 -- which is what was measured
+        and what the fake pair was justified on. For the **edge head** it is
+        not free at all: the head's whole job is to compare a cell's trunk
+        representation at t against candidates at t+1, and a trunk told that
+        nothing moved between the two frames has had exactly that signal
+        removed.
+
+        Measured on the four movies the public notebooks validate on, our
+        stack against the reference's own path on the same weights and the same
+        scorer: greedy edge head 0.8600 adjusted edge Jaccard here (node recall
+        0.9428) against 0.8830 there, and with the ILP 0.8677 against 0.9299.
+        The fake pair is the leading suspect for that gap, and this is how it
+        gets tested rather than argued about.
+
+        TTA is not applied here. It is off in every configuration that uses the
+        edge head, and silently averaging the pair path over symmetries while
+        the single-frame path did something else is how the last measurement
+        error in this file happened.
+        """
+        a = torch.from_numpy(frame_a).to(device)
+        b = torch.from_numpy(frame_b).to(device)
+        with torch.no_grad():
+            feats = unet(torch.stack([a, b], dim=0).unsqueeze(0).unsqueeze(2))
+            la = head(feats[0, 0:1])[0, 0].float()
+            lb = head(feats[0, 1:2])[0, 0].float()
+            if unet2 is not None:
+                la, lb = _blend(la, a), _blend(lb, b)
+            return la.cpu().numpy(), lb.cpu().numpy(), feats[0, 0], feats[0, 1]
+
+    detect_map.pair = detect_pair
     return detect_map
 
 
@@ -456,6 +502,7 @@ def detect_and_candidates(
     want_probs: bool = False,
     bidirectional_weight: float = 0.0,
     temperature: float = 1.0,
+    real_pairs: bool = False,
 ) -> tuple[list[np.ndarray], list[tuple[int, int, float, float]], list | None]:
     """Detect, then emit ILP *candidate* edges instead of resolved links.
 
@@ -473,6 +520,7 @@ def detect_and_candidates(
     from. The source-softmax means at most two sources clear 0.48 for any target,
     so the sparse form is 100x smaller with no loss.
     """
+
     from volt_biohub.edge_head import pair_probs
     from volt_biohub.ilp_link import candidates_from_probs
 
@@ -481,37 +529,56 @@ def detect_and_candidates(
     candidates: list[tuple[int, int, float, float]] = []
     kept_probs: list[np.ndarray] | None = [] if want_probs else None
     offset = 0
-    prev_feat = None
 
-    for t, frame in enumerate(volumes):
-        logits, feat = detect_map(frame, want_features=True)
-        coords = detect_from_map(logits, n_per_frame, ISO_UM, separation_um,
-                                refine=refine, threshold=threshold)
-        coords_per_t.append(coords)
-        if t > 0:
-            probs = pair_probs(
-                edge_head, prev_feat, feat, coords_per_t[t - 1], coords,
-                t_src=0, window_shape=window_shape, downsample=downsample,
-                bidirectional_weight=bidirectional_weight,
-                temperature=temperature,
-            )
-            # candidates_from_probs indexes globally, so hand it just this pair
-            # and shift by the running offset rather than re-deriving offsets
-            # over a coords list that is still being built.
-            local = candidates_from_probs(
-                [probs], [coords_per_t[t - 1], coords], ISO_UM,
-                threshold=candidate_threshold,
-            )
-            # `local` is already indexed into [prev, cur] concatenated, so a
-            # single running offset shifts both endpoints into video space.
-            candidates.extend((offset + a, offset + b, p, d) for a, b, p, d in local)
-            offset += len(coords_per_t[t - 1])
-            if kept_probs is not None:
-                # ~36 MB for a 100-frame video at 300 nodes/frame, 235 MB at 770.
-                # Affordable, and the alternative (recomputing per stage) would
-                # run the transformer twice.
-                kept_probs.append(probs)
-        prev_feat = feat
+    def _peaks(logits):
+        return detect_from_map(logits, n_per_frame, ISO_UM, separation_um,
+                               refine=refine, threshold=threshold)
+
+    def _pair(t, fa, fb):
+        """Score pair *t*, accumulate its candidates, and drop the features."""
+        nonlocal offset
+        probs = pair_probs(
+            edge_head, fa, fb, coords_per_t[t], coords_per_t[t + 1],
+            t_src=0, window_shape=window_shape, downsample=downsample,
+            bidirectional_weight=bidirectional_weight,
+            temperature=temperature,
+        )
+        # candidates_from_probs indexes globally, so hand it just this pair and
+        # shift by the running offset rather than re-deriving offsets over a
+        # coords list that is still being built.
+        local = candidates_from_probs(
+            [probs], [coords_per_t[t], coords_per_t[t + 1]], ISO_UM,
+            threshold=candidate_threshold,
+        )
+        candidates.extend((offset + a, offset + b, pr, d) for a, b, pr, d in local)
+        offset += len(coords_per_t[t])
+        if kept_probs is not None:
+            # ~36 MB for a 100-frame video at 300 nodes/frame, 235 MB at 770.
+            kept_probs.append(probs)
+
+    # A real consecutive pair per window when the detector offers one. See
+    # load_detector.detect_pair: the fake pair costs nothing for detection and
+    # removes exactly the signal the edge head reads. Features are consumed and
+    # dropped inside the loop -- 32 channels x 64^3 for every frame at once is
+    # 3.4 GB, which is the whole reason this is interleaved.
+    pair_fn = getattr(detect_map, "pair", None) if real_pairs else None
+
+    if pair_fn is not None and len(volumes) > 1:
+        for t in range(len(volumes) - 1):
+            la, lb, fa, fb = pair_fn(volumes[t], volumes[t + 1])
+            if t == 0:
+                coords_per_t.append(_peaks(la))
+            coords_per_t.append(_peaks(lb))
+            _pair(t, fa, fb)
+    else:
+        prev_feat = None
+        for t, frame in enumerate(volumes):
+            logits, feat = detect_map(frame, want_features=True)
+            coords_per_t.append(_peaks(logits))
+            if t > 0:
+                _pair(t - 1, prev_feat, feat)
+            prev_feat = feat
+
     return coords_per_t, candidates, kept_probs
 
 
@@ -533,8 +600,10 @@ def run(
     postprocess: bool = False,
     min_track_len: int = 6,
     tta: bool = False,
+    tta_views: int = 8,
     div_kwargs: dict | None = None,
     ilp: bool = False,
+    ilp_prune: bool = False,
     learned_bonus: float = 0.0,
     bidirectional_weight: float = 0.0,
     temperature: float = 1.0,
@@ -542,6 +611,7 @@ def run(
     secondary_weights: Path | None = None,
     secondary_weight: float = 0.0,
     candidate_threshold: float = 0.48,
+    real_pairs: bool = False,
     ilp_kwargs: dict | None = None,
     gaps: bool = True,
     relink_kwargs: dict | None = None,
@@ -558,6 +628,7 @@ def run(
         device = resolve_device()
         print(f"detector: unet on {device} ({weights})", flush=True)
         detect_map = load_detector(weights, device, tta=tta,
+                                   tta_views=tta_views,
                                    feature_tta=feature_tta,
                                    secondary=secondary_weights,
                                    secondary_weight=secondary_weight,
@@ -628,14 +699,17 @@ def run(
         learned_links = None
         candidates = None
         probs_per_pair = None
-        if (ilp or learned_bonus) and edge_head is not None and use_map is not None:
+        want_pair_probs = ilp or ilp_prune or learned_bonus or (learned_edges and postprocess)
+        if want_pair_probs and edge_head is not None and use_map is not None:
             coords, candidates, probs_per_pair = detect_and_candidates(
                 volumes, use_map, edge_head, n_per_frame, separation_um,
                 DOWNSAMPLE, refine=refine, threshold=det_threshold,
                 candidate_threshold=candidate_threshold,
-                want_probs=bool(learned_bonus),
+                want_probs=bool(learned_bonus or ilp_prune
+                                or (learned_edges and postprocess)),
                 bidirectional_weight=bidirectional_weight,
                 temperature=temperature,
+                real_pairs=real_pairs,
             )
             if not ilp:
                 candidates = None
@@ -660,6 +734,35 @@ def run(
             centre = np.array([[s // 2 for s in volumes.shape[1:]]], dtype=np.int64)
             coords = [centre] + [np.empty((0, 3), dtype=np.int64)] * (len(volumes) - 1)
 
+        def _make_prune(probs):
+            # Solving the graph our relink already resolved, which is what the
+            # reference does -- see volt_biohub.ilp_link.prune. Deliberately a
+            # closure rather than a flag inside run_all: postprocess.py stays
+            # free of tracksdata, so the DoG fallback still runs with it (and
+            # torch) absent entirely.
+            # The exact tree DP, not the solver: identical edge sets
+            # (tests/test_ilp_dp.py) in milliseconds instead of ~15 s a video,
+            # and it keeps tracksdata off the inference path entirely.
+            from volt_biohub.ilp_link import prune_dp as ilp_prune_fn
+
+            def _fn(c, lk):
+                return ilp_prune_fn(c, lk, probs, ISO_UM, **(ilp_kwargs or {}))
+            return _fn
+
+        # The reference's linker: greedy resolution of the edge head's own
+        # probabilities, in place of the geometric relink. Measured through its
+        # code on the public notebooks' 4-movie proxy set, adjusted edge
+        # Jaccard is 0.8830 this way and 0.9299 once the ILP prunes it, against
+        # our relink's 0.8888 -- so the head and the solver are a pair, and
+        # neither half reproduces the gain alone.
+        if learned_edges and postprocess and probs_per_pair is not None:
+            from volt_biohub.edge_head import resolve_greedy
+            learned_links = [
+                resolve_greedy(probs_per_pair[t], coords[t], coords[t + 1],
+                               ISO_UM, threshold=edge_threshold)
+                for t in range(len(coords) - 1)
+            ]
+
         if candidates is not None:
             # The solver replaces the linker AND selects the node set. It runs
             # before post-processing so the remaining stages operate on its
@@ -669,6 +772,23 @@ def run(
             from volt_biohub.ilp_link import solve as ilp_solve
             coords, links = ilp_solve(coords, candidates, ISO_UM,
                                       **(ilp_kwargs or {}))
+
+        def _intensity(t, coord):
+            """Normalised image intensity at a node, for the division ranker.
+
+            Clipped rather than bounds-checked: line-fit smoothing can push a
+            border node a fraction of a voxel outside the grid (which is what
+            produced the -1 coordinates the validator rejected), and a fork
+            candidate is not worth losing over a rounding artefact at the edge.
+            """
+            if t < 0 or t >= len(volumes):
+                return None
+            z, y, x = (int(round(float(v))) for v in coord)
+            sz, sy, sx = volumes.shape[1:]
+            return float(volumes[t,
+                                 min(max(z, 0), sz - 1),
+                                 min(max(y, 0), sy - 1),
+                                 min(max(x, 0), sx - 1)])
 
         if postprocess:
             # Replaces the one-pass fixed-gate linker entirely: two-pass Hungarian
@@ -681,8 +801,11 @@ def run(
                 divisions=division_gate_um is not None,
                 min_track_len=min_track_len,
                 shape=tuple(volumes.shape[1:]),
-                div_kwargs=div_kwargs,
-                links_per_t=links if candidates is not None else None,
+                div_kwargs={**(div_kwargs or {}), "intensity": _intensity}
+                           if (div_kwargs or {}).get("rise_weight") else div_kwargs,
+                links_per_t=(links if candidates is not None
+                             else (learned_links if learned_edges and learned_links
+                                   else None)),
                 gaps=gaps,
                 relink_kwargs={
                     **(relink_kwargs or {}),
@@ -691,6 +814,7 @@ def run(
                        if probs_per_pair is not None else {}),
                 } or None,
                 gap_kwargs=gap_kwargs,
+                prune_fn=_make_prune(probs_per_pair) if ilp_prune else None,
             )
         elif learned_links is not None:
             links = learned_links

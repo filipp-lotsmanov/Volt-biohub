@@ -87,6 +87,35 @@ def find_weights(root: Path = INPUT_ROOT) -> Path | None:
         for depth in range(4):
             for pth in sorted(mount.glob(
                     "/".join(["*"] * depth + ["edge_predictor_best.pth"]))):
+                # Never return the blend's second checkpoint as the primary.
+                # Kaggle's extractor is inconsistent about preserving directory
+                # levels, so the two can land at the same depth and glob order
+                # would decide which model sets the operating point.
+                if pth.parent.name == "secondary":
+                    continue
+                if (pth.parent / "config.json").exists():
+                    return pth
+    return None
+
+
+def find_secondary_weights(root: Path = INPUT_ROOT) -> Path | None:
+    """A second detector checkpoint to blend with, or ``None`` for one detector.
+
+    Kept separate from :func:`find_weights` rather than returning a list: the
+    two are not interchangeable. The primary decides the operating point and is
+    what the retention guard falls back to, so which checkpoint is which has to
+    be a property of the layout, not of glob order. The secondary lives in a
+    ``secondary/`` subdirectory for exactly that reason.
+
+    Measured on the full LOEO folds at blend weight 0.3, moment-matched in logit
+    space: fold 0 0.8953 -> 0.8986, fold 1 0.8760 -> 0.8852, weighted
+    0.8924 -> 0.8966. Both folds gain on adjusted edge Jaccard, which is what
+    makes it a real effect rather than the division lottery.
+    """
+    for mount in dataset_mounts(root):
+        for depth in range(4):
+            for pth in sorted(mount.glob(
+                    "/".join(["*"] * depth + ["secondary", "edge_predictor_best.pth"]))):
                 if (pth.parent / "config.json").exists():
                     return pth
     return None

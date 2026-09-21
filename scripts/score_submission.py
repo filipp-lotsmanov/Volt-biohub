@@ -146,6 +146,12 @@ def main(argv=None) -> int:
                         "own clean-split ablation prices this at +0.037, the "
                         "largest single component; our adjJ 0.858 sits exactly on "
                         "their 'ILP off' arm of 0.8587. Needs --weights.")
+    p.add_argument("--ilp-prune", action="store_true",
+                   help="Solve the link set the relink already resolved, so the "
+                        "solver only decides what to KEEP. This is what the "
+                        "reference does; --ilp hands it the raw candidate graph "
+                        "instead, and that difference is -0.05 against +0.047 "
+                        "(volt_biohub.ilp_link, measured 2026-09-21).")
     p.add_argument("--learned-bonus", type=float, default=0.0,
                    help="Subtract this x the edge-head probability from the "
                         "relink's Hungarian cost, in micrometres. The reference "
@@ -213,8 +219,29 @@ def main(argv=None) -> int:
                         "it drops candidates by order, not by quality.")
     p.add_argument("--div-parent-um", type=float, default=None)
     p.add_argument("--div-sister-um", type=float, default=None)
+    p.add_argument("--div-rise-weight", type=float, default=None,
+                   help="Weight on the parent's own two-frame intensity rise in "
+                        "the fork ranking, micrometre-equivalent. The only fork "
+                        "feature measured to separate: AUC 0.632 over all 151 GT "
+                        "divisions against 1,729 controls, where every geometric "
+                        "feature sits at 0.50. A dividing parent DIMS (median "
+                        "rise 0.901 against 1.002), so a positive weight "
+                        "penalises brightening candidates.")
     p.add_argument("--tta", action="store_true",
                    help="8-view D4 TTA in (y, x), averaged in logit space.")
+    p.add_argument("--tta-views", type=int, default=8, choices=(4, 8),
+                   help="8 is the full D4 group (what our -0.015 measured); 4 is "
+                        "the flip subgroup, which is what the reference's "
+                        "det_tta actually does and what its +0.009 refers to. "
+                        "Rotating a 90-degree turn through an anisotropic PSF is "
+                        "a much stronger perturbation than a mirror.")
+    p.add_argument("--real-pairs", action="store_true",
+                   help="Compute the edge head's trunk features from a REAL "
+                        "consecutive pair instead of one frame duplicated. The "
+                        "fake pair is free for detection (node recall 0.9973 "
+                        "against 0.9967) and is the leading suspect for the edge "
+                        "head scoring 0.86 here against 0.93 through the "
+                        "reference's own code on the same weights.")
     p.add_argument("--switch-at", type=float, default=None)
     p.add_argument("--refine", action="store_true", default=True)
     p.add_argument("--keep-csv", type=Path, default=None)
@@ -255,7 +282,9 @@ def main(argv=None) -> int:
             learned_edges=args.learned_edges,
             edge_threshold=args.edge_threshold,
             tta=args.tta,
+            tta_views=args.tta_views,
             ilp=args.ilp,
+            ilp_prune=args.ilp_prune,
             learned_bonus=args.learned_bonus,
             bidirectional_weight=args.bidirectional_weight,
             feature_tta=args.feature_tta,
@@ -263,6 +292,7 @@ def main(argv=None) -> int:
             secondary_weight=args.secondary_weight,
             temperature=args.edge_temperature,
             candidate_threshold=args.candidate_threshold,
+            real_pairs=args.real_pairs,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {
                 "disappearance_weight": args.ilp_disappearance,
@@ -277,6 +307,7 @@ def main(argv=None) -> int:
                 "global_frac": args.div_global_frac,
                 "parent_um": args.div_parent_um,
                 "sister_um": args.div_sister_um,
+                "rise_weight": args.div_rise_weight,
             }.items() if v is not None} or None,
         )
         rows = score_csv(csv_path, data_dir, names)
