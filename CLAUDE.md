@@ -1654,6 +1654,10 @@ while barely touching the node count — so it is not trading one against the
 other. `reference_predict.make_blend` runs it inside the copied path, blending
 whichever frame of the window the caller names rather than a duplicated one.
 
+Fold 1 with both is **0.9150** (adjJ 0.9042 -> 0.9092, a +0.005 jump, while divJ
+falls 0.0822 -> 0.0580 on that fold's handful of division events). Weighted with
+fold 0's 0.9336 that is **0.9308 against the shipped 0.9270, +0.0038.**
+
 Two reasons to expect the leaderboard to like it more than this number does.
 It is **detector-side**, so our contaminated fold understates it by the argument
 above; and it is variance reduction across two independently-seeded nets, which
@@ -1670,6 +1674,14 @@ increment today with a clean mechanism.** Fold 0, against the shipped 0.9296:
 | adjJ | 0.9236 | 0.9237 | 0.9237 |
 | node recall | 0.9764 | 0.9764 | 0.9765 |
 | node ratio | −0.0430 | −0.0430 | −0.0430 |
+
+**And it is subsumed by the blend, so it does not ship.** Fold 0: blend alone
+0.9336, blend + rise 0.9337. Both work on the division term and the blend
+already takes divJ 0.0597 -> 0.0775, so there is nothing left for the ranker to
+reorder (0.0775 -> 0.0784). The feature is real -- AUC 0.632, the only fork
+feature this project has found that separates -- and worth +0.0008 on its own,
+but it is not additive with the thing we would ship anyway. Keep the code and
+the measurement; ship `--div-rise-weight 0`.
 
 Flat from 10 to 30, so the term saturates: by weight 10 it already dominates
 the geometric ordering wherever it disagrees, and tripling it reorders nothing
