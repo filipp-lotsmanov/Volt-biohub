@@ -1430,12 +1430,26 @@ WOULD NOT HAVE PREDICTED.** Both together, with bidir at its own measured optimu
 | **+ both, bidir 0.25** | **0.9454** | **0.9352** | **0.1025** | **0.9839** |
 
 +0.0011 and +0.0015 sum to the measured +0.0026, so they cancel *different* noise rather
-than the same noise twice. But the division term is the surprise: each arm **alone**
-drops divJ (0.0950 → 0.0891 and → 0.0898), and the two **together** raise it to 0.1025,
-the highest since before the reference-path port. All three terms are simultaneously at
-their project maxima. The reading that fits: two different disagreement signals in
-combination preserve forks that either one alone suppresses, because a fork only loses
-its second child when a single signal is confidently wrong about it.
+than the same noise twice.
+
+**And the division story was a one-weight artefact — corrected.** Sweeping fusion on the
+soup shows its effect on divJ is *weight-dependent*, not a fixed cost:
+
+| bidir weight on the soup | score | adjJ | divJ |
+|---|---|---|---|
+| 0 | 0.9428 | 0.9333 | 0.0950 |
+| 0.15 | 0.9433 | 0.9343 | 0.0898 |
+| **0.25** | **0.9444** | 0.9344 | **0.1000** |
+
+At 0.15 it sells divisions; at 0.25 it **buys** them, and alone it is then worth +0.0016.
+So the earlier claim that "both edge-side arms buy the edge term by selling divisions,
+a roughly fixed fraction of forks suppressed" was drawn from a single weight and is
+wrong. The mechanism that fits all of it: a harmonic mean weighted further toward the
+reverse pass is a **stronger agreement test**, and a dividing parent's two daughters each
+*independently* agree with it — each daughter's own best parent is the divider — so a
+stronger test preserves forks while killing spurious single links. A weak test only
+sharpens the dominant assignment, which is what suppresses a second child. Its optimum
+is not yet bounded above; 0.35 and 0.50 are running.
 
 Note also that bidir's own optimum on fold 0 is **0.25** (0.9375) rather than 0.15
 (0.9369) at the shipped operating point — the first sweep bracketed it too narrowly and
