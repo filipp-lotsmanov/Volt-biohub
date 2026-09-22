@@ -1772,10 +1772,19 @@ pool size and the out-degree are unchanged and no node can reach out-degree 3 (w
 scorer truncates silently, by edge id). The mechanism has a test: a duplicate detection
 of the existing child sits nearest and has no child of its own, so it fails the
 divergence clause and the true sister behind it gets her turn — `n_cand=1` finds no fork
-in that fixture and `n_cand=2` finds the right one. **Launched on fold 0, not yet
-measured; nothing here licenses a prediction about the score.** Five of my division
-predictions have now been falsified, and the audit above is a measurement of the *pool*,
-not of the outcome.
+in that fixture and `n_cand=2` finds the right one. **MEASURED AND NEGATIVE, exactly as the rejection log said it would be: fold 0 0.9459
+against 0.9463, with divJ 0.1020 → 0.0996 and node recall and node ratio BIT-IDENTICAL
+(0.9830, −0.0350).** Those two unchanged columns are the mechanism check — a fork adds an
+edge and never a node, so identical recall confirms the arm changed only forks — and the
+division term falling confirms which forks: since every true daughter that clears the
+gates is already the nearest orphan, the 2nd and 3rd can contribute nothing *but* false
+ones.
+
+This is the first division prediction of mine in this project that held, and the reason
+is worth keeping: it came from a **measurement of the rejection log** rather than from a
+mechanism story. The five that failed were all mechanism stories. The knob stays at its
+default of 1, which is an exact no-op, and the fixture test keeps documenting a real
+behaviour that simply does not occur at this operating point.
 
 **AND THE HEADROOM IS LARGE: 99 of 124 GT divisions never reach the pool at all.**
 Confirmed on the **full 128-sample fold 0**, not just the division-rich subset, with four
