@@ -1517,58 +1517,80 @@ favours it.** See the two blend submissions below: a *detector-side* change tran
 at 80–130 % where the edge-head-side reference-path change transferred at 35 %, which is
 the asymmetry this file predicts. At that rate the soup's +0.0075 lands near 0.932–0.933.
 
-**2026-09-22 — THE SUBMIT ENDPOINT 403s AND IT IS RULES RE-ACCEPTANCE, BY ELIMINATION.
-This is a human action and nothing in the repo can clear it.** Kernel v14 (the soup,
-weighted CV 0.9407) ran clean — validator PASS, 124,635 nodes, 97.4 s/video → 5.38 h of
-the 12 h cap — but `competitions submit` returns **403 Forbidden on
-`CreateCodeSubmission`**, continuously across 6 hours and 65 attempts. Three candidate
-causes, two killed by measurement:
+**2026-09-22 — THE SUBMIT 403 WAS THE WRONG COMPETITION SLUG. My diagnosis was wrong,
+it cost ~10 hours and 120 retries, and the evidence was in our own files the whole
+time.** `THE COMPETITION SLUG IS `biohub-cell-tracking-during-development`.` The other
+one — `biohub-cell-tracking-competition`, which every submit command in this session
+used — is not this competition. Submitting to a competition you are not entered in
+returns **403 Forbidden**, which is exactly correct behaviour.
 
-| hypothesis | how it was tested | verdict |
-|---|---|---|
-| concurrent-rerun cap (`usesSynchronousReruns: true`) | retrier waited until both pending reruns reached terminal; they scored 0.925 | **ruled out** — 403 persisted |
-| daily quota (5/day) | waited past the 00:00 UTC reset | **ruled out** — 403 persisted |
-| token or auth | `kernels push`, `kernels output`, `datasets version` all succeeded repeatedly in the same window | **ruled out** |
-| **rules need re-accepting in the browser** | — | **the only one left** |
+`kaggle competitions list -s biohub` returns exactly **one** competition,
+`biohub-cell-tracking-during-development`, with `userHasEntered=True` and
+`userRank=1643 of 3802`. **Rules were accepted the entire time and no human action was
+ever required.** With the right slug the submission went through immediately.
 
-The corroborating detail is that a `competitions submissions` **list** call 403s too, and
-both are `CompetitionApiService` while `KernelsApiService` and `DatasetApiService` are
-fine — i.e. competition-scoped authorisation, exactly what this file already documents
-("the competition rules must be accepted in the browser or the API returns 403"). Three
-submissions succeeded earlier the same day, so acceptance **lapsed** rather than never
-existing.
+**What I did wrong, because the shape repeats.** I eliminated three hypotheses about
+*why* the request was refused — concurrent-rerun cap, daily quota, token/auth — and
+concluded by elimination that the rules must have lapsed. I never questioned *what the
+request was addressed to*. Two pieces of evidence were already in front of me:
 
-**Two operational facts worth keeping.** A 403 creates no submission, so none of those 65
-attempts consumed a daily slot — that is why retrying was safe. And a
-pushed-but-unsubmitted kernel version is **not** a frozen experiment: its graded rerun
-executes at *submission* time against the **current** dataset versions, all three of
-which `kernel-metadata.json` lists unpinned. So while v14 waits, nothing may be uploaded
-to volt-weights or volt-code without silently changing what v14 measures. Pin the
-versions in `kernel-metadata.json` if two configurations ever need to be in flight.
+- `competitions leaderboard <wrong-slug>` returns **404 Not Found**, not 403. A missing
+  resource, not a permissions failure. I read past the difference.
+- `kaggle/kernel-metadata.json` has carried
+  `"competition_sources": ["biohub-cell-tracking-during-development"]` since the first
+  kernel, and I *read that file in the same session* to check how it pins datasets —
+  without comparing its slug to the one I was passing to `submit`.
 
-**2026-09-21 (later) — LB 0.920 → 0.925, AND THE BOARD'S OWN RESOLUTION IS NOW A
-MEASURED FACT RATHER THAN AN INFERENCE.** Both queued blend submissions scored, and both
-scored **0.925**:
+**The transferable rule: when every hypothesis about a failure's mechanism has been
+eliminated, the remaining possibility is usually not the exotic one still standing — it
+is that a premise of the question is wrong. Check the identifier before the mechanism.**
+This is the third instance in this file of the same failure mode (the six "ILP" arms
+that ran with no edge head, the waiter that read the wrong row below, and this).
 
-| change | CV | LB | CV Δ | LB Δ | transfer |
-|---|---|---|---|---|---|
-| reference path + ILP (kernel v11) | 0.9270 | 0.920 | — | — | — |
-| blend 0.30 (kernel v12) | 0.9308 | **0.925** | +0.0038 | +0.005 | ~130 % |
-| blend 0.15 (kernel v13) | 0.9332 | **0.925** | +0.0062 | +0.005 | ~80 % |
+**One operational fact from the episode that does hold:** a 403 creates no submission,
+so none of those 120 attempts consumed a daily slot. And the note about unpinned dataset
+versions stands on its own reasoning: a pushed-but-unsubmitted kernel version is not a
+frozen experiment, because its graded rerun resolves `volt-wheels`/`volt-code`/
+`volt-weights` at submission time and `kernel-metadata.json` lists all three unpinned.
+Pin them if two configurations must be in flight at once.
 
-**The two blend weights are indistinguishable on the board.** Their CV differs by 0.0024
-and `scoreTruncationNumDecimals: 3` puts anything in 0.9245–0.9254 at 0.925. This file
-already said so — "a CV gain below ~0.005 is not worth a submission slot, because it
-lands inside the leaderboard's own resolution" — and a slot was spent confirming it
-anyway. **Hold sub-0.005 arms; the board cannot see them.**
+**2026-09-21 (later), CORRECTED 2026-09-22 — LB 0.920 → 0.925, AND OUR CV RANKED THE
+TWO BLEND WEIGHTS CORRECTLY. The first version of this entry reported both as 0.925 and
+that was a bug in my own waiter, not a fact about the board.** Read from
+`competitions submissions` by **ref**:
 
-**The transfer rate split by side, exactly as predicted.** Detector-side changes land at
-80–130 % while the edge-head-side reference-path change landed at 35 %, because the
-public checkpoint trained on both our folds: our CV *understates* detector work and
-*overstates* edge-head work. That rule was written on 2026-09-21 before either
-submission scored, and it is now confirmed on both sides. **Use it to decide what is
-worth a slot**: a detector-side +0.005 is a real +0.005 on the board, an edge-head-side
-+0.005 is +0.002.
+| change | CV | LB | CV Δ | LB Δ |
+|---|---|---|---|---|
+| reference path + ILP (`56426110`, v11) | 0.9270 | 0.920 | — | — |
+| blend 0.30 (`56432361`, v12) | 0.9308 | **0.918** | +0.0038 | **−0.002** |
+| blend 0.15 (`56438177`, v13) | **0.9332** | **0.925** | +0.0062 | **+0.005** |
+
+**How the error happened, because it is the same failure as the slug above.** Two
+submission waiters both used `awk 'NR==3'` — the *first data row*, i.e. the **newest**
+submission — so each reported whichever submission was most recent rather than its own.
+Both printed 0.925. Match by ref, never by row position. That is now three instances in
+this file of taking a value without verifying the identifier it belongs to.
+
+**What the corrected numbers actually say, and it is better news than the wrong ones.**
+Our CV **ranked the two blend weights correctly**: it preferred 0.15 over 0.30
+(0.9332 > 0.9308) and the board agrees decisively (0.925 > 0.918, a 0.007 gap far above
+the board's 0.001 display resolution). Blend 0.30 is in fact *worse than no blend at all*
+on the board (0.918 against 0.920) while 0.15 is better — consistent with CV's interior
+optimum at 0.15, and a genuine confirmation that the harness can rank.
+
+**RETRACTED: "sub-0.005 CV arms are invisible on the board."** That claim rested
+entirely on two configurations 0.0024 apart appearing to score identically, which they
+did not. The board resolved a 0.0024 CV difference into a 0.007 LB difference. Do not
+use display granularity as a reason to withhold a small arm; the earlier and independent
+argument — that *deltas* compress on transfer — still stands on its own evidence and is
+the one to reason from.
+
+**The transfer rates, recomputed.** blend 0.15 over the reference path: +0.0062 CV →
++0.005 LB, about **81 %**. The reference path itself over the old stack: +0.0346 CV →
++0.012 LB, about **35 %**. The detector-side/edge-head-side asymmetry this file predicted
+is still the right shape — the detector-side change transfers far better than the
+edge-head-side one — but it is now **one clean point per side rather than two**, so treat
+80 % as a single measurement and not a calibrated rate.
 
 **2026-09-21 (later) — THE DIVISION FNs DECOMPOSED, AND IT REVERSES THIS FILE'S OWN
 2026-09-18 VERDICT.** That verdict — "the remaining division loss needs a better ranker
@@ -3246,9 +3268,10 @@ ordering is a hard constraint, not a preference — a graded rerun executes at *
 time against the **current** dataset versions, and `kernel-metadata.json` lists all three
 datasets unpinned:
 
-- **v14** — soup2, weighted CV 0.9407, pushed and run clean (validator PASS, 97.4 s/video
-  → 5.38 h). Blocked on a `CompetitionApiService` 403; see Status. **Until it is
-  submitted and scored, nothing may be uploaded to volt-weights or volt-code**, or v14
+- **v14** — soup2, weighted CV 0.9407. **SUBMITTED 2026-09-22 as `56460859`** once the
+  competition slug was corrected to `biohub-cell-tracking-during-development` (the 403
+  was never a rules problem — see Status). Validator PASS, 97.4 s/video → 5.38 h.
+  **Until it has scored, nothing may be uploaded to volt-weights or volt-code**, or v14
   stops measuring what it was built to measure.
 - **v15** — soup4 + edge head 0.5 + bidir 0.25, weighted CV **0.9449**, both folds. The
   weights are already persisted and md5-verified at `weights/soup_members/`.
@@ -3275,9 +3298,11 @@ which differs in the whole detector, so one systematic problem cannot take both 
 - **The port inventory**: every remaining component is worth ≤ +0.0015 here against the
   reference's published ≥ +0.005, because their deltas repair a defect we do not have.
   Do not port another on the strength of its published delta.
-- **Sub-0.005 CV arms are invisible on the board** — measured, not inferred: two configs
-  0.0024 apart in CV both scored exactly 0.925, and `scoreTruncationNumDecimals: 3`
-  explains why. Hold them and bundle.
+- ~~Sub-0.005 CV arms are invisible on the board.~~ **RETRACTED 2026-09-22** — it rested
+  on a waiter bug that reported one submission's score for another. The board resolved a
+  0.0024 CV difference into a **0.007** LB difference (0.918 vs 0.925), and our CV
+  **ranked** the two correctly. Small arms are worth shipping; the reason to bundle is
+  that deltas compress on transfer, not that the board cannot see them.
 - **Trackastra / Ultrack**: need instance masks we do not have.
 
 ### The levers that remain, best first
@@ -3289,9 +3314,13 @@ which differs in the whole detector, so one systematic problem cannot take both 
   checkpoint-selection noise and blending cancels initialisation noise, and the two were
   measured to *add* (+0.0036 for the blend on top of the soup). A third run would extend
   the second axis, which is the only axis with headroom left.
-- **The decision rule for spending a slot**, from the measured transfer rates: a
-  detector-side +0.005 is a real +0.005 on the board; an edge-head-side +0.005 is +0.002.
-  Weight arms accordingly.
+- **The decision rule for spending a slot.** One clean point per side: the detector-side
+  blend transferred at ~81 % (+0.0062 CV → +0.005 LB) and the edge-head-side reference
+  path at ~35 % (+0.0346 → +0.012). Weight arms by which side they touch, but treat each
+  figure as a single measurement rather than a calibrated rate.
+- **Always pass `-c biohub-cell-tracking-during-development`.** The slug
+  `biohub-cell-tracking-competition` 403s on submit and 404s on reads, and cost ten hours
+  of misdiagnosis.
 
 **Division of labour.** A: data inspection, CV harness, detection. B: CSV writer +
 validator + offline chain, linking + ILP tuning, LB probes. Both: local scorer from
