@@ -1517,6 +1517,35 @@ favours it.** See the two blend submissions below: a *detector-side* change tran
 at 80–130 % where the edge-head-side reference-path change transferred at 35 %, which is
 the asymmetry this file predicts. At that rate the soup's +0.0075 lands near 0.932–0.933.
 
+**2026-09-22 — THE SUBMIT ENDPOINT 403s AND IT IS RULES RE-ACCEPTANCE, BY ELIMINATION.
+This is a human action and nothing in the repo can clear it.** Kernel v14 (the soup,
+weighted CV 0.9407) ran clean — validator PASS, 124,635 nodes, 97.4 s/video → 5.38 h of
+the 12 h cap — but `competitions submit` returns **403 Forbidden on
+`CreateCodeSubmission`**, continuously across 6 hours and 65 attempts. Three candidate
+causes, two killed by measurement:
+
+| hypothesis | how it was tested | verdict |
+|---|---|---|
+| concurrent-rerun cap (`usesSynchronousReruns: true`) | retrier waited until both pending reruns reached terminal; they scored 0.925 | **ruled out** — 403 persisted |
+| daily quota (5/day) | waited past the 00:00 UTC reset | **ruled out** — 403 persisted |
+| token or auth | `kernels push`, `kernels output`, `datasets version` all succeeded repeatedly in the same window | **ruled out** |
+| **rules need re-accepting in the browser** | — | **the only one left** |
+
+The corroborating detail is that a `competitions submissions` **list** call 403s too, and
+both are `CompetitionApiService` while `KernelsApiService` and `DatasetApiService` are
+fine — i.e. competition-scoped authorisation, exactly what this file already documents
+("the competition rules must be accepted in the browser or the API returns 403"). Three
+submissions succeeded earlier the same day, so acceptance **lapsed** rather than never
+existing.
+
+**Two operational facts worth keeping.** A 403 creates no submission, so none of those 65
+attempts consumed a daily slot — that is why retrying was safe. And a
+pushed-but-unsubmitted kernel version is **not** a frozen experiment: its graded rerun
+executes at *submission* time against the **current** dataset versions, all three of
+which `kernel-metadata.json` lists unpinned. So while v14 waits, nothing may be uploaded
+to volt-weights or volt-code without silently changing what v14 measures. Pin the
+versions in `kernel-metadata.json` if two configurations ever need to be in flight.
+
 **2026-09-21 (later) — LB 0.920 → 0.925, AND THE BOARD'S OWN RESOLUTION IS NOW A
 MEASURED FACT RATHER THAN AN INFERENCE.** Both queued blend submissions scored, and both
 scored **0.925**:
