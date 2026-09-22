@@ -1852,8 +1852,39 @@ reject log records only the *first* failing gate, so a row refused by `d_par` wa
 tested against symmetry, the grandchild clause or divergence. The 4,647 false admits are
 therefore an **upper bound** on what a looser `d_par` adds to the pool, and divergence —
 which does most of the filtering in the admitted pool — would absorb an unknown share.
-That is exactly why `--div-parent-um 12 --div-symmetry-tau 0.9` is being measured on the
-full fold rather than argued from the log.
+
+**AND IT DID. THE GATE WIDENING PAYS, AND IT IS THE LARGEST DIVISION-TERM GAIN IN THIS
+PROJECT.** `--div-parent-um 12 --div-symmetry-tau 0.9` on the full fold 0, one variable
+against the 0.9463 baseline:
+
+| | baseline | parent 12 + symmetry 0.9 |
+|---|---|---|
+| score | 0.9463 | **0.9469** |
+| **division Jaccard** | 0.1020 | **0.1133** — +0.0113, the highest measured on fold 0 |
+| adjusted edge Jaccard | 0.9361 | 0.9356 — −0.0005 |
+| node recall | 0.9830 | 0.9831 |
+| node ratio | −0.0350 | −0.0345 |
+
+Node recall and the node ratio barely move, so this is a **pure division effect** rather
+than a redistribution through the node-count multiplier — the failure mode that made
+every node-retention knob reverse between folds. The edge term pays 0.0005 for the extra
+forks' false edges and the division term returns 0.0113 at the 0.1 weight, netting
++0.0006.
+
+**So the division term is NOT closed, and the reason the earlier widening failed is now
+concrete rather than mysterious.** 2026-09-18 moved parent 9 → 11 and *sister* 14 → 18 at
+symmetry 0.6, on fold 1, under the pre-reference-path pipeline. Three of those four
+choices were wrong: sister was never the blocker (max `d_sis` among refused true
+daughters is 13.98, inside the shipped 14.0), parent 11 reaches only 5 of 7, and symmetry
+was left untouched while refusing 5 of 18 on its own. **The lesson is about the
+instrument, not the knob: a gate sweep guided by a rejection log found in one arm what
+four blind arms missed**, because the log says which clause fires and at what value,
+rather than leaving the sweep to guess a direction and a magnitude.
+
+Still to settle before it ships: **fold 1** (which holds ~26 divisions against fold 0's
+124, so watch the *sign* rather than the size), and whether symmetry 1.2 — which the log
+says captures the 5th and last refused daughter, at 1,535 false admits against 710 — is
+worth its share. Both are running.
 
 Also worth noting: **7 of the 25 GT divisions were never even considered**, i.e. the true
 daughter was not an unclaimed orphan within 14 µm of the existing child, or the divider
