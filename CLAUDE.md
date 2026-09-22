@@ -2146,6 +2146,38 @@ how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
+**2026-09-22 — A THREE-MEMBER SECONDARY SOUP GIVES 0.9484, THE HIGHEST FOLD-0 SCORE IN
+THE PROJECT, AND IT MOVES THE DIVISION TERM RATHER THAN THE EDGE TERM.** The third member
+is `shehailrs/biohub-tracking-350ep-public-weight-snapshot`, whose manifest names
+`pilkwang/…-50ep-v1` **version 9 at epoch 350** as its source — the same run as our
+secondary, so it may be *souped* rather than blended.
+
+| secondary, fold 0 | score | adjJ | divJ |
+|---|---|---|---|
+| raw pack50 `best` | 0.9463 | 0.9361 | 0.1020 |
+| soup(best, last@402) | 0.9469 | 0.9367 | 0.1016 |
+| **soup(best, last@402, 350)** | **0.9484** | 0.9369 | **0.1149** |
+
+**+0.0015 over the two-member soup and +0.0021 over raw, essentially all of it division
+term** (+0.0133) with adjJ flat. divJ 0.1149 is also the highest measured on fold 0,
+above the division-gate arm's 0.1133 — and unlike that arm it costs nothing and touches no
+threshold.
+
+**The primary and secondary soups run in OPPOSITE directions, and the blend weights explain
+it.** The primary's curve is 2 → 0.9454, 4 → 0.9463, 8 → 0.9466 with adjJ rising
+monotonically while divJ *falls* 0.1025 → 0.1020 → 0.0956: averaging the map that generates
+peaks merges sisters separated by p5 5.41 µm on a 1.625 µm grid. The secondary carries only
+**0.15 of the detection blend against 0.5 of the edge probabilities**, so its soup acts
+mainly through the *edge head*, where averaging sharpens fork topology instead of blurring
+peaks. **So the primary's "4 members then flat" conclusion does not carry to the
+secondary** — a genuine asymmetry with a mechanism, not two noisy curves.
+
+Fold 1 is running. Only three same-run pack50 checkpoints exist publicly (best,
+`checkpoint_last` at 402, and 350), so going further on this axis would need an SWA
+continuation of that run — about 6 h on one card, which is affordable in the remaining
+week if fold 1 confirms. Persisted md5-verified as
+`weights/soup_members/soup_pack3_secondary_best.pth` (`7fcade11c29ebcf7ffc6981e8ad656ca`).
+
 **2026-09-22 — LINE-FIT SMOOTHING IS WORTH +0.0031 HERE, AND IT IS THE FIRST PORTED
 COMPONENT WHOSE PUBLISHED DELTA ROUGHLY TRANSFERS.** It had no CLI path until today —
 `submit.run` never passed `smooth` or `smooth_kwargs` to `run_all` — so it always ran at
