@@ -2146,6 +2146,72 @@ how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
+**2026-09-22 — FILLIP'S NOTEBOOK: two real defects in ours, one PROOF about our own
+code, and a configuration that is 0.008 behind. Evaluated by verifying every claim
+rather than by reading the commentary.** He independently rebuilt the weights after his
+training container was wiped, and his md5s pin the artifacts exactly: `827abaaf` = raw
+pack50 best, `4ae09601` = raw pubfull best, and his "souped primary" `97e5d6eb` is
+**byte-identical to our `soup_pack_secondary_best.pth`** — the same 2-member pack50 soup,
+built independently, which cross-validates `scripts/soup_checkpoints.py`.
+
+**1. THE ILP FORK PRICE IS PROVABLY INERT ABOVE 1.0 — his result, verified, and it means
+`prune_dp` NEVER EMITS A FORK at the shipped setting.** In `prune_dp` the fork branch
+beats the single-child branch iff `w_div + g2 < 0`, where
+`g = edge_weight*p + (on[c] − w_app) − free[c]`. With `APPEARANCE_WEIGHT = 0.0`,
+`EDGE_WEIGHT = −1.0` and `free[c] = min(on[c], base) ≤ on[c]`, that gives
+**`g ≥ −p ≥ −1`**, so at `w_div ≥ 1` the branch is unreachable for *any* input at *any*
+edge probability. `DIVISION_WEIGHT` ships at **1.2**. Confirmed empirically: 1.2 and 1.6
+return bit-identical metrics; only 0.8 moves anything (divJ 0.0902 → 0.0939, ~4
+divisions, +0.0004 of score — noise).
+
+Two things follow. **Every division we score comes from `add_safe_divisions`**, never from
+the solver — which turns CLAUDE.md's earlier *observation* that "their ILP prices a fork
+at 1.2 and prunes every one of them, so it scores divJ 0.0000" into a proof. And
+`--ilp-division`'s help text was wrong: it said "0.8 and 1.6 both lose", but 1.6 cannot
+lose because it is identical to 1.2 — that figure was measured against the tracksdata
+**solver**, not `prune_dp`. Corrected in place.
+
+**2. THE DoG FALLBACK WAS A SILENT ~0.58, AND IS NOW FATAL.** `detect_video`'s own
+docstring says "*threshold* switches the learned path off the node budget", and
+`notebook.py` passed `det_threshold` **only when `USE_UNET`** while `budget=1.0` always.
+So the fallback re-armed the top-N node budget that produced the 0.588 / 0.578 / 0.581 /
+0.575 submissions and that this file says must never return. Kaggle substitutes hardware
+when a machine shape is unavailable, so `gpu_is_usable()` returning False on a **graded**
+rerun is not hypothetical, and it would have scored ~0.58 with nothing in the log to
+distinguish it. There is no safe middle: `detect_dog` takes `n_per_frame` and no threshold,
+so DoG is inherently budget-based and the degradation cannot be fixed — only refused. Now
+it raises. A visible failure costs the same slot and tells us; a silent 0.58 could be
+picked as one of the two final submissions.
+
+**3. Printing the mounted checkpoints' md5 — adopted, and it closes a gap that cost a
+near-miss the same day.** `config.json` carries architecture, not provenance, and is
+byte-identical across every checkpoint of this family; file size cannot separate them
+either, because **every soup here is 8,355,927 bytes**. The md5 is the only discriminator,
+and in the log it makes a graded rerun self-documenting.
+
+**4. His configuration is behind ours and should not be submitted as-is.** He ships
+pack50-soup2 as **primary** with raw pubfull as secondary, no edge-head ensemble and no
+bidirectional fusion: fold 0 **0.9401** against v15's **0.9484** (weighted 0.9480).
+
+**But his numbers settle a question my own arm could not.** My role-swap arm was
+confounded by soup depth (4-member primary against 2-member), so I recorded the
+model-family question as open. His SOUPPRI is a **2-member** soup of pack50 as primary
+from a matched ~0.936 baseline, giving **+0.0037**, against our 2-member soup of pubfull
+as primary giving **+0.0067**. Depth-matched, and **pubfull is the better primary by about
++0.003** — which is the assignment v15 already uses, now supported by evidence instead of
+inheritance.
+
+**And one of his conclusions is fold-0-only, which would have cost him a real gain.** He
+reads SOUPBOTH tying SOUPPRI exactly (0.9401 both) as "souping the secondary buys
+nothing". On fold 0 that agrees with us to within resolution — we measure +0.0006 there.
+On **fold 1** it is **+0.0083**, with adjJ alone +0.0058, worth **+0.0017 weighted**; the
+3-member version reaches +0.0021 on fold 0 and +0.0089 on fold 1. Detector-side variance
+reduction pays most on `44b6`, where the detector is weakest, and a fold-0 tie cannot see
+it. Also a small slip worth correcting before it propagates: his comment calls the soup
+members "pack50's own `edge_predictor_best` (epoch **381**) and `checkpoint_last` (epoch
+402)" — 381 is **pubfull's** best epoch; pack50's `checkpoint_last` is 402 and its best is
+elsewhere.
+
 **2026-09-22 — v14 SCORED 0.926, AND IT FALSIFIES THIS FILE'S OWN PREDICTION. THE SOUP
 TRANSFERRED AT 13 %, NOT 80 %.** Submission `56460859`, read by ref: **0.926** against
 v13's 0.925. Rank **1616 of 3804** (2038 → 1647 → 1616). CV said +0.0075; the board gave
@@ -2237,14 +2303,27 @@ term** (+0.0133) with adjJ flat. divJ 0.1149 is also the highest measured on fol
 above the division-gate arm's 0.1133 — and unlike that arm it costs nothing and touches no
 threshold.
 
-**The primary and secondary soups run in OPPOSITE directions, and the blend weights explain
-it.** The primary's curve is 2 → 0.9454, 4 → 0.9463, 8 → 0.9466 with adjJ rising
-monotonically while divJ *falls* 0.1025 → 0.1020 → 0.0956: averaging the map that generates
-peaks merges sisters separated by p5 5.41 µm on a 1.625 µm grid. The secondary carries only
-**0.15 of the detection blend against 0.5 of the edge probabilities**, so its soup acts
-mainly through the *edge head*, where averaging sharpens fork topology instead of blurring
-peaks. **So the primary's "4 members then flat" conclusion does not carry to the
-secondary** — a genuine asymmetry with a mechanism, not two noisy curves.
+**The primary and secondary soups run in OPPOSITE directions on the division term. The
+EFFECT is real; MY MECHANISM FOR IT IS FALSIFIED.** The primary's curve is 2 → 0.9454,
+4 → 0.9463, 8 → 0.9466 with adjJ rising monotonically while divJ *falls* 0.1025 → 0.1020 →
+0.0956. The secondary's third member instead *raises* divJ, on **both** folds (fold 0
+0.1016 → 0.1149, fold 1 0.1311 → 0.1385), with adjJ flat. **So the primary's "4 members
+then flat" conclusion does not carry to the secondary** — that part stands.
+
+I proposed that the asymmetry came from the blend weights: the secondary carries 0.15 of
+detection against **0.5 of the edge probabilities**, so its soup should act mainly through
+the *edge head*. That predicts the optimal `secondary_edge_weight` would **rise** once the
+secondary is souped. **Measured and it does not move**: 0.65 scores 0.9469 against soup3's
+0.9484 at 0.5, i.e. −0.0015, against −0.0013 for the same step under the *raw* secondary.
+Identical penalty, so the soup does not make the edge head more trustworthy and the
+mechanism is wrong.
+
+**No verified explanation stands.** What is measured is the effect and its reproducibility
+across folds; the "why" is open. Two candidates not yet separated: the secondary's 15 %
+share may be too small to merge peaks while still sharpening the blended map's ranking near
+forks, or the primary's divJ decline may be driven by its own member *count* (4 and 8 are
+smoother than 2) rather than by which slot it occupies. Do not carry the edge-head story
+forward — it was a prediction I registered and it failed.
 
 Fold 1 is running. Persisted md5-verified as
 `weights/soup_members/soup_pack3_secondary_best.pth` (`7fcade11c29ebcf7ffc6981e8ad656ca`).
@@ -2300,8 +2379,10 @@ statements were never in tension; the earlier note simply did not distinguish re
 good detection from rescuing a bad one.
 
 Operationally this changes nothing that ships — smoothing was always on — but it was
-**unverified and worth 0.003**, so a regression in it would have been invisible, and its
-window and weight are now sweepable for the first time.
+**unverified and worth 0.003**, so a regression in it would have been invisible. And now
+that the weight is sweepable, **0.8 is at its optimum**: 0.9 scores 0.9451 against 0.9469,
+i.e. −0.0018, so pulling harder toward the line overshoots. Another inherited constant
+that survives being checked.
 
 **2026-09-22 — THE PUBLIC CHECKPOINT INVENTORY, hashed rather than guessed at. Eight
 distinct architecture-compatible checkpoints exist, from FIVE independent runs, and the

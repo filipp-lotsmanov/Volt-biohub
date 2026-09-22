@@ -227,7 +227,21 @@ def main(argv=None) -> int:
                         "so an edge is worth at most 1.0 against a disappearance "
                         "cost of 2.0 -- scale it up to make links pay.")
     p.add_argument("--ilp-division", type=float, default=None,
-                   help="Cost of a fork. Reference 1.2; 0.8 and 1.6 both lose.")
+                   help="Cost of a fork. INERT at any value >= 1.0, so the "
+                        "shipped 1.2 means prune_dp never emits a fork at all "
+                        "and every division we score comes from "
+                        "add_safe_divisions downstream. Proof: a fork is taken "
+                        "iff w_div + g2 < 0 where "
+                        "g = edge_weight*p + (on[c] - w_app) - free[c]; with "
+                        "APPEARANCE_WEIGHT 0.0, EDGE_WEIGHT -1.0 and "
+                        "free[c] = min(on[c], base) <= on[c], that is g >= -p "
+                        ">= -1, so the branch is unreachable for any input at "
+                        "w_div >= 1. Confirmed: 1.2 and 1.6 return bit-identical "
+                        "metrics. Only below 1.0 does it move anything (0.8 "
+                        "gives divJ 0.0902 -> 0.0939, about four divisions, and "
+                        "+0.0004 of score, i.e. noise). The earlier help here "
+                        "said \"0.8 and 1.6 both lose\", which was measured "
+                        "against the tracksdata SOLVER, not prune_dp.")
     p.add_argument("--no-gaps", action="store_true",
                    help="Skip single-frame gap closing, which the reference's "
                         "ablation prices at +0.0004 once a solver picks topology.")
