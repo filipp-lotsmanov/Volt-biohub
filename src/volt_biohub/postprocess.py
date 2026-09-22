@@ -31,6 +31,8 @@ micrometres on the isotropic 1.625 um grid.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
@@ -321,6 +323,29 @@ def _self_rise(node: int, t: int, pos, parents, intensity, lag: int = 2):
     return float(now / before)
 
 
+# Diagnostic only: `VOLT_DIV_DUMP=<path>` makes `add_safe_divisions` append one
+# row per *admitted candidate* — every fork that survived all four structural
+# gates — with its features, its rank under the shipped ordering and whether the
+# per-frame cap let it through. This exists because two claims in CLAUDE.md are
+# in tension: that the caps bind and out-rank the true forks, and that scaling
+# them by 1.25x measured neutral. Both cannot be true, and the pool has never
+# been looked at directly. Writing is append-only and costs nothing when unset,
+# so it can stay in the tree as the artifact behind whichever claim survives.
+_DIV_DUMP_CALL = 0
+
+
+def _div_dump_rows(path, rows):
+    new = not os.path.exists(path)
+    with open(path, "a") as fh:
+        if new:
+            fh.write(
+                "call,t,n_props,frame_cap,global_cap,rank,accepted,rank_score,"
+                "d_par,d_sis,d_exist,symmetry,diverge,has_grandchildren,cand_k,"
+                "pz,py,px,cz,cy,cx,hz,hy,hx\n"
+            )
+        fh.writelines(rows)
+
+
 def add_safe_divisions(
     coords_per_t: list[np.ndarray],
     links_per_t: list[list[tuple[int, int, float]]],
@@ -335,6 +360,7 @@ def add_safe_divisions(
     intensity=None,
     rise_weight: float = 0.0,
     require_grandchildren: bool = True,
+    n_cand: int = 1,
 ):
     """Attach a second daughter, gated structurally rather than by distance alone.
 
@@ -360,7 +386,26 @@ def add_safe_divisions(
     Caps are per frame and per video because a fork in an annotated region is a
     division false positive, and over-detection is the one place the metric
     taxes it.
+
+    *n_cand* is how many of the nearest orphans are considered, and it is the
+    one division knob measured to have headroom. The mutual-nearest rule takes
+    the **single** nearest orphan to the existing child, so a spurious
+    detection nearer than the true sister makes her unproposable by any gate --
+    a selection rule, not a threshold, which is why every gate sweep came back
+    empty. Two measurements say widening it is nearly free: the per-frame cap
+    holds a median of 1 candidate against a cap of 2 and binds in only 12.8 %
+    of frames (`scripts/division_candidate_audit.py`), and only ~1 % of emitted
+    forks are ever charged as FP because forks outside annotated regions are
+    ignored. So the term is recall-limited, and a candidate that loses is
+    usually free while one that wins is a full TP. Each extra candidate still
+    has to pass every gate, and `claimed` keeps a daughter from being taken
+    twice.
     """
+    global _DIV_DUMP_CALL
+    dump_path = os.environ.get("VOLT_DIV_DUMP")
+    if dump_path:
+        _DIV_DUMP_CALL += 1
+
     ts, pos, edges, _ = _flatten(coords_per_t, links_per_t)
     if len(pos) == 0:
         return coords_per_t, links_per_t
@@ -388,6 +433,7 @@ def add_safe_divisions(
         frame_cap = max(1, round(len(singles) * frame_frac))
 
         props = []
+        dump_feats: dict[tuple[int, int], tuple] = {}
         for p in singles:
             if not parents.get(p):          # a track's first node may not divide
                 continue
@@ -395,49 +441,92 @@ def add_safe_divisions(
             d_exist = _dist(pos[p], pos[ch], iso_um)
             if d_exist > existing_um:
                 continue
-            # mutual-nearest-orphan: the candidate nearest the EXISTING child
-            _dd, kk = tree.query(pos[ch])
-            cand = orphans[int(kk)]
-            if cand in claimed:
-                continue
-            d_par = _dist(pos[p], pos[cand], iso_um)
-            d_sis = _dist(pos[ch], pos[cand], iso_um)
-            if d_par > parent_um or d_sis > sister_um:
-                continue
-            m = 0.5 * (d_exist + d_par)
-            if m > 0 and abs(d_exist - d_par) / m > symmetry_tau:
-                continue
-            # Forward divergence. The distance half is `diverge_um` and is
-            # measured as already optimal (loosening it to 1.0 and -2.0 both
-            # LOSE, monotonically, divJ 0.0816 -> 0.0691 -> 0.0521 on fold 0).
-            # The structural half -- requiring BOTH daughters to have exactly
-            # one child -- is the part no knob reached, and it demands two
-            # further frames of correct linking on both branches. Absence of a
-            # grandchild is not evidence against a division, so
-            # `require_grandchildren=False` treats divergence as evidence only
-            # when it is available rather than as a precondition.
-            g1, g2 = children.get(ch, []), children.get(cand, [])
-            if len(g1) > 1 or len(g2) > 1:
-                continue
-            if len(g1) == 1 and len(g2) == 1:
-                if _dist(pos[g1[0]], pos[g2[0]], iso_um) - d_sis < diverge_um:
+            # The orphans nearest the EXISTING child. k=1 is the reference's
+            # mutual-nearest rule and stays the default. Above 1 this is a
+            # *fallback*, not a multi-propose: the first candidate to clear
+            # every gate wins and the rest are dropped, so a parent can still
+            # gain at most one second daughter and no node can reach
+            # out-degree 3 (which the scorer silently truncates by edge id).
+            _dd, kk = tree.query(pos[ch], k=min(n_cand, len(orphans)))
+            for cand_k in np.atleast_1d(kk):
+                # query pads with len(orphans) once it runs out of neighbours
+                if int(cand_k) >= len(orphans):
                     continue
-            elif require_grandchildren:
-                continue
-            rise_term = 0.0
-            if rise_weight and intensity is not None:
-                r = _self_rise(p, t, pos, parents, intensity)
-                if r is not None:
-                    rise_term = rise_weight * r
-            props.append((d_par + 0.15 * d_sis + rise_term, p, cand))
+                cand = orphans[int(cand_k)]
+                if cand in claimed:
+                    continue
+                d_par = _dist(pos[p], pos[cand], iso_um)
+                d_sis = _dist(pos[ch], pos[cand], iso_um)
+                if d_par > parent_um or d_sis > sister_um:
+                    continue
+                m = 0.5 * (d_exist + d_par)
+                if m > 0 and abs(d_exist - d_par) / m > symmetry_tau:
+                    continue
+                # Forward divergence. The distance half is `diverge_um` and is
+                # measured as already optimal (loosening it to 1.0 and -2.0
+                # both LOSE, monotonically, divJ 0.0816 -> 0.0691 -> 0.0521 on
+                # fold 0). The structural half -- requiring BOTH daughters to
+                # have exactly one child -- is the part no knob reached, and it
+                # demands two further frames of correct linking on both
+                # branches. Absence of a grandchild is not evidence against a
+                # division, so `require_grandchildren=False` treats divergence
+                # as evidence only when it is available rather than as a
+                # precondition. This clause is also what makes the fallback
+                # work: a duplicate detection of the existing child sits
+                # nearest and has no child of its own, so it fails here and the
+                # true sister behind it gets her turn.
+                g1, g2 = children.get(ch, []), children.get(cand, [])
+                if len(g1) > 1 or len(g2) > 1:
+                    continue
+                if len(g1) == 1 and len(g2) == 1:
+                    if _dist(pos[g1[0]], pos[g2[0]], iso_um) - d_sis < diverge_um:
+                        continue
+                elif require_grandchildren:
+                    continue
+                rise_term = 0.0
+                if rise_weight and intensity is not None:
+                    r = _self_rise(p, t, pos, parents, intensity)
+                    if r is not None:
+                        rise_term = rise_weight * r
+                rank_score = d_par + 0.15 * d_sis + rise_term
+                props.append((rank_score, p, cand))
+                if dump_path:
+                    dz = (_dist(pos[g1[0]], pos[g2[0]], iso_um) - d_sis
+                          if len(g1) == 1 and len(g2) == 1 else float("nan"))
+                    dump_feats[(p, cand)] = (
+                        rank_score, d_par, d_sis, d_exist,
+                        abs(d_exist - d_par) / m if m > 0 else 0.0, dz,
+                        int(len(g1) == 1 and len(g2) == 1),
+                        pos[p], pos[cand], pos[ch], int(cand_k),
+                    )
+                break
 
-        for _s, p, cand in sorted(props)[:frame_cap]:
+        ranked = sorted(props)[:frame_cap]
+        added_before = set(added)
+
+        for _s, p, cand in ranked:
             if len(added) >= global_cap or cand in claimed:
                 continue
             added.add((p, cand))
             claimed.add(cand)
             children[p].append(cand)
             parents.setdefault(cand, []).append(p)
+
+        if dump_path:
+            accepted_now = added - added_before
+            rank_of = {(q, c): r for r, (_s, q, c) in enumerate(sorted(props))}
+            rows = []
+            for (q, c), f in dump_feats.items():
+                sc, dp, ds, de, sym, dz, hasg, pp, pc, ph, ck = f
+                rows.append(
+                    f"{_DIV_DUMP_CALL},{t},{len(props)},{frame_cap},{global_cap},"
+                    f"{rank_of[(q, c)]},{int((q, c) in accepted_now)},{sc:.4f},"
+                    f"{dp:.4f},{ds:.4f},{de:.4f},{sym:.4f},{dz:.4f},{hasg},{ck},"
+                    f"{pp[0]:.2f},{pp[1]:.2f},{pp[2]:.2f},"
+                    f"{pc[0]:.2f},{pc[1]:.2f},{pc[2]:.2f},"
+                    f"{ph[0]:.2f},{ph[1]:.2f},{ph[2]:.2f}\n"
+                )
+            _div_dump_rows(dump_path, rows)
 
     return _unflatten(ts, pos, edges | added, n_frames)
 

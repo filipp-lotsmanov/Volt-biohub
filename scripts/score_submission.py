@@ -230,6 +230,18 @@ def main(argv=None) -> int:
     p.add_argument("--div-global-frac", type=float, default=None,
                    help="Cap on forks as a fraction of edges. A blunt count limit: "
                         "it drops candidates by order, not by quality.")
+    p.add_argument("--div-n-cand", type=int, default=None,
+                   help="How many of the nearest orphans to try as the second "
+                        "daughter, as a FALLBACK: the first to clear every gate "
+                        "wins, so the pool size and out-degree are unchanged. "
+                        "1 is the reference's mutual-nearest rule. The measured "
+                        "case for raising it: the per-frame cap holds a median "
+                        "of 1 candidate against a cap of 2 and binds in only "
+                        "12.8 % of frames, every true fork in the pool already "
+                        "ranks first and is accepted (6/6), and ~1 % of emitted "
+                        "forks are charged as FP at all -- so the term is "
+                        "recall-limited and the single-nearest rule, not any "
+                        "threshold, is what keeps the true sister out.")
     p.add_argument("--div-parent-um", type=float, default=None)
     p.add_argument("--div-sister-um", type=float, default=None)
     p.add_argument("--div-no-grandchildren", action="store_true",
@@ -338,6 +350,7 @@ def main(argv=None) -> int:
                 "frame_frac": args.div_frame_frac,
                 "parent_um": args.div_parent_um,
                 "sister_um": args.div_sister_um,
+                "n_cand": args.div_n_cand,
                 "rise_weight": args.div_rise_weight,
                 # False is meaningful here, so it cannot ride the
                 # `v is not None` filter as a plain flag default.

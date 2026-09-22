@@ -1718,19 +1718,79 @@ as cleanly as the first.
 | symmetry τ | 0.6 → 0.75 (2026-09-18) | rejected **zero** candidates |
 | parent / sister distance | widened to 11.0 / 18.0 (2026-09-18) | loses |
 
-**What is left is the caps picking by a ranking that cannot separate**, and the
-divergence sweep already demonstrated that mechanism rather than merely suggesting it:
-loosening the gate hands *more* candidates to the same fixed cap, and divJ fell
-monotonically, which can only happen if false forks outrank true ones. Raising the caps
-would admit more forks under the same bad ordering, which is why 2026-09-18's
-`divcap125` arm measured slightly negative and why it does not need re-running.
+~~**What is left is the caps picking by a ranking that cannot separate.**~~
+~~**So the division term is stuck at ~0.095 without a NEW FEATURE, and this is now a
+closed line rather than an open lever.**~~ **RETRACTED 2026-09-22 — the cap does not
+bind, the ranking is not the constraint, and the reasoning that closed this line was
+wrong.** It rested on two measurements that cannot both be true, and I never noticed the
+contradiction: loosening the divergence gate lost *monotonically* (divJ 0.0816 → 0.0521),
+which requires false forks out-ranking true ones under a **binding** cap, while scaling
+both caps by 1.25× measured **neutral** (divJ 0.0822 → 0.0800), which says the cap
+barely binds at all. Nobody had looked at the pool the ranking ranks.
 
-**So the division term is stuck at ~0.095 without a NEW FEATURE, and this is now a
-closed line rather than an open lever.** The audit's 11 admissible FNs are real and they
-are admitted — they simply lose the cap. The only fork feature ever measured to separate
-is the parent's two-frame intensity *drop* (AUC 0.632), already measured at +0.0008
-alone and subsumed by the blend. Anything further here needs a genuinely new signal —
-nuclear shape, or a learned fork classifier — not another threshold.
+**`VOLT_DIV_DUMP` + `scripts/division_candidate_audit.py` now measure it directly.** One
+row per admitted candidate — every fork clearing all four structural gates — labelled
+against GT (parent within 7 µm at ±1 frame *and* both daughters matching in either
+pairing). On the 6 division-richest fold-0 samples at the best configuration:
+
+| | |
+|---|---|
+| frames holding candidates | 164 |
+| frames where `n_props > frame_cap` | **21 (12.8 %)** |
+| median `n_props` / `frame_cap` | **1.0 / 2.0** |
+| candidates accepted | **197 of 237 (83.1 %)** |
+| **true forks accepted** | **6 of 6, every one at rank 0** |
+| true forks lost to the frame cap | **0** |
+| true forks lost to the global cap | **0** |
+
+**When a true fork is in the pool it ranks FIRST and is accepted.** The shipped ordering
+scores AUC **0.531** over the admitted pool — no discriminative power — which is not a
+problem to fix but a knob with nothing to do. The pool simply does not *contain* the true
+forks, so "admissible but out-ranked" was the wrong diagnosis of the right observation.
+
+**And that resolves the contradiction rather than merely replacing it.** With a
+non-binding cap and 83 % acceptance, loosening a gate adds candidates that are then
+*accepted* with no ranking filter in front of them — so the divergence sweep's monotone
+fall is exactly what a non-binding cap predicts, and it never was evidence about the
+ranking.
+
+**What the gate sweeps could not reach is a SELECTION RULE, not a threshold.**
+`tree.query(pos[ch])` takes the **single** nearest orphan to the existing child. A
+spurious detection nearer than the true sister therefore makes her unproposable by any
+gate at any width — which is why every gate came back empty *and* why the earlier FN
+audit found 11 structurally admissible FNs that were nevertheless never admitted. Those
+two findings were never in conflict; both describe a pool that is missing its candidates.
+
+**The metric says over-proposing here is nearly free**, which is what makes this worth a
+knob: only **40 of 4,053** emitted forks are charged as FP at all, because forks outside
+annotated regions are ignored. So the division term is *recall*-limited, a losing
+candidate usually costs nothing and a winning one is a full TP.
+
+`--div-n-cand` implements it as a **fallback**, deliberately not a multi-propose: the
+first of the k nearest orphans to clear every gate wins and the rest are dropped, so the
+pool size and the out-degree are unchanged and no node can reach out-degree 3 (which the
+scorer truncates silently, by edge id). The mechanism has a test: a duplicate detection
+of the existing child sits nearest and has no child of its own, so it fails the
+divergence clause and the true sister behind it gets her turn — `n_cand=1` finds no fork
+in that fixture and `n_cand=2` finds the right one. **Launched on fold 0, not yet
+measured; nothing here licenses a prediction about the score.** Five of my division
+predictions have now been falsified, and the audit above is a measurement of the *pool*,
+not of the outcome.
+
+The only fork feature ever measured to separate is the parent's two-frame intensity
+*drop* (AUC 0.632), already measured at +0.0008 alone and subsumed by the blend. A
+learned fork *classifier* is now a lower priority than it looked, for the same reason:
+ranking is not where the loss is.
+
+**One more signal is unavailable by construction, and it is worth knowing before anyone
+proposes it.** The obvious new feature is the edge head's own probability for the
+divider→orphan pair, mirroring the relink's learned bonus (our biggest post-processing
+win at +0.0073). It cannot be read today: `reference_predict.predict_video` records only
+pairs that **exceeded threshold 0.5 and won the greedy resolution**, so the sparse
+`probs` handed to `probs_as_matrices` contains accepted edges only. The sub-threshold
+divider→orphan probabilities — exactly the ones a fork ranker wants — are discarded
+before post-processing sees them. Recovering them is one argmax per unparented target
+column inside `predict_video`, not a new forward pass.
 
 One counting trap, because the first version of this analysis fell into it: a divider
 with out-degree 1 *necessarily* parents one daughter, so "a daughter already has a
@@ -3288,12 +3348,17 @@ which differs in the whole detector, so one systematic problem cannot take both 
 
 ### What is measured out, so it does not get re-proposed
 
-- **Divisions by gating: closed by elimination.** Every structural gate in
-  `add_safe_divisions` tested individually, none binds (see Status). The caps rank by
-  geometric features measured as non-separating, so more candidates makes it worse. Needs
-  a **new signal** — nuclear shape, or a learned fork classifier — not another threshold.
-  The only separating feature found is the parent's two-frame intensity drop (AUC 0.632),
-  worth +0.0008 and subsumed by the blend.
+- **Divisions by gating: every *threshold* is exhausted, but the line is REOPENED** —
+  the 2026-09-22 pool audit retracts "closed by elimination" (see Status). The caps do
+  **not** bind (median 1 candidate against a cap of 2; 12.8 % of frames over), and every
+  true fork already in the pool ranks first and is accepted (6/6). So a better *ranker*
+  has nothing to do — the pool is missing its candidates, because the mutual-nearest rule
+  proposes only the **single** nearest orphan and a spurious detection nearer than the
+  true sister is unreachable by any gate width. That is a selection rule, not a
+  threshold, which is why every gate sweep came back empty. `--div-n-cand` is the knob;
+  it is launched and unmeasured, and five division predictions have already been
+  falsified, so do not assume it works. Over-proposing is nearly free on this metric:
+  only 40 of 4,053 emitted forks are ever charged as FP.
 - **det_threshold**: exhausted in both directions (0.95 / 0.965 / 0.98 all within noise).
 - **The port inventory**: every remaining component is worth ≤ +0.0015 here against the
   reference's published ≥ +0.005, because their deltas repair a defect we do not have.
@@ -3313,7 +3378,14 @@ which differs in the whole detector, so one systematic problem cannot take both 
 - **A genuinely independent third detector** for the blend. Souping cancels
   checkpoint-selection noise and blending cancels initialisation noise, and the two were
   measured to *add* (+0.0036 for the blend on top of the soup). A third run would extend
-  the second axis, which is the only axis with headroom left.
+  the second axis. The only independent checkpoint on this box is `E7_alltrain` at
+  0.8007 through the identical stack against the pack's 0.8760, so a third member would
+  be 0.076 weaker than the two we have — a poor bet at the blend's measured weight, and
+  the reason this has not been tried.
+- **The division pool, reopened by measurement** (see above). It is the largest single
+  pool left by arithmetic: divJ 0.1020 contributes 0.0102 of the 0.9463, so ~0.09 of
+  score sits behind the term. Unlike every other remaining lever it is not a knob at a
+  measured optimum — it is a candidate-generation rule that has never been varied.
 - **The decision rule for spending a slot.** One clean point per side: the detector-side
   blend transferred at ~81 % (+0.0062 CV → +0.005 LB) and the edge-head-side reference
   path at ~35 % (+0.0346 → +0.012). Weight arms by which side they touch, but treat each
