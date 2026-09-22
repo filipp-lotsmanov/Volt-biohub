@@ -3665,16 +3665,29 @@ which differs in the whole detector, so one systematic problem cannot take both 
   8 → 0.9466 on fold 0), because averaging smooths the map and sisters at p5 5.41 µm merge.
   4 is the operating point. `scripts/soup_checkpoints.py` builds any subset, and
   `shehailrs/…350ep` adds a third *same-run* member for the secondary.
-- ~~**A genuinely independent third detector** for the blend.~~ **Largely closed by
-  measurement 2026-09-22.** Three independent public runs were found and hashed (see the
-  checkpoint inventory), so the material existed — but the first one measured,
-  `pilkwang/biohub-tracking-support-pack-v1`, scores **0.9321 as the secondary against
-  pack50's 0.9463, i.e. −0.0142**. So the detection blend is *sensitive to secondary
-  quality*: its +0.0036 is not "any second model helps", it needs a peer, and an
-  independent-but-weaker checkpoint actively costs. `ftdet` and `norel7` remain untested.
-  Two further constraints make this axis narrow regardless: our own `E7_alltrain` is 0.076
-  weaker through the identical stack, and the **12 h cap** allows only one secondary
-  because each member costs an extra encode (v14 runs ~8.6 h graded).
+- ~~**A genuinely independent third detector** for the blend.~~ **CLOSED BY MEASUREMENT
+  2026-09-22, and not for lack of material.** Three independent public runs were found and
+  hashed (see the checkpoint inventory); two have now been measured in the secondary slot
+  on full fold 0, and both lose badly:
+
+  | secondary | fold 0 | Δ vs pack50 |
+  |---|---|---|
+  | **pack50, souped** | **0.9469** | **+0.0006** |
+  | pack50, raw (shipped) | 0.9463 | — |
+  | `aashishnegi23/cellmot-ft-detector` | 0.9388 | **−0.0075** |
+  | `pilkwang/…support-pack-v1` | 0.9321 | **−0.0142** |
+
+  **So the detection blend needs a PEER, not merely an independent model.** Its measured
+  +0.0036 is not "any second net helps" — an independent-but-weaker checkpoint actively
+  costs, by up to 0.014, and the loss shows up in adjJ, divJ and node recall together
+  (packv1: 0.9238 / 0.0827 / 0.9747), i.e. it degrades the detection map rather than
+  trading terms. `pubfull` and `pack50` are the only two peer-quality checkpoints in
+  public circulation, and we already use both. Extending this axis would mean training a
+  peer ourselves, which is ruled out independently: `E7_alltrain` at 100 epochs is 0.076
+  behind through the identical stack, and their 400 epochs cost 137 GPU-hours.
+  Two further constraints keep it narrow even if a peer appeared: the **12 h cap** allows
+  only one secondary, since each member costs an extra encode and v14 already runs ~8.6 h
+  graded.
 - **The division pool's remaining 80 %** — 99 of 124 GT divisions never become candidates
   at all, and ~0.09 of score sits behind the term. But note what is now *closed* inside it
   (see Status): the ranking does not bind, `n_cand` is measured negative, and the edge head
