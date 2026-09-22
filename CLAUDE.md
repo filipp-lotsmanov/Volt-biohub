@@ -2146,6 +2146,57 @@ how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
+**2026-09-22 — v15 SCORED 0.925, BELOW v14's 0.926. OUR CV HAS BEEN MEASURING
+MEMORISATION SINCE v13, AND THIS IS THE FINDING THAT SHOULD GOVERN THE LAST WEEK.**
+Read by ref: `56466575` = **0.925**, against `56460859` = 0.926. Every submission:
+
+| sub | change | weighted CV | LB | CV Δ | LB Δ |
+|---|---|---|---|---|---|
+| `56426110` v11 | reference path + ILP prune | 0.9270 | 0.920 | — | — |
+| `56432361` v12 | + blend 0.30 | 0.9308 | 0.918 | +0.0038 | −0.002 |
+| `56438177` v13 | + blend 0.15 (retune) | 0.9332 | **0.925** | +0.0024 | **+0.007** |
+| `56460859` v14 | + soup2 primary | 0.9407 | **0.926** | +0.0075 | +0.001 |
+| `56466575` v15 | + soup4 primary, soup3 secondary, edge pair | **0.9480** | **0.925** | +0.0073 | **−0.001** |
+
+**From v13 to v15 our CV rose +0.0148 and the board moved 0.000.** Everything in that span
+is within-run checkpoint averaging plus the edge-head pair — precisely the two classes
+measured at 13 % and ~35 % — and together they delivered nothing. **The last change that
+genuinely moved the board was the blend retune at v13.**
+
+**So the rule is not "discount soup gains by 6×", it is "CV cannot rank these
+configurations at all".** The distinction that survives all five points:
+
+- **Structural / algorithmic changes transfer**: the post-processing stack +0.086 → +0.059
+  (69 %), the reference path + ILP +0.0346 → +0.012 (35 %), the relink learned bonus
+  +0.007 → +0.003 (43 %), the across-run blend +0.0062 → +0.005 (81 %).
+- **Changes to the contaminated checkpoints do not**: souping is 13 % at best and
+  negative in aggregate. Every member trained on all 199 movies including both CV folds,
+  so averaging them sharpens the memorised fit — which our held-out-by-embryo CV cannot
+  see, because for *these* checkpoints it is not held out at all.
+
+**Consequences for the endgame, which revise rule 1 of the plan below rather than
+discard it:**
+
+1. **v14's configuration is our best board score and v15 is not an improvement.** 0.926 vs
+   0.925 is at the board's own display resolution (`scoreTruncationNumDecimals: 3`), so
+   the honest statement is that the two are **indistinguishable on the public 29 %** while
+   CV claims +0.0073 for v15. Given CV is the broken instrument here, prefer v14's
+   simpler configuration.
+2. **"Choose both final submissions on CV" still holds for structural differences and
+   fails for checkpoint-averaging differences.** CV remains the better instrument than a
+   29 % sample that 700 teams have fitted — but only for changes it can actually see.
+   Between two configurations differing *only* in how many checkpoints were averaged, it
+   has no information and the board's 0.001 is noise.
+3. **Do not spend the remaining slots on more soup members.** Task #44 (the pack50 SWA
+   continuation) is **cancelled on this evidence**: it would buy CV and, by the only two
+   data points we have, nothing or less on the board.
+4. **What is left is not score, it is not regressing.** The detector is converged
+   (`E7_alltrain` 70 → 99 epochs bought +0.001), the division term is closed four gate
+   variants deep, the port inventory is exhausted, and the blend axis has no peer-quality
+   material left. At 0.926 the realistic play is the private 71 %, where an honestly
+   held-out pipeline should fare better *relative to* a 729-team pile at exactly 0.947
+   that was tuned against the public 29 %.
+
 **2026-09-22 — THE DIVISION GATES ARE CLOSED, FOUR VARIANTS DEEP, AND THE PATTERN IS THE
 RESULT.** Fillip's notebook flagged `--div-symmetry-tau 0.9` as the only division arm that
 gained (+0.0008 on his fold 0), which is the one variant I had never tested in isolation —
