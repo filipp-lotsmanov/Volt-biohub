@@ -230,6 +230,14 @@ def main(argv=None) -> int:
     p.add_argument("--div-global-frac", type=float, default=None,
                    help="Cap on forks as a fraction of edges. A blunt count limit: "
                         "it drops candidates by order, not by quality.")
+    p.add_argument("--div-orphan-probs", action="store_true",
+                   help="Attach the edge head's DISCARDED probabilities to the "
+                        "division pass. The greedy resolution keeps a pair only "
+                        "if it clears 0.5 and wins the <=1-parent pass, so an "
+                        "unparented target -- exactly what a second daughter is "
+                        "-- reaches post-processing with no learned evidence. "
+                        "Diagnostic for now: it only populates the learned_prob "
+                        "column of VOLT_DIV_REJECT, and changes no decision.")
     p.add_argument("--div-n-cand", type=int, default=None,
                    help="How many of the nearest orphans to try as the second "
                         "daughter, as a FALLBACK: the first to clear every gate "
@@ -343,6 +351,7 @@ def main(argv=None) -> int:
                 "node_weight": args.ilp_node,
                 "edge_weight": args.ilp_edge,
             }.items() if v is not None} or None,
+            div_orphan_probs=args.div_orphan_probs,
             div_kwargs={k: v for k, v in {
                 "symmetry_tau": args.div_symmetry_tau,
                 "diverge_um": args.div_diverge_um,

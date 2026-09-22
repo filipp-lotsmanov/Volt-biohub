@@ -338,7 +338,7 @@ def _div_reject_rows(path, rows):
     new = not os.path.exists(path)
     with open(path, "a") as fh:
         if new:
-            fh.write("call,t,k_rank,reason,d_par,d_sis,d_exist,"
+            fh.write("call,t,k_rank,reason,learned_prob,d_par,d_sis,d_exist,"
                      "pz,py,px,cz,cy,cx,hz,hy,hx\n")
         fh.writelines(rows)
 
@@ -375,6 +375,33 @@ def _div_reject_reason(p, ch, cand, pos, iso_um, d_exist, children, claimed,
     return "pass"
 
 
+def _learned_prob(orphan_prob, offs, t, p, cand):
+    """P(parent = *p*) for orphan *cand*, or NaN when it was not recorded.
+
+    ``orphan_prob`` is keyed by index *within a frame* -- the space
+    ``reference_predict.orphan_parents_per_frame`` hands out -- while this
+    module works in ``_flatten``'s global indices, so ``offs`` is the bridge.
+    Getting this wrong would read another cell's probability and look entirely
+    plausible, which is the failure mode this repo has paid for twice already
+    in coordinate code.
+
+    NaN rather than 0.0 when an entry is missing: absent means "outside the
+    top-k recorded", which is evidence of a low probability but not a measured
+    one, and bucketing unmeasured pairs with confidently-rejected ones would
+    bias the very comparison this column exists for.
+    """
+    if orphan_prob is None or t >= len(orphan_prob):
+        return float("nan")
+    entries = orphan_prob[t].get(cand - offs[t + 1])
+    if not entries:
+        return float("nan")
+    want = p - offs[t]
+    for src, prob in entries:
+        if src == want:
+            return prob
+    return float("nan")
+
+
 def _div_dump_rows(path, rows):
     new = not os.path.exists(path)
     with open(path, "a") as fh:
@@ -402,6 +429,7 @@ def add_safe_divisions(
     rise_weight: float = 0.0,
     require_grandchildren: bool = True,
     n_cand: int = 1,
+    orphan_prob: list[dict[int, list[tuple[int, float]]]] | None = None,
 ):
     """Attach a second daughter, gated structurally rather than by distance alone.
 
@@ -449,7 +477,7 @@ def add_safe_divisions(
     if dump_path or reject_path:
         _DIV_DUMP_CALL += 1
 
-    ts, pos, edges, _ = _flatten(coords_per_t, links_per_t)
+    ts, pos, edges, offs = _flatten(coords_per_t, links_per_t)
     if len(pos) == 0:
         return coords_per_t, links_per_t
 
@@ -559,6 +587,7 @@ def add_safe_divisions(
                         require_grandchildren)
                     reject_rows.append(
                         f"{_DIV_DUMP_CALL},{t},{k_rank},{why},"
+                        f"{_learned_prob(orphan_prob, offs, t, p, c):.6f},"
                         f"{_dist(pos[p], pos[c], iso_um):.4f},"
                         f"{_dist(pos[ch], pos[c], iso_um):.4f},{d_exist:.4f},"
                         f"{pos[p][0]:.2f},{pos[p][1]:.2f},{pos[p][2]:.2f},"

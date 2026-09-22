@@ -240,7 +240,9 @@ def main() -> None:
     print(f"\nlabelled pool -> {out}")
 
     if args.reject is not None and args.reject.exists():
-        rj = pl.read_csv(args.reject)
+        # "nan" has to be declared as null, or polars types learned_prob as str
+        # and every comparison on it fails at the first quantile.
+        rj = pl.read_csv(args.reject, null_values=["nan"])
         rlabels = []
         for call, sub in rj.group_by("call", maintain_order=True):
             idx = int(call[0]) - 1
@@ -257,6 +259,30 @@ def main() -> None:
                       .sort("n", descending=True).iter_rows(named=True)):
                 print(f"  {r['n']:4d}  {r['reason']:<18} "
                       f"median k_rank {r['k_rank']}")
+            if "learned_prob" in rj.columns:
+                # The one signal geometry does not already contain. It has to
+                # separate the ~12 true daughters the d_par and symmetry gates
+                # refuse from the thousands of false candidates those same
+                # gates are holding back -- that is the whole test.
+                blocked = true_rows.filter(pl.col("reason").is_in(["d_par", "symmetry"]))
+                false_blocked = rj.filter(
+                    (pl.col("y") == 0) & pl.col("reason").is_in(["d_par", "symmetry"]))
+                print("\n  learned_prob (edge head, discarded by the greedy pass):")
+                for nm, d in (("true, gate-refused", blocked),
+                              ("true, would pass", true_rows.filter(pl.col("reason") == "pass")),
+                              ("false, gate-refused", false_blocked)):
+                    v = d["learned_prob"].drop_nulls()
+                    if v.len():
+                        print(f"    {nm:<22} n={d.height:5d}  recorded={v.len():5d}  "
+                              f"p50 {v.median():.4f}  p90 {v.quantile(0.9):.4f}")
+                    else:
+                        print(f"    {nm:<22} n={d.height:5d}  recorded=0")
+                both = pl.concat([blocked, false_blocked])
+                a = auc(both["learned_prob"].fill_null(0.0)
+                        .to_numpy().astype(float), both["y"].to_numpy())
+                print(f"    AUC true-vs-false among GATE-REFUSED: {a:.3f}   "
+                      f"(NaN -> 0.0, i.e. outside the recorded top-5)")
+
             reachable = true_rows.filter(pl.col("reason") == "pass")
             print(f"\n  would PASS every gate: {reachable.height}")
             if reachable.height:

@@ -93,15 +93,23 @@ def _open_meta(ds_path: Path, downsample: tuple[int, ...]) -> _Meta:
                  zarr_path=ds_path, image_shape=shape, scale=scale)
 
 
-def to_per_frame(coords: np.ndarray, edges, downsample: tuple[int, int, int],
-                 n_frames: int, iso_um: float):
-    """``(coords, edges)`` -> the ``(coords_per_t, links_per_t, probs)`` triple.
+# 50 of a ~600-way softmax, i.e. the top ~8 % of sources. 5 was the first
+# choice and it was too few to settle anything: the dividing parent fell outside
+# it for 11 of 12 true second daughters, which cannot distinguish "the head
+# carries no division signal" from "the signal sits below the 5th source". At 50
+# an absence is genuine evidence, and the cost is one argpartition per
+# unparented column either way.
+_ORPHAN_TOPK = 50
 
-    Coordinates come back on the **downsampled** grid, which is the space
-    ``volt_biohub.postprocess`` measures distances in (multiplying by
-    *iso_um*), and the submission writer multiplies back out by *downsample*.
-    The probabilities ride alongside the links because
-    :func:`volt_biohub.ilp_link.prune_dp` prices an edge by its probability.
+
+def _per_frame_index(coords: np.ndarray, downsample, n_frames: int):
+    """``(coords_per_t, {global row -> index within its frame})``.
+
+    Shared by :func:`to_per_frame` and :func:`orphan_parents_per_frame` on
+    purpose. Both translate global row ids from :func:`predict_video` into the
+    per-frame indices ``volt_biohub.postprocess`` works in, and two copies of
+    that mapping is exactly the kind of coordinate-space duplication that fails
+    silently rather than loudly.
     """
     down = np.asarray(downsample, dtype=np.float64)
     coords_per_t: list[np.ndarray] = []
@@ -112,6 +120,51 @@ def to_per_frame(coords: np.ndarray, edges, downsample: tuple[int, int, int],
             local[int(gi)] = k
         coords_per_t.append(coords[sel, 1:].astype(np.float64) / down
                             if len(sel) else np.empty((0, 3)))
+    return coords_per_t, local
+
+
+def orphan_parents_per_frame(coords: np.ndarray, raw, downsample,
+                             n_frames: int):
+    """``predict_video``'s raw orphan-parent triples -> one dict per frame pair.
+
+    ``{target index: [(source index, prob), ...]}``, best source first.
+
+    These are the probabilities the greedy resolution throws away. It keeps a
+    pair only if it clears ``cfg.threshold`` (0.5) *and* wins the >=1-parent /
+    <=2-children pass, so a target nobody claimed contributes nothing to the
+    sparse ``probs`` that reaches post-processing -- and an unparented target is
+    precisely what a division's second daughter is. Measured consequence: 19 of
+    25 GT divisions never reach ``add_safe_divisions``' candidate pool, and the
+    two gates that refuse the ones that do (parent distance and symmetry) sit
+    at a 1:664 true:false knee, so geometry cannot separate them. This is the
+    only other signal available, and it costs one argmax per column rather than
+    a second forward pass.
+    """
+    _coords_per_t, local = _per_frame_index(coords, downsample, n_frames)
+    out: list[dict[int, list[tuple[int, float]]]] = [
+        {} for _ in range(max(0, n_frames - 1))]
+    for gi, gj, prob in raw:
+        t = int(coords[gi, 0])
+        if int(coords[gj, 0]) != t + 1 or t >= len(out):
+            continue
+        out[t].setdefault(local[int(gj)], []).append((local[int(gi)], float(prob)))
+    for d in out:
+        for v in d.values():
+            v.sort(key=lambda sp: -sp[1])
+    return out
+
+
+def to_per_frame(coords: np.ndarray, edges, downsample: tuple[int, int, int],
+                 n_frames: int, iso_um: float):
+    """``(coords, edges)`` -> the ``(coords_per_t, links_per_t, probs)`` triple.
+
+    Coordinates come back on the **downsampled** grid, which is the space
+    ``volt_biohub.postprocess`` measures distances in (multiplying by
+    *iso_um*), and the submission writer multiplies back out by *downsample*.
+    The probabilities ride alongside the links because
+    :func:`volt_biohub.ilp_link.prune_dp` prices an edge by its probability.
+    """
+    coords_per_t, local = _per_frame_index(coords, downsample, n_frames)
     links: list[list[tuple[int, int, float]]] = [[] for _ in range(max(0, n_frames - 1))]
     probs: list[dict[tuple[int, int], float]] = [{} for _ in range(max(0, n_frames - 1))]
     for gi, gj, prob, _dist in edges:
@@ -510,6 +563,7 @@ def predict_video(
     downsample: tuple[int, ...] = (1, 4, 4),
     secondary: Secondary | None = None,
     bidir: float = 0.0,
+    orphan_parents: list | None = None,
 ) -> tuple[np.ndarray, list[tuple[int, int, float, float]]]:
     """Run inference on a single video using sliding windows of W frames.
 
@@ -522,6 +576,13 @@ def predict_video(
     coords : np.ndarray
         Shape (N, 4) — columns [t, z, y, x] in original resolution.
     edges : list of (src_idx, tgt_idx, prob, distance) tuples
+
+    If *orphan_parents* is given it is appended to with
+    ``(src_idx, tgt_idx, prob)`` triples for the best few sources of every
+    target the greedy resolution left unparented -- the probabilities that are
+    otherwise discarded here. An out-parameter rather than a third return value
+    so this function stays call-compatible with the verbatim upstream one that
+    ``tests/test_reference_predict.py`` compares it against.
     """
     ds = _open_meta(ds_path, downsample)
     if "0.001" not in ds.quantiles or "0.999" not in ds.quantiles:
@@ -749,6 +810,21 @@ def predict_video(
                 all_edges.append((gi, gj, float(prob), dist))
                 children_count[i] = n_ch + 1
                 parents_count[j] = n_pa + 1
+
+            if orphan_parents is not None and probs.size:
+                # The best few sources for every target the resolution left
+                # unparented. Top-k rather than the argmax alone because a
+                # dividing parent need not be an orphan's single best source:
+                # the column mass is split between two plausible parents, which
+                # is why it fell below the 0.5 threshold and became an orphan.
+                top = min(_ORPHAN_TOPK, n_src)
+                for j in range(n_tgt):
+                    if parents_count.get(j, 0):
+                        continue
+                    col = probs[:, j]
+                    for i in np.argpartition(-col, top - 1)[:top]:
+                        orphan_parents.append(
+                            (int(idx_src[i]), int(idx_tgt[j]), float(col[i])))
 
         del unet_out
 
