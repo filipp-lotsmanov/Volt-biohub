@@ -2146,6 +2146,41 @@ how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
+**2026-09-22 — LINE-FIT SMOOTHING IS WORTH +0.0031 HERE, AND IT IS THE FIRST PORTED
+COMPONENT WHOSE PUBLISHED DELTA ROUGHLY TRANSFERS.** It had no CLI path until today —
+`submit.run` never passed `smooth` or `smooth_kwargs` to `run_all` — so it always ran at
+window 2 / weight 0.8 and had never been checked against our pipeline at all. Turning it
+off, one variable against the 0.9469 souped-secondary baseline on full fold 0:
+
+| | smoothing on | **off** |
+|---|---|---|
+| score | 0.9469 | **0.9438** |
+| adjusted edge Jaccard | 0.9367 | **0.9337** |
+| division Jaccard | 0.1016 | **0.1016 — identical** |
+| node recall | 0.9835 | 0.9833 |
+
+**The whole effect is in adjJ and divJ does not move at all**, which pins the mechanism: it
+relocates node positions along a track without touching topology. Their clean 20-volume
+ablation prices it +0.0072 and we measure +0.0031 — less than half, but the same sign and
+the same order, which **no other ported component has managed**. The ILP went −0.057 →
++0.047 once fed the right graph, gap closing +0.0004 there → +0.008 here, the motion
+relink −0.011 → +0.076, TTA +0.009 → −0.015 → +0.0071 depending on view set and
+contamination. The reason smoothing behaves is that it neither repairs a defect nor
+redistributes between terms — it is a pure geometric refinement, the one operation whose
+value does not depend on what the rest of the pipeline does.
+
+**And it reconciles with this file's own rule that sub-voxel localisation is worthless.**
+At a 7 µm matching tolerance, refining a *correct* detection by a fraction of a voxel
+earns nothing — that stands. Smoothing does something else: it pulls a **several-
+micrometre outlier** back onto its track's line, which can move a node from outside 7 µm
+of its GT match to inside it. That is a match/no-match flip, not a decimal place. The two
+statements were never in tension; the earlier note simply did not distinguish refining a
+good detection from rescuing a bad one.
+
+Operationally this changes nothing that ships — smoothing was always on — but it was
+**unverified and worth 0.003**, so a regression in it would have been invisible, and its
+window and weight are now sweepable for the first time.
+
 **2026-09-22 — THE PUBLIC CHECKPOINT INVENTORY, hashed rather than guessed at. Eight
 distinct architecture-compatible checkpoints exist, from FIVE independent runs, and the
 12 h cap is what decides how many we can use.** Every one is `TemporalUNet3D` + node
