@@ -1996,6 +1996,26 @@ node recall 0.9830, node ratio −0.0350.** One variable each, full fold 0:
 | edge-head ensemble 0.65 (was 0.5) | 0.9450 | 0.9354 | 0.0960 | 0.9822 | −0.0407 | −0.0013 |
 | `min_track_len` 8 (was 6) | 0.9439 | 0.9338 | 0.1008 | 0.9740 | −0.0760 | −0.0024 |
 
+| bidirectional fusion 0.35 (was 0.25) | 0.9459 | 0.9356 | 0.1025 | 0.9833 | −0.0330 | −0.0004 |
+| **exact repeat of the baseline** | **0.9463** | **0.9361** | **0.1020** | **0.9830** | **−0.0350** | **bit-identical** |
+
+**The repeat is the cleanest noise-floor measurement this project has made, and it is
+tighter than the figure on record.** Re-running the baseline with the division dump
+active reproduces **all five metrics exactly**, which establishes two things: the
+`VOLT_DIV_DUMP` instrumentation is a verified no-op on the scoring path, and the
+same-code noise floor is **below 0.0001**. Read that as a lower bound, not a
+replacement for the ±0.0002 already recorded — that figure came from *cross-card*
+comparisons, and node counts genuinely do differ by a few between cards (the
+`field >= pooled` plateau tie, 29,406 against 29,405 on the same video today). What the
+repeat shows is that a handful of tied voxels does not move the weighted aggregate at
+four decimals. So the +0.0006 of the souped secondary and the −0.0004 of bidir 0.35 are
+both above the floor, while remaining small enough to bundle rather than spend a slot on.
+
+**Bidirectional fusion is confirmed at 0.25 under the final configuration.** Under soup2
+alone, 0.25 and 0.35 tied *exactly* (0.9444 both) and the choice rested on fold-1
+agreement; under soup4 with the edge pair the plateau tilts to 0.25 by 0.0004. No change
+to what ships.
+
 **The edge-head ensemble weight now has a clean interior optimum at 0.5** — 0.3 gave
 −0.0006 on the old primary, 0.5 gives +0.0011, 0.65 gives −0.0013. Stop sweeping it.
 
