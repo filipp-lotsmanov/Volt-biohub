@@ -1,33 +1,33 @@
 """Global track linking by integer program, over a learned candidate graph.
 
-**Why this exists, and why it was nearly not built.** On 2026-09-18 this project
-dropped the ILP on the reasoning that the public 0.942-0.948 notebooks "run it and
-then discard its edge set wholesale, keeping only per-pair probabilities as a small
-cost bonus". The description was accurate. The inference was backwards: they
-discard the ILP's edges *by means of* their two-pass Hungarian relink, and an
-independent clean 20-volume held-out ablation of that exact configuration prices
-the two passes in opposite directions —
+**Measured 2026-09-21, and it reverses this module's own premise.** The
+docstring below used to say the +0.037 comes from solving the *raw* candidate
+graph and that running the solver over an already-resolved link set is
+"measured worthless". That is backwards, and it is why our ILP scored 0.8190
+against a geometric relink at 0.8687. Running the reference's own inference
+path (``scripts/predict_unet_transformer.py``, byte-identical to the upstream
+baseline) on the four movies the public notebooks validate on:
 
-    full 0.942 config                       0.8952
-    ILP off (greedy on the candidates)      0.8587   -0.0365
-    motion relink off (ILP edges kept)      0.9066   +0.0114
+    reference detector + edge head + ILP        adjJ 0.9299   FP 38/16/3/20
+    the same, --use-ilp off (greedy head)       adjJ 0.8830   FP 71/29/13/35
+    our own full stack                          adjJ 0.8888
 
-— so the relink is the most harmful stage in their pipeline and the ILP is the
-single largest contributor, by four times the next component. Our own adjusted
-edge Jaccard of 0.858 sits, to three decimals, exactly on their "ILP off" arm.
+The ILP is worth **+0.047 of adjusted edge Jaccard there**, close to the
++0.037 their published ablation claims -- and it is spent on *precision*: edge
+false positives roughly halve while true positives move by single digits, and
+the node count falls 51k -> 42k, which also earns back the node-count
+multiplier. Node recall stays at 0.981, so the over-deletion we measured was
+never inherent to the solver.
 
-**What makes it worth +0.037 is what it decides, not that it is optimal.** A
-Hungarian assignment answers one question per frame pair: given these nodes, which
-pairing is cheapest. The ILP answers a different one: which nodes exist at all,
-which links exist, and where tracks are allowed to start, stop and divide — over
-the whole movie, under one objective. Concretely it drops ~12% of detections, and
-those are the duplicate and spurious peaks that otherwise steal bipartite matches
-from real cells. That is why the same probabilities that *lose* 0.020 when spent
-greedily (see ``edge_head.pair_probs``) win when spent here.
+**What we got wrong is the input.** The reference thresholds the source-softmax
+at 0.5 and resolves greedily to <=1 parent / <=2 children *first*, then hands
+the solver that graph, which therefore only decides what to keep. We handed it
+every pair above a probability threshold and asked it to choose the topology as
+well; with ``node_weight`` at 0.0 a marginal node is then always cheaper to
+delete than to keep, and recall fell to 0.9419.
 
-Not to be confused with the variant that is measured worthless: running an ILP to
-re-assign an already-resolved set of links is -0.001, i.e. noise. The candidate
-graph must be the raw, ungated one.
+:func:`solve` is kept for the raw-graph variant that we measured. :func:`prune`
+is the one that matches the reference.
 """
 
 from __future__ import annotations
@@ -64,6 +64,40 @@ CANDIDATE_THRESHOLD = 0.48
 # one-variable submissions.
 DISAPPEARANCE_WEIGHT_TUNED = 3.0
 CANDIDATE_THRESHOLD_TUNED = 0.44
+
+
+
+def _drop_unselected(coords_per_t, links_per_t):
+    """Delete the nodes the solver did not select, and re-index the links.
+
+    **Not cosmetic.** A node the ILP drops is gone from the reference's graph
+    before any post-processing sees it; if we keep its coordinate and merely
+    strip its edges, gap closing reuses it as a bridge and the division pass
+    adopts it as an orphan, so exactly the detections the solver judged
+    unaffordable come straight back. Measured: returning them scores 0.9056
+    with node ratio +0.272 on the proxy set, against 0.9505 and -0.049 when the
+    same links come from a reference geff whose nodes were already deleted.
+
+    Which nodes are selected needs no separate bookkeeping. Keeping a node
+    costs ``node_weight`` (0.0) and buys nothing unless an edge uses it, while
+    appearance is free -- so an optimal solution selects exactly the endpoints
+    of its chosen edges.
+    """
+    keep = [set() for _ in coords_per_t]
+    for t, links in enumerate(links_per_t):
+        for a, b, _d in links:
+            keep[t].add(a)
+            keep[t + 1].add(b)
+    remap: list[dict[int, int]] = []
+    out_coords = []
+    for t, coords in enumerate(coords_per_t):
+        idx = sorted(keep[t])
+        remap.append({old: new for new, old in enumerate(idx)})
+        arr = np.asarray(coords)
+        out_coords.append(arr[idx] if len(idx) else np.empty((0, 3), dtype=arr.dtype))
+    out_links = [[(remap[t][a], remap[t + 1][b], d) for a, b, d in links]
+                 for t, links in enumerate(links_per_t)]
+    return out_coords, out_links
 
 
 def candidates_from_probs(
@@ -224,3 +258,228 @@ def _solved_edges(solved) -> list[tuple[int, int]]:
             "tracksdata is pre-1.0 and its edge accessor has moved before."
         )
     return list(zip(df[src].to_list(), df[tgt].to_list(), strict=True))
+
+
+def prune(
+    coords_per_t: list[np.ndarray],
+    links_per_t: list[list[tuple[int, int, float]]],
+    probs_per_pair: list[np.ndarray] | None,
+    iso_um: float,
+    *,
+    edge_weight: float = EDGE_WEIGHT,
+    node_weight: float = NODE_WEIGHT,
+    appearance_weight: float = APPEARANCE_WEIGHT,
+    disappearance_weight: float = DISAPPEARANCE_WEIGHT,
+    division_weight: float = DIVISION_WEIGHT,
+    default_prob: float = 0.5,
+):
+    """Solve an **already-resolved** link set, keeping only what pays for itself.
+
+    This is what the reference actually does, and the distinction from
+    :func:`solve` is the whole difference between -0.05 and +0.047 (see the
+    module docstring). Because every node already has at most one parent and
+    two children, the solver cannot re-route anything: it chooses which nodes
+    and edges to keep under the appearance/disappearance/division costs. That
+    is a pure precision filter, and it is why it can cut edge false positives
+    roughly in half while moving true positives by single digits.
+
+    *probs_per_pair* supplies the edge reward. Any link with no probability --
+    a gap-closed or division edge, or a relink run without the edge head --
+    gets *default_prob*, which is deliberately the same 0.5 the reference uses
+    as its admission threshold: unscored links are worth keeping at exactly the
+    margin where a scored one would have been admitted at all.
+    """
+    import polars as pl
+    import tracksdata as td
+
+    n_frames = len(coords_per_t)
+    out: list[list[tuple[int, int, float]]] = [[] for _ in range(max(0, n_frames - 1))]
+    if not any(len(lk) for lk in links_per_t):
+        return coords_per_t, out
+
+    graph = td.graph.InMemoryGraph()
+    for key in ("z", "y", "x"):
+        graph.add_node_attr_key(key, pl.Float64, -999999.0)
+
+    flat: list[dict] = []
+    offsets: list[int] = []
+    for t, coords in enumerate(coords_per_t):
+        offsets.append(len(flat))
+        for c in np.asarray(coords, dtype=np.float64):
+            flat.append({"t": int(t), "z": float(c[0]), "y": float(c[1]), "x": float(c[2])})
+    node_ids = graph.bulk_add_nodes(flat)
+
+    graph.add_edge_attr_key("edge_prob", pl.Float64, 0.0)
+    rows = []
+    for t, links in enumerate(links_per_t):
+        probs = probs_per_pair[t] if probs_per_pair is not None and t < len(probs_per_pair) else None
+        for a, b, _d in links:
+            p = default_prob
+            if probs is not None and probs.size and a < probs.shape[0] and b < probs.shape[1]:
+                p = float(probs[a, b])
+            rows.append({"source_id": node_ids[offsets[t] + a],
+                         "target_id": node_ids[offsets[t + 1] + b],
+                         "edge_prob": p})
+    if not rows:
+        return coords_per_t, out
+    graph.bulk_add_edges(rows)
+
+    solver = td.solvers.ILPSolver(
+        edge_weight=edge_weight * td.EdgeAttr("edge_prob"),
+        node_weight=node_weight,
+        appearance_weight=appearance_weight,
+        disappearance_weight=disappearance_weight,
+        division_weight=division_weight,
+    )
+    _log = logging.getLogger("tracksdata")
+    _prev = _log.level
+    _log.setLevel(logging.ERROR)
+    try:
+        solved = solver.solve(graph)
+    finally:
+        _log.setLevel(_prev)
+
+    back = {nid: k for k, nid in enumerate(node_ids)}
+    frame_of = [r["t"] for r in flat]
+    for src, tgt in _solved_edges(solved):
+        ks, kt = back.get(src), back.get(tgt)
+        if ks is None or kt is None:
+            continue
+        t = frame_of[ks]
+        if frame_of[kt] != t + 1 or t >= len(out):
+            continue
+        a, b = ks - offsets[t], kt - offsets[t + 1]
+        d = float(np.linalg.norm(
+            (np.asarray(coords_per_t[t][a], dtype=np.float64)
+             - np.asarray(coords_per_t[t + 1][b], dtype=np.float64)) * iso_um))
+        out[t].append((a, b, d))
+
+    return _drop_unselected(coords_per_t, out)
+
+
+def prune_dp(
+    coords_per_t: list[np.ndarray],
+    links_per_t: list[list[tuple[int, int, float]]],
+    probs_per_pair: list[np.ndarray] | None,
+    iso_um: float,
+    *,
+    edge_weight: float = EDGE_WEIGHT,
+    node_weight: float = NODE_WEIGHT,
+    appearance_weight: float = APPEARANCE_WEIGHT,
+    disappearance_weight: float = DISAPPEARANCE_WEIGHT,
+    division_weight: float = DIVISION_WEIGHT,
+    default_prob: float = 0.5,
+):
+    """:func:`prune`, solved exactly by dynamic programming instead of an ILP.
+
+    **Why this is not an approximation.** After greedy resolution every node has
+    at most one parent, so the link graph is a *forest*, and tracksdata's
+    formulation is separable over it: with merges disabled its constraints
+    reduce to "a selected node has one incoming edge or appears" and "a selected
+    node has one or two outgoing edges or disappears", and its objective is a
+    sum of per-node and per-edge terms. A selected node therefore costs
+    ``disappearance`` when it has no successor and ``division`` when it has two,
+    an edge pays ``edge_weight x prob``, and nothing couples two different
+    components. That is a textbook tree DP, exact in O(N), and it needs numpy
+    and nothing else.
+
+    That matters beyond elegance. The solver route costs ~15-20 s/video and
+    drags ``tracksdata`` onto the inference path, whose dependency closure is
+    scikit-image, dask, pyarrow, numba, imagecodecs and ``numpy>2`` -- 62 wheels
+    in the public pack, installed over an image whose torch and scipy are built
+    against its own numpy. This costs milliseconds and adds nothing.
+
+    ``tests/test_ilp_dp.py`` pins it against ``prune`` on random forests, which
+    is the only claim worth testing: the two must return the same edge set.
+    """
+    n_frames = len(coords_per_t)
+    out: list[list[tuple[int, int, float]]] = [[] for _ in range(max(0, n_frames - 1))]
+    if not any(len(lk) for lk in links_per_t):
+        return coords_per_t, out
+
+    offs, n = [], 0
+    for c in coords_per_t:
+        offs.append(n)
+        n += len(c)
+
+    # (global source, global target, frame, local a, local b, prob)
+    kids: dict[int, list[tuple[int, float, int, int, int]]] = {}
+    has_parent = np.zeros(n, dtype=bool)
+    for t, links in enumerate(links_per_t):
+        probs = (probs_per_pair[t] if probs_per_pair is not None
+                 and t < len(probs_per_pair) else None)
+        for a, b, _d in links:
+            p = default_prob
+            if probs is not None and probs.size and a < probs.shape[0] and b < probs.shape[1]:
+                p = float(probs[a, b])
+            gs, gt = offs[t] + a, offs[t + 1] + b
+            kids.setdefault(gs, []).append((gt, p, t, a, b))
+            has_parent[gt] = True
+
+    w_app, w_dis, w_div = appearance_weight, disappearance_weight, division_weight
+
+    def solve(root: int):
+        """Iterative post-order; recursion would blow the stack on a 100-frame track."""
+        on: dict[int, float] = {}
+        free: dict[int, float] = {}
+        pick: dict[int, list] = {}
+        stack = [(root, False)]
+        while stack:
+            v, expanded = stack.pop()
+            if not expanded:
+                stack.append((v, True))
+                for ch in kids.get(v, ()):
+                    stack.append((ch[0], False))
+                continue
+            children = kids.get(v, ())
+            base = sum(free[c[0]] for c in children)
+            best = w_app + node_weight + w_dis + base   # v selected, no successor
+            chosen: list = []
+            # `on[c]` charges the appearance cost, because a selected node
+            # either has an incoming edge or appears. A child its parent
+            # connects to has the edge, so it does not appear -- subtract the
+            # term back out. Exactly zero at the reference's appearance_weight
+            # of 0.0, and wrong by w_app per edge at any other setting, which
+            # is a knob we expose.
+            gains = [(edge_weight * p + (on[c] - w_app) - free[c], (c, p, t, a, b))
+                     for c, p, t, a, b in children]
+            if gains:
+                g1, e1 = min(gains, key=lambda x: x[0])
+                cand = w_app + node_weight + base + g1
+                if cand < best:
+                    best, chosen = cand, [e1]
+                if len(gains) >= 2:
+                    two = sorted(gains, key=lambda x: x[0])[:2]
+                    cand2 = (w_app + node_weight + w_div + base
+                             + two[0][0] + two[1][0])
+                    if cand2 < best:
+                        best, chosen = cand2, [two[0][1], two[1][1]]
+            on[v] = best
+            pick[v] = chosen
+            free[v] = min(best, base)
+        return free, on, pick
+
+    for root in range(n):
+        if has_parent[root] or root not in kids:
+            continue
+        free, on, pick = solve(root)
+        # Top-down reconstruction. The flag is the whole subtlety: a child that
+        # its parent did NOT connect to is still free to start its own track,
+        # because appearance is free -- dropping the parent edge must not drop
+        # the subtree with it.
+        stack = [(root, on[root] <= free[root])]
+        while stack:
+            v, is_on = stack.pop()
+            taken: set[int] = set()
+            if is_on:
+                for c, _p, t, a, b in pick[v]:
+                    d = float(np.linalg.norm(
+                        (np.asarray(coords_per_t[t][a], dtype=np.float64)
+                         - np.asarray(coords_per_t[t + 1][b], dtype=np.float64)) * iso_um))
+                    out[t].append((a, b, d))
+                    taken.add(c)
+                    stack.append((c, True))
+            for c in kids.get(v, ()):
+                if c[0] not in taken:
+                    stack.append((c[0], on[c[0]] <= free[c[0]]))
+    return _drop_unselected(coords_per_t, out)

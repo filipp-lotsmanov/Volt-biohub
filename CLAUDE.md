@@ -8,9 +8,9 @@ Two goals, score first where they conflict: **top-7 leaderboard placement**, and
 repo that shows engineering judgement. The write-up is assembled in the final week
 from artifacts accumulated along the way — don't stop to write essays mid-competition.
 
-**Deadlines** (all 23:59 UTC). Started 2026-06-29. **2026-09-22: entry deadline *and*
-team-merger deadline** — the team must exist before it, and nothing recovers a miss.
-**2026-09-29: final submission.** Features freeze ~Sept 22.
+**Deadlines** (all 23:59 UTC). Started 2026-06-29. 2026-09-22 was the entry and
+team-merger deadline; **the team ("Volt") exists, so that gate is closed** — stop
+raising it. **2026-09-29: final submission.** Features freeze ~Sept 22.
 
 **Prizes**, top 7: $18k / $12k / $8k / $6k / $6k / $5k / $5k.
 
@@ -637,6 +637,15 @@ with no error bars. So:
 - Unusually for a Kaggle competition, the **leaderboard is a genuine third embryo** and
   therefore real information. Still don't search on it, but weigh it more than you
   normally would against a 2-fold CV.
+- **BUT THE PUBLIC LEADERBOARD IS ONLY 29 % OF THE TEST SET** (verbatim on the
+  leaderboard page; Kaggle's own config carries `leaderboardPercentage: 29`). The final
+  standing uses the other **71 %**, which nobody has ever seen. Everything this file
+  calls "the leaderboard" is a 29 % sample, and `usesSynchronousReruns: true` means both
+  scores are computed at rerun with only the public part revealed. Two consequences that
+  should govern the endgame: a change worth less than the public LB's own resolution is
+  not evidence of anything, and **our held-out CV is a better predictor of the private
+  71 % than the public LB is** — because the public LB is what 862 teams have been
+  fitting to. Kaggle also states plainly that "the final standings may be different".
 
 **The local `test/` folder is fake** — now proven, not inferred. It holds exactly **4
 samples, byte-identical to their train counterparts** (`44b6_0113de3b`, `44b6_0b24845f`,
@@ -694,8 +703,10 @@ than silently extracting nothing.
 | `src/volt_biohub/detection_targets.py` | 452 | Gaussian targets, PU mask, pseudo-labels, detection loss | ours; keep |
 | `src/volt_biohub/linking.py` | 195 | Hungarian linking in µm, ≤2 children, graph build | ours; keep |
 | `src/volt_biohub/detectors.py` | 132 | DoG and score-map front-ends behind one signature | ours; keep |
-| `src/volt_biohub/postprocess.py` | 546 | two-pass relink, gap closing, safe divisions, filter, smoothing | **+0.076; the score lives here** |
-| `src/volt_biohub/edge_head.py` | 174 | tracksdata-free port of the transformer edge linker | measured worse; kept as the artefact |
+| `src/volt_biohub/postprocess.py` | 620 | relink (now bypassed), gap closing, safe divisions, filter, smoothing | **the division term lives here** |
+| `src/volt_biohub/edge_head.py` | 217 | our port of the transformer edge linker | **superseded** — loses 0.04 against the copy below |
+| `src/volt_biohub/reference_predict.py` | 676 | the upstream inference path verbatim, tracksdata removed | **this is the detector+linker now** |
+| `src/volt_biohub/ilp_link.py` | 480 | ILP over the resolved graph; `prune_dp` solves it exactly by tree DP | ours; keep |
 | `src/volt_biohub/scoring.py` | 165 | video-level detect→link→score, shared by train and CLI | ours; keep |
 | `src/volt_biohub/models/temporal_unet.py` | 141 | `TemporalUNet3D` | main detector |
 | `src/volt_biohub/models/simple_node_transformer.py` | 210 | pairwise edge scorer | late-stage option |
@@ -1311,8 +1322,8 @@ and `240247@buas.nl` / `240843@buas.nl` are verified on the university accounts
 deliberately, since `/root` is the container's ephemeral overlay.
 
 Not done: `scripts/make_splits.py` as a committed script (a deliberate
-`dataset_splits.json` now exists beside the data, but from a throwaway script), any
-modelling with a CV number attached, Kaggle team.
+`dataset_splits.json` now exists beside the data, but from a throwaway script). The
+Kaggle team exists — see Gate 0.
 
 **2026-09-16 — THE LOSS/METRIC ANTI-CORRELATION IS DEAD. It was the selection metric
 all along.** This file has called it "the single most important open problem" since
@@ -1349,6 +1360,926 @@ Consequences:
 `--save-every 5`. Split 4 was added as an all-train split (199 samples) matching the
 reference recipe; its `test` list is a subset of train and exists only to feed the cheap
 per-epoch print, which we do not select on.
+
+**2026-09-21 (later) — THE CHECKPOINT THE WHOLE FIELD FORKS IS THE ARGMAX OF NOISE,
+and averaging it with its own successor is free.** Read out of the pack's own
+`history.csv`: over epochs 370–400 their `validation_score` oscillates between
+**0.9696 and 0.9781 with no trend**, and that score is `validation_acc ×
+validation_recall` with `validation_acc` pinned at 0.9999 — i.e. effectively
+edge-matrix recall, the quantity this project measured as worthless for selection
+(2026-09-16). So `edge_predictor_best.pth` at epoch 381 is the maximum of a noisy
+sequence, not the best model. `checkpoint_last.pth` ships in the same directory at
+epoch **400** (pack50's at **402**) and **all 136 tensors differ**; nobody had looked.
+
+**CONFIRMED ON BOTH FULL FOLDS: weighted LOEO CV 0.9332 -> 0.9407, +0.0075, and every
+term moves the same way on both embryos.**
+
+| | fold 0 shipped | **fold 0 soup** | fold 1 shipped | **fold 1 soup** |
+|---|---|---|---|---|
+| score | 0.9361 | **0.9428** | 0.9168 | **0.9290** |
+| adjJ | 0.9279 | **0.9333** | 0.9104 | **0.9207** |
+| divJ | 0.0816 | **0.0950** | 0.0641 | **0.0833** |
+| node recall | 0.9789 | **0.9826** | 0.9758 | **0.9830** |
+| node ratio | -0.0391 | -0.0163 | -0.2247 | -0.1671 |
+
+0.9333 is the highest adjusted edge Jaccard measured in this project. Three properties
+make this the best change of the day rather than merely the biggest: it moves the edge
+term **and** the division term **and** node recall together, which is a better detector
+rather than a redistribution between terms; it is **detector-side**, so by the
+contamination asymmetry already measured our CV *understates* it rather than inflating
+it; and it costs **nothing** at inference and needs **no code change** — only a new
+weights-dataset version, since the kernel resolves `volt-weights` unpinned.
+
+**Souping and blending are complementary, not substitutes — measured.** Turning the
+cross-run blend off *under* the soup gives 0.9392 against 0.9428 with it, so the blend
+still earns **+0.0036** on top of souping (adjJ 0.9298 vs 0.9333, recall 0.9809 vs
+0.9826). That is the decomposition it implies: **within-run averaging cancels
+checkpoint-selection noise, across-run blending cancels initialisation and data-order
+noise.** Different noise sources, so they add — and the secondary encode is therefore
+earning its ~20 % of detector runtime rather than being dead weight. Keep both.
+
+**The soup un-gates ONE of the two edge-side arms, and an earlier version of this
+paragraph called it for both on the strength of the first arm to report — which was
+wrong.** Everything on top of the soup at blend 0.15 (baseline 0.9428):
+
+| arm | score | adjJ | divJ | vs old operating point |
+|---|---|---|---|---|
+| **secondary edge head w=0.5** | **0.9439** | **0.9350** | 0.0891 | +0.0011 against +0.0001 — **10×** |
+| bidirectional fusion w=0.15 | 0.9433 | 0.9343 | 0.0898 | +0.0005 against +0.0008 — flat |
+
+adjJ 0.9350 is the highest measured in this project. So the division headroom the soup
+restores is spendable by the *model ensemble* and not by the *direction ensemble*, and
+the honest reading is that the two arms were never one phenomenon: averaging two
+independently trained heads adds information, while averaging a head against its own
+transpose only adds an agreement test, and an agreement test has nothing to spend extra
+headroom on.
+
+The blend weight did **not** move under the new primary, which is worth noting because it
+moved twice before when an upstream component changed: 0.00 → 0.9392, **0.15 → 0.9428**,
+0.25 → 0.9401. A clean interior optimum in the same place.
+
+**AND THE TWO ARMS ARE EXACTLY ADDITIVE, WITH AN INTERACTION ON THE DIVISION TERM I
+WOULD NOT HAVE PREDICTED.** Both together, with bidir at its own measured optimum of
+0.25 rather than the 0.15 tested first:
+
+| fold 0 | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| soup + blend 0.15 | 0.9428 | 0.9333 | 0.0950 | 0.9826 |
+| + edge head 0.5 | 0.9439 | 0.9350 | 0.0891 | 0.9820 |
+| + bidir 0.15 | 0.9433 | 0.9343 | 0.0898 | 0.9834 |
+| **+ both, bidir 0.25** | **0.9454** | **0.9352** | **0.1025** | **0.9839** |
+
++0.0011 and +0.0015 sum to the measured +0.0026, so they cancel *different* noise rather
+than the same noise twice.
+
+**And the division story was a one-weight artefact — corrected.** Sweeping fusion on the
+soup shows its effect on divJ is *weight-dependent*, not a fixed cost:
+
+| bidir weight on the soup | score | adjJ | divJ |
+|---|---|---|---|
+| 0 | 0.9428 | 0.9333 | 0.0950 |
+| 0.15 | 0.9433 | 0.9343 | 0.0898 |
+| **0.25** | **0.9444** | 0.9344 | **0.1000** |
+
+**Swept to both sides, and the optimum is a PLATEAU rather than a spike:**
+
+| bidir weight on the soup | 0 | 0.15 | **0.25** | **0.35** | 0.50 |
+|---|---|---|---|---|---|
+| score | 0.9428 | 0.9433 | **0.9444** | **0.9444** | 0.9422 |
+| divJ | 0.0950 | 0.0898 | 0.1000 | 0.1008 | 0.0947 |
+
+At 0.15 it sells divisions; from 0.25 to 0.35 it **buys** them and is worth +0.0016
+alone; by 0.50 it is below w=0. So the earlier claim that "both edge-side arms buy the
+edge term by selling divisions, a roughly fixed fraction of forks suppressed" was drawn
+from a single weight and is wrong. The mechanism that fits all of it: a harmonic mean
+weighted further toward the reverse pass is a **stronger agreement test**, and a dividing
+parent's two daughters each *independently* agree with it — each daughter's own best
+parent is the divider — so a stronger test preserves forks while killing spurious single
+links. A weak test only sharpens the dominant assignment, and that is what suppresses a
+second child; too strong a test starts rejecting real links on both sides.
+
+The flatness matters methodologically: a two-point plateau with symmetric falloff is
+what a real optimum looks like, where fold-0 noise would give a jagged profile. 0.25 is
+kept because it is the value confirmed in combination on **both** folds.
+
+Note also that bidir's own optimum on fold 0 is **0.25** (0.9375) rather than 0.15
+(0.9369) at the shipped operating point — the first sweep bracketed it too narrowly and
+the 0.40 arm was killed early for cards, so the upper side is still unmeasured.
+
+**CONFIRMED ON BOTH FOLDS, with the same delta on each.** Fold 1 gives 0.9316 against
+the soup's 0.9290 — **+0.0026**, identical to fold 0's +0.0026, which is what a real
+effect looks like rather than a fold artefact:
+
+| | fold 0 | fold 1 | **weighted** |
+|---|---|---|---|
+| soup + blend 0.15 (submitted as kernel v14) | 0.9428 | 0.9290 | 0.9407 |
+| **+ edge head 0.5 + bidir 0.25** | **0.9454** | **0.9316** | **0.9433** |
+
+**+0.0101 over this morning's 0.9332.** One caveat to state rather than hide: the
+division term moves in *opposite* directions on the two folds (+0.0075 on fold 0,
+−0.0064 on fold 1) while the net is the same. Fold 1 holds only 26 divisions against
+fold 0's ~125, so fold 0 is the division measurement to trust and fold 1's divJ is
+close to noise at that n. Individually every non-soup increment is still ≤ +0.0015, an order of magnitude
+below the reference's published deltas for the same components — their deltas repair a
+defect we do not have — but in combination they are worth having.
+
+Proxy set (the 4 movies the public notebooks validate on), everything else matched,
+same card:
+
+| primary | score | adjJ | divJ | node recall | ratio |
+|---|---|---|---|---|---|
+| epoch 381 — `best`, what the field ships | 0.9457 | 0.9314 | 0.1429 | 0.9728 | −0.045 |
+| epoch 400 — `checkpoint_last` | 0.9409 | 0.9298 | 0.1111 | 0.9845 | +0.065 |
+| **soup(381, 400)** | **0.9759** | **0.9359** | 0.4000 | 0.9832 | +0.048 |
+
+**The control is the point: epoch 400 alone is WORSE than 381, so the gain is
+averaging cancelling selection noise, not a later checkpoint being better.** Read the
+magnitude honestly, though — most of that 0.030 is the division term on ~4 GT
+divisions, which is near-binary at this n. The defensible claim is **adjJ +0.0045 with
+node recall +0.010 at zero inference cost**, and a full fold is what settles it. A soup
+is strictly cheaper than an activation ensemble: one model, same size, no extra forward
+pass — which matters at 5.7 h of a 12 h cap.
+
+`scripts/soup_checkpoints.py` is the provenance, verified to reproduce the measured
+soup bit-for-bit. Two traps in it: `checkpoint_last.pth` is a 25 MB *training*
+checkpoint with the weights under `model_state_dict`, and `num_batches_tracked` is an
+int64 counter that differs by **8.9e4** between members — large enough to look alarming
+in a naive per-tensor diff, and meaningless to average, so it is copied. **Souping
+across packs is invalid**: `pubfull` is `unet_transformer_alltrain_seed314159_v1` and
+`pack50` is `unet_transformer_5090_50ep_v1` with no seed recorded, so different inits,
+different basins under permutation symmetry, and averaging them would destroy both.
+They are combined at the activation level instead — that is what the detector blend is.
+
+**Contamination caveat, stated plainly:** both members trained on all 199 movies, so
+*no* held-out set exists for them and a soup's CV gain cannot be separated from sharper
+memorisation. Only the leaderboard can arbitrate this one — **but the calibration now
+favours it.** See the two blend submissions below: a *detector-side* change transferred
+at 80–130 % where the edge-head-side reference-path change transferred at 35 %, which is
+the asymmetry this file predicts. At that rate the soup's +0.0075 lands near 0.932–0.933.
+
+**2026-09-22 — THE SUBMIT ENDPOINT 403s AND IT IS RULES RE-ACCEPTANCE, BY ELIMINATION.
+This is a human action and nothing in the repo can clear it.** Kernel v14 (the soup,
+weighted CV 0.9407) ran clean — validator PASS, 124,635 nodes, 97.4 s/video → 5.38 h of
+the 12 h cap — but `competitions submit` returns **403 Forbidden on
+`CreateCodeSubmission`**, continuously across 6 hours and 65 attempts. Three candidate
+causes, two killed by measurement:
+
+| hypothesis | how it was tested | verdict |
+|---|---|---|
+| concurrent-rerun cap (`usesSynchronousReruns: true`) | retrier waited until both pending reruns reached terminal; they scored 0.925 | **ruled out** — 403 persisted |
+| daily quota (5/day) | waited past the 00:00 UTC reset | **ruled out** — 403 persisted |
+| token or auth | `kernels push`, `kernels output`, `datasets version` all succeeded repeatedly in the same window | **ruled out** |
+| **rules need re-accepting in the browser** | — | **the only one left** |
+
+The corroborating detail is that a `competitions submissions` **list** call 403s too, and
+both are `CompetitionApiService` while `KernelsApiService` and `DatasetApiService` are
+fine — i.e. competition-scoped authorisation, exactly what this file already documents
+("the competition rules must be accepted in the browser or the API returns 403"). Three
+submissions succeeded earlier the same day, so acceptance **lapsed** rather than never
+existing.
+
+**Two operational facts worth keeping.** A 403 creates no submission, so none of those 65
+attempts consumed a daily slot — that is why retrying was safe. And a
+pushed-but-unsubmitted kernel version is **not** a frozen experiment: its graded rerun
+executes at *submission* time against the **current** dataset versions, all three of
+which `kernel-metadata.json` lists unpinned. So while v14 waits, nothing may be uploaded
+to volt-weights or volt-code without silently changing what v14 measures. Pin the
+versions in `kernel-metadata.json` if two configurations ever need to be in flight.
+
+**2026-09-21 (later) — LB 0.920 → 0.925, AND THE BOARD'S OWN RESOLUTION IS NOW A
+MEASURED FACT RATHER THAN AN INFERENCE.** Both queued blend submissions scored, and both
+scored **0.925**:
+
+| change | CV | LB | CV Δ | LB Δ | transfer |
+|---|---|---|---|---|---|
+| reference path + ILP (kernel v11) | 0.9270 | 0.920 | — | — | — |
+| blend 0.30 (kernel v12) | 0.9308 | **0.925** | +0.0038 | +0.005 | ~130 % |
+| blend 0.15 (kernel v13) | 0.9332 | **0.925** | +0.0062 | +0.005 | ~80 % |
+
+**The two blend weights are indistinguishable on the board.** Their CV differs by 0.0024
+and `scoreTruncationNumDecimals: 3` puts anything in 0.9245–0.9254 at 0.925. This file
+already said so — "a CV gain below ~0.005 is not worth a submission slot, because it
+lands inside the leaderboard's own resolution" — and a slot was spent confirming it
+anyway. **Hold sub-0.005 arms; the board cannot see them.**
+
+**The transfer rate split by side, exactly as predicted.** Detector-side changes land at
+80–130 % while the edge-head-side reference-path change landed at 35 %, because the
+public checkpoint trained on both our folds: our CV *understates* detector work and
+*overstates* edge-head work. That rule was written on 2026-09-21 before either
+submission scored, and it is now confirmed on both sides. **Use it to decide what is
+worth a slot**: a detector-side +0.005 is a real +0.005 on the board, an edge-head-side
++0.005 is +0.002.
+
+**2026-09-21 (later) — THE DIVISION FNs DECOMPOSED, AND IT REVERSES THIS FILE'S OWN
+2026-09-18 VERDICT.** That verdict — "the remaining division loss needs a better ranker
+or a new feature, not a different threshold" — came from sweeps that *tightened* the
+structural gates, on the unstated assumption that the admissible candidate pool was
+already exhausted. `scripts/division_audit.py` measures it. On the 21 fold-1 samples
+that contain a GT division (26 divisions, TP 5 / FP 19 / FN 21, divJ 0.1111):
+
+| of the 21 FN divisions | |
+|---|---|
+| a node was never detected | **6** — detection-limited |
+| all three nodes detected | **15** — the cells are there, no fork was emitted |
+| …of those, divider out-degree 1 | 14 — i.e. inside `add_safe_divisions`' pool |
+| …second daughter a genuine **orphan** | **11 — fully admissible, a gate rejected it** |
+| …second daughter parented by a foreign node | 4 — the orphan rule; no distance gate reaches these |
+
+So the largest bucket is a structural gate throwing away candidates it was handed.
+
+**AND THEN LOOSENING THAT GATE WAS MEASURED AND LOST, MONOTONICALLY — my prediction
+from this decomposition was wrong.** Full fold 0, `--div-diverge-um` against the 2.25
+default:
+
+| forward divergence | score | adjJ | divJ |
+|---|---|---|---|
+| **2.25 µm (shipped)** | **0.9361** | 0.9279 | **0.0816** |
+| 1.0 µm | 0.9341 | 0.9272 | 0.0691 |
+| −2.0 µm | 0.9320 | 0.9268 | 0.0521 |
+
+**divJ *falls* as the gate opens**, which is the mirror image of 2026-09-18's finding
+that tightening it also falls. The gate is at a genuine interior optimum in both
+directions, so **2026-09-18's verdict — the division loss needs a better ranker, not a
+different threshold — was right, and the reversal above was wrong.**
+
+The two findings are compatible in a way I should have seen immediately: the forks are
+**admissible but out-ranked**. The caps are hard, so more candidates means the ranking
+decides, and the ranking is `d_par + 0.15·d_sis` over exactly the geometric features
+2026-09-12 measured as non-separating at the quartiles. A flooded cap fills with false
+forks that outrank the true ones, which is precisely the monotone fall.
+
+**What the sweep could not test, and is now the prime suspect.** `--div-diverge-um`
+relaxes only the *distance* clause `dist(g1,g2) − d_sis < diverge_um`. Beside it sits
+`len(g1) != 1 or len(g2) != 1` — **both daughters must have exactly one child each** —
+which is hard-coded, demands two further frames of correct linking on both branches, and
+no CLI knob reaches it. Extending the audit says the sister is at **orphan rank 0 in 6 of
+6 cases where rank is computable**, i.e. she *is* the candidate the mutual-nearest rule
+picks, so a gate really does reject her; and since the distance clause is now measured
+as already optimal, the structural clause is what is left. That is a one-line change
+worth one arm, and it is the only division lever this project has not measured.
+
+**MORE SOUP MEMBERS TRADE THE SAME WAY, AND THE EDGE PAIR REVERSES THE TRADE — the one
+prediction today that held.** A four-member soup (pubfull 381 and 400 plus two epochs
+continuing that run under their own recipe) scores 0.9440 alone, +0.0012 over the
+two-member soup, and it gets there by the documented TTA mechanism: adjJ 0.9333 → 0.9359
+(+0.0026, highest measured) against divJ 0.0950 → **0.0805**. Averaging smooths the
+detection map, and sister separation one frame after a division has p5 of 5.41 µm on a
+1.625 µm grid, so daughters merge under the average. **So member count has an interior
+optimum rather than being monotone.**
+
+Pairing it with the edge-side arms, whose effect on divisions runs the other way,
+recovers it:
+
+| fold 0 | score | adjJ | divJ |
+|---|---|---|---|
+| soup2 + blend 0.15 (kernel v14) | 0.9428 | 0.9333 | 0.0950 |
+| soup4 alone | 0.9440 | 0.9359 | 0.0805 |
+| soup2 + edge head 0.5 + bidir 0.25 | 0.9454 | 0.9352 | 0.1025 |
+| **soup4 + edge head 0.5 + bidir 0.25** | **0.9463** | **0.9361** | 0.1020 |
+
+**soup4 IS confirmed on fold 1, and it gains far more there: 0.9367 against soup2+pair's
+0.9316, i.e. +0.0051 where fold 0 gave +0.0009**, with divJ 0.1061 against 0.0769. So the
+caveat recorded here an hour earlier — that soup4's increment was fold-0-only and inside
+noise — is resolved in its favour. Best measured configuration, both folds:
+
+| | fold 0 | fold 1 | **weighted** |
+|---|---|---|---|
+| start of 2026-09-21 | 0.9361 | 0.9168 | 0.9332 |
+| soup2 + blend 0.15 (kernel v14, pending) | 0.9428 | 0.9290 | 0.9407 |
+| soup2 + edge head 0.5 + bidir 0.25 | 0.9454 | 0.9316 | 0.9433 |
+| **soup4 + edge head 0.5 + bidir 0.25** | **0.9463** | **0.9367** | **0.9449** |
+
+**+0.0117 over the day's start**, and +0.0042 over what is queued. Expected on the board,
+splitting by the measured transfer rates: soup4-over-soup2 is detector-side (+0.0016 at
+~100 %) and the edge pair is edge-head-side (+0.0026 at ~35 % → +0.0009), so ~+0.0025
+over whatever v14 scores.
+
+**THE MEMBER-COUNT CURVE, measured at three points, and it flattens at 4.** All with the
+same edge pair on fold 0:
+
+| soup members | score | adjJ | divJ |
+|---|---|---|---|
+| 2 | 0.9454 | 0.9352 | 0.1025 |
+| **4** | **0.9463** | 0.9361 | 0.1020 |
+| 8 | 0.9466 | **0.9370** | 0.0956 |
+
+adjJ rises **monotonically** with members while divJ falls, and the two cancel: +0.0009
+from 2→4, then **+0.0003** from 4→8, which is inside the noise floor. So the smoothing
+mechanism is confirmed across three points rather than inferred from two, and **4 members
+is the operating point** — indistinguishable from 8 on score, fewer artifacts to manage,
+and the only count confirmed on both folds. Do not chase more SWA epochs for this; the
+curve is flat and the division term is what pays for the edge term.
+
+**A TRAP THAT NEARLY COST THE ATTRIBUTION, and it constrains the order of operations.**
+A code competition's graded rerun executes **at submission time against the CURRENT
+dataset versions**, and `kernel-metadata.json` lists `volt-wheels`/`volt-code`/
+`volt-weights` **unpinned**. So uploading soup4 — or pushing volt-code — before v14 is
+submitted would silently change what v14's rerun runs, and v14 exists precisely to
+measure the soup against byte-identical code. **Nothing may be uploaded to any of the
+three datasets until v14 is submitted and scored.** More generally: a pushed-but-
+unsubmitted kernel version is not a frozen experiment, because its inputs are still
+live. Pin the dataset versions in `kernel-metadata.json` if two configurations ever need
+to be in flight at once.
+
+**MEASURED, AND IT IS A NO-OP: 0.9428 against the soup's 0.9428**, adjJ identical at
+0.9333, divJ 0.0950 → 0.0956, node recall and ratio unchanged. So the grandchild
+requirement was not the blocker either, and my second division prediction is falsified
+as cleanly as the first.
+
+**That completes a diagnosis by elimination. Every structural gate in
+`add_safe_divisions` has now been individually tested and none of them binds:**
+
+| gate | how tested | verdict |
+|---|---|---|
+| divergence *distance* | swept −2.0 / 0.0 / 1.0 vs 2.25 | 2.25 optimal; looser loses monotonically |
+| grandchild requirement | `--div-no-grandchildren` | **no-op** |
+| symmetry τ | 0.6 → 0.75 (2026-09-18) | rejected **zero** candidates |
+| parent / sister distance | widened to 11.0 / 18.0 (2026-09-18) | loses |
+
+**What is left is the caps picking by a ranking that cannot separate**, and the
+divergence sweep already demonstrated that mechanism rather than merely suggesting it:
+loosening the gate hands *more* candidates to the same fixed cap, and divJ fell
+monotonically, which can only happen if false forks outrank true ones. Raising the caps
+would admit more forks under the same bad ordering, which is why 2026-09-18's
+`divcap125` arm measured slightly negative and why it does not need re-running.
+
+**So the division term is stuck at ~0.095 without a NEW FEATURE, and this is now a
+closed line rather than an open lever.** The audit's 11 admissible FNs are real and they
+are admitted — they simply lose the cap. The only fork feature ever measured to separate
+is the parent's two-frame intensity *drop* (AUC 0.632), already measured at +0.0008
+alone and subsumed by the blend. Anything further here needs a genuinely new signal —
+nuclear shape, or a learned fork classifier — not another threshold.
+
+One counting trap, because the first version of this analysis fell into it: a divider
+with out-degree 1 *necessarily* parents one daughter, so "a daughter already has a
+parent" is the normal case and evidence of nothing. Subtracting the daughters linked to
+the divider itself is what separates the 11 from the 4.
+
+**2026-09-21 (later) — TWO WAYS TO SPEND A SECOND MODEL, both on the linking axis.**
+Implemented in `reference_predict`, both no-ops at weight 0, both touching only which
+links are believed and never which cells exist.
+
+- **Bidirectional harmonic fusion.** Swapping the frame pair makes the same
+  source-softmax answer the complementary question, and the transpose puts it back on
+  the same index grid; a weighted harmonic mean is then an agreement test rather than an
+  average. **The −0.001 recorded for this on 2026-09-19 is void** — it was measured
+  through `edge_head.pair_probs`, the reimplementation now known to lose 0.04.
+- **The secondary checkpoint's edge head, which was being thrown away.** `make_blend`
+  hand-assembled only the secondary's UNet and 1×1 detection head, ran the trunk once
+  *per frame*, and discarded the features — so its trained transformer was never
+  consulted at all, on the axis carrying half our remaining loss. `Secondary` now loads
+  the whole checkpoint: one encode per window instead of W, the edge head reachable, and
+  the coordinate space validated (two models indexed at shared coordinates would
+  otherwise read the wrong voxels silently). Proxy at weight 0.5, matched baseline on
+  the same card: 0.9457 → **0.9579**, adjJ 0.9314 → 0.9356.
+
+Two combiners, deliberately: detection maps average in *logit* space after
+moment-matching (no shared scale); edge probabilities average *arithmetically* (same
+question, so an ensemble mean). That is the opposite of the harmonic mean above, which
+combines complementary questions.
+
+**Measured on the full fold 0, one variable each against the shipped 0.9361 — and both
+edge-side additions buy the edge term by selling the division term.** That shared
+mechanism is the useful part, not the individual numbers:
+
+| fold 0, one variable | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| shipped (reference path + ILP prune + TTA + blend 0.15) | 0.9361 | 0.9279 | 0.0816 | 0.9789 |
+| **+ bidirectional fusion w=0.15** | **0.9369** | 0.9290 | 0.0791 | 0.9801 |
+| + secondary edge head w=0.3 | 0.9355 | 0.9289 | 0.0667 | 0.9790 |
+| det_threshold 0.98 instead of 0.965 | 0.9359 | 0.9277 | 0.0820 | 0.9788 |
+
+**Bidirectional fusion is real but a tenth of its published size.** The 2026-09-19
+verdict of −0.001 was void (measured through `edge_head.pair_probs`), and the corrected
+sign is **positive at +0.0008** — against the reference's +0.0053. Bankable, not worth a
+slot alone.
+
+**The secondary checkpoint's edge head is flat-to-negative** (−0.0006), and the 4-movie
+proxy that showed 0.9457 → 0.9579 was exactly the effective-n≈2 noise flagged when it
+was taken — most of that "gain" was the division term on ~4 events. Two edge heads of
+the same architecture trained on the same 199 movies are too correlated for averaging to
+reduce much variance, and the secondary is the weaker run. Kept at weight 0 because
+`Secondary` also carries the detection blend that does ship.
+
+**`det_threshold` is exhausted**, as the reference's own analysis says: 0.98 lands inside
+the noise floor of 0.965, because the misses are displaced peaks rather than
+below-threshold ones.
+
+**The shared mechanism, and why it makes the division gate worth more than its own
+headroom.** Both edge-side arms move adjJ up (+0.0011, +0.0010) and divJ down (−0.0025,
+−0.0149). Averaging edge probabilities makes the dominant assignment more confident,
+which is exactly what suppresses a fork's second child. So these two are not
+independently small — they are *gated on the division term*, and if loosening forward
+divergence raises divJ with headroom to spare, both flip to net positive on top of it.
+**Test the combination, not the winners.**
+
+**And the detection objective we default to is NOT the one that trained the field's
+best detector — measured, not inferred.** Warm-starting their epoch-400 weights and
+reading the loss on 12 iterations of all-train:
+
+| loss the warm-started model is scored under | det | edge |
+|---|---|---|
+| ours by default (`--det-target gaussian --det-pu-mask`) | **0.0386** | 0.0001 |
+| `--det-target voxel --no-det-pu-mask` (the inherited loss) | **0.0023** | 0.0001 |
+| **their own recorded epoch-400 values** | **0.0025** | 0.00016 |
+
+The legacy arm matches theirs to 8 % and our default reads **16× higher**, so the two
+are genuinely different objectives, not two parameterisations of one. Their
+`training_config.json` has no `det_target` key at all — those flags are ours —
+confirming they trained the inherited loss for all 400 epochs.
+
+Two things follow and a third does not. **Any continuation of their run must pass
+`--det-target voxel --no-det-pu-mask`**, or gradient descent immediately drags the
+detector off the optimum it spent 137 GPU-hours reaching; this is what gated the SWA
+run rather than being discovered eight hours into it. **And the compatibility held for
+the whole run, not just its start**: 8 epochs over 6 h 04 m stayed at `det=0.0023`
+against their recorded 0.0025, so continuing their training neither improved nor
+degraded the detection objective — which is exactly what makes the resulting checkpoints
+usable as soup members rather than as a different model. And **the best detector in this
+project was trained with the loss `detection_targets.py` was written to replace**,
+which is at least a reason to stop treating the Gaussian+PU default as settled — every
+ablation of it ran inside their first epoch (see 2026-09-14). What does *not* follow is
+that the legacy loss is better: their run was ~326× longer than any of ours, so budget
+is confounded with loss shape and this observation cannot separate them.
+
+**`--unet-weights` is a silent no-op on a full checkpoint** and `--init-weights` is the
+fix. The old flag loads into `unet` with `strict=False`, a full checkpoint's keys are
+`unet.`-prefixed, so nothing matches and training proceeds from scratch after printing a
+reassuring count. `--init-weights` loads trunk, detection head and transformer strictly,
+from either a bare state dict or a training checkpoint — which is what continuing the
+public 400-epoch run for more soup members requires.
+
+**2026-09-21 — THE ENDGAME PLAN, and it follows from the 29 % split rather than
+from the rank table.** Board as of today: 3,778 teams, **Volt rank 2,038 at 0.908**.
+The cliff has hardened — **703 teams at exactly 0.947**, 170 at 0.946, 87 at 0.948 —
+so 0.9465 is rank 943 and 0.9475 is rank **240**. That table is seductive and it is
+the wrong thing to optimise, for one reason: it describes the **29 %** public sample,
+and 703 teams sitting on one number are 703 teams whose configuration was chosen
+against that sample. On the private 71 % that pile scatters, and nothing we do
+changes where it scatters to. Our rank is decided by our own private score.
+
+So the endgame rules are:
+
+1. **Choose both final submissions on CV, not on the public LB.** Ours is a
+   71/128-sample held-out-by-embryo estimate; theirs is four movies at effective
+   n ≈ 2 with a pre-registered rule that says "local CV only vetoes, it never
+   promotes". We have the better instrument and should use it as one.
+2. **Weight the folds.** Fold 0 is 85 % of the metric weight. A fold-1 number is
+   not the result — this file quoted one for days.
+3. **Detector-side changes cannot be ranked on our CV at all**, because the public
+   checkpoint trained on all 199 movies including both folds. Measured today: the
+   same 8-view TTA scores **−0.015 on the contaminated checkpoint and +0.0071 on our
+   honestly held-out one**. The hidden set is a third unseen embryo, i.e. the
+   held-out regime, so for anything touching detection the in-domain sign is the one
+   to distrust. Use E7_fold1 for those arms.
+4. **The two picks should differ in what could go wrong, not in tuning.** One is the
+   CV-best pipeline. The other should be the configuration whose failure mode is
+   uncorrelated with it — realistically the previous shipped stack, which is a
+   different linker end to end, so a systematic problem with the learned edge head
+   on an unseen embryo cannot take both slots down.
+5. **Identity verification is still open and is a human action** —
+   `requiresIdentityVerification: true`, and prize eligibility depends on it.
+
+**2026-09-20 — THE ENDGAME FACTS. Read these before planning any more work.**
+
+**1. The public leaderboard is 29 % of the test set; the final standing is the other
+71 %.** Verbatim on the leaderboard page, and `leaderboardPercentage: 29` in Kaggle's
+config. See the expanded note under Data. This is the most consequential fact in the
+competition and it was absent from this file until today.
+
+**2. Rank is wildly non-linear in score, and the cliff is the whole game.** Measured
+from the downloaded leaderboard, 3761 teams, 2026-09-20. We are **rank 2023 at 0.908**,
+team "Volt".
+
+| target | rank | places gained |
+|---|---|---|
+| 0.908 — us | 2023 | — |
+| 0.920 | 1627 | +396 |
+| 0.940 | 1343 | +680 |
+| 0.946 | 1091 | +932 |
+| **0.947** | **376** | **+1647** |
+| 0.950 | 115 | +1908 |
+| 0.966 — 7th, prize cutoff | 7 | — |
+
+Pulled through the API, the pile is even denser than the CSV suggests: **697 teams at
+exactly 0.947**, 165 at 0.946, 86 at 0.948 — 862 teams inside 0.002, i.e. **18.5 % of
+the entire board on one public-notebook configuration**. Note `scoreTruncationNumDecimals: 3`,
+so some of that pile is display granularity rather than identical pipelines.
+
+**3. That cluster is fitted to the 29 %.** Its weights (`pilkwang/…seed314159-v1`) carry
+a `split_manifest.json` whose train list is **all 199 train videos**, so any hold-out
+drawn from train is in-sample for it; and the two notebooks above the cluster that have
+been reverse-engineered *self-declare* `leaderboard_feedback_used_for_configuration:
+true`, with per-movie overrides tuned against the four public test movies. One
+participant measured local-CV to LB correlation at **r ≈ −0.2** in the 0.93–0.95 band.
+Multiple threads predict a large shake-up. **So our position is better than rank 2023
+suggests**: every number in this file was measured on held-out CV and we have made 7 LB
+submissions, not 86.
+
+**4. Two final submissions are selectable** (`numScoredSubmissions: 2`, rules §2.2.b),
+and **the auto-selection criterion is not documented for this competition** — the rules
+only say "or automatically selected by Kaggle". Do not assume best-public is taken;
+**select both slots by hand**. Suggested shape: one CV-validated safe pick, one
+higher-variance pick.
+
+**5. Deadlines, from Kaggle's config rather than recollection.** Entry and team-merger
+both **2026-09-22 23:59 UTC**; final submission **2026-09-29 23:59 UTC**; 5
+submissions/day; max team size 5. Also `kernelsPublishingDisabledDeadline: 2026-09-22`
+— the public notebook frontier freezes then. And **`requiresIdentityVerification: true`**:
+prize eligibility needs it, so it should be confirmed done well before the end.
+
+**6. Our own detector has converged and is not the path.** `E7_alltrain` on all 199
+samples: epoch 70 → 0.7998, **epoch 99 → 0.8007**. Twenty-nine epochs bought +0.001
+against the public pack's 0.8760 through the identical stack. Training to their 400
+epochs (~200 GPU-hours, 8 days) is therefore not a gamble worth taking — the curve is
+flat, not slow.
+
+**7. We were running the wrong checkpoint.** The public cluster blends *two*: primary
+`pilkwang/biohub-tracking-support-pack-50ep-v1` (20,017 downloads) and secondary
+`pilkwang/biohub-temporal-unet3d-seed314159-v1`. **We have been using the secondary
+alone and had never downloaded the primary.** Different md5, identical architecture and
+byte size. Measuring it now.
+
+**2026-09-21 — THE 0.04 IS THE LINKER, AND IT IS OUR REWRITE THAT LOSES IT. Measured
+against the reference's own code on the exact movies the public notebooks validate
+on.** This is the most important entry in this file since the clamp, and it reverses
+three standing conclusions at once.
+
+**The comparable instrument.** The public 0.942/0.948 notebooks carry a local
+validator that selects **2 held-out train movies per embryo prefix, division-preferring,
+alphabetical** — four movies, effective n ≈ 2 — and scores them with a scorer that is
+term-for-term ours (same 7 µm bipartite match, same `TP+FP+FN` weights, same
+`J*(1 − 0.1*(N_pred − N_true)/N_true)`, same micro-averaged division Jaccard). Their
+title claims **proxy 0.9417 for LB 0.942**. Reproducing their selection rule exactly
+gives `44b6_12dfb391, 44b6_267148e4, 6bba_062c8d37, 6bba_07e24132` on a visible run
+(the four placeholder test stems are excluded from candidates) and
+`…, 6bba_05db0fb1, 6bba_062c8d37` at rerun. **So we can put our pipeline and theirs on
+the same four movies and compare directly**, which no measurement in this file had
+done.
+
+| on their 4-movie proxy set | score | adjJ | edge J | divJ | node recall | n_pred (44b6_12dfb391) |
+|---|---|---|---|---|---|---|
+| **reference path, `--use-ilp`** | **0.9299** | **0.9299** | 0.9228 | 0.0000 | 0.9812 | **42,184** |
+| reference path, ILP off | 0.8876 | 0.8830 | 0.8927 | 0.0455 | 0.9896 | 50,994 |
+| **our shipped stack** | 0.9013 | 0.8888 | ~0.905 | **0.1250** | 0.9809 | 52,070 |
+| our stack + ILP prune of the relink | 0.8970 | 0.8858 | 0.8909 | 0.1111 | 0.9759 | — |
+| our stack, our edge head + ILP prune | 0.8677 | 0.8600 | — | 0.0769 | **0.9428** | — |
+
+Read the first two rows first. **The ILP is worth +0.047 of adjusted edge Jaccard in
+the reference's own implementation**, close to the +0.037 their published ablation
+claims and the exact opposite of the −0.057 we recorded on 2026-09-18. It is spent on
+*precision*: edge false positives roughly halve (71/29/13/35 → 38/16/3/20) while true
+positives move by single digits, and the node count falls 51k → 42k, which also earns
+back the node-count multiplier. **Node recall stays 0.9812**, so the over-deletion we
+measured was never inherent to the solver.
+
+**What we had wrong, in two layers.**
+
+1. **The input to the solver.** The reference thresholds the source-softmax at 0.5 and
+   resolves greedily to ≤1 parent / ≤2 children *first*, then hands the solver that
+   graph — so the ILP only decides what to **keep**. We handed it every pair above a
+   probability threshold and asked it to choose the topology as well; with
+   `node_weight` 0.0 a marginal node is then always cheaper to delete than to keep, and
+   recall fell to 0.9419. `ilp_link.py`'s own docstring asserted the opposite ("the
+   candidate graph must be the raw, ungated one"; solving a resolved set is "measured
+   worthless") — it was reasoning from a *description* of their pipeline rather than
+   from their code, and the description was right while the inference was backwards.
+   Corrected, with `ilp_link.prune` and a `prune_fn` hook in `run_all`.
+2. **And fixing that is not enough, which is the more important half.** Our own
+   edge head + our own ILP prune reaches only 0.8600 with node recall **0.9428**, while
+   the reference's identical-in-principle arrangement reaches 0.9299 at 0.9812 on the
+   same weights and the same movies. So the residual is in how **`kaggle/submit.py`
+   computes the probabilities**, not in how they are spent.
+
+**The leading suspect, and it is a defect this file previously cleared.**
+`load_detector._forward` duplicates one frame into a fake pair
+(`torch.stack([t, t])`) and reads the trunk features from slot 0. That was measured and
+justified — *for detection* — at node recall 0.9973 fake against 0.9967 real. **For the
+edge head it is not the same question at all**: the head's entire job is to compare a
+cell's trunk representation at t against candidates at t+1, and a temporal trunk told
+that nothing moved between the two frames has had exactly that signal removed. The
+reference runs the U-Net on a real `(t, t+1)` window and reads slots 0 and 1.
+`--real-pairs` now does that here, and it is the one-variable test.
+
+**Consequences if it holds.** "The learned transformer edge head is worse" (recorded
+twice, believed twice, 0.7632 against 0.7830) and "the ILP loses by 0.05" would both be
+statements about the rewrite, not about the method — and this file already reached that
+verdict once, on 2026-09-14: *"`kaggle/submit.py` reimplements an inference path that
+already exists faithfully in this repo, and the rewrite loses 0.129 … Stop maintaining
+the rewrite; ship the path that already works."* We rebuilt the rewrite instead. The
+same 0.04 is still there.
+
+**Confirmed on the full fold, and the control is a warning.** Full 71-sample
+fold 1, same checkpoint throughout:
+
+| fold 1 (71 samples, 15 % of weight) | score | adjJ | divJ | node recall | node ratio |
+|---|---|---|---|---|---|
+| shipped stack (LB 0.908) | 0.8760 | 0.8657 | 0.1034 | 0.9841 | −0.071 |
+| **reference path + prune + our post-processing** | **0.9124** | **0.9042** | 0.0822 | 0.9700 | −0.238 |
+
+| fold 0 (128 samples, **85 % of weight**) | score | adjJ | divJ | node recall | node ratio |
+|---|---|---|---|---|---|
+| shipped stack | 0.8953 | 0.8879 | 0.0738 | 0.9859 | +0.066 |
+| **reference path + prune + our post-processing** | **0.9296** | **0.9236** | 0.0597 | 0.9764 | −0.043 |
+
+**Weighted LOEO CV 0.8924 → 0.9270, +0.0346** — the largest validated gain in
+the project since the post-processing stack, and four times the sum of every
+increment banked since. Both folds move by the same amount, which is what a
+real effect looks like. The division term gives a little back on both
+(0.1034 → 0.0822 and 0.0738 → 0.0597), so ~0.002 of the edge gain is being
+spent there and the division pass is worth re-tuning against the new topology.
+Runtime 19.6 s/video on a shared card, 1.09 h for a train-sized test set.
+
+Extrapolating is the honest part: our CV has sat **0.0156** below the LB in
+level (0.8924 against 0.908), which would put this at ~0.943, while the two
+observed *deltas* transferred at only 40–70 %, which would put it at
+0.922–0.932.
+
+**SCORED 0.920, rank 2038 -> 1647 of 3781.** Submission `56426110`, kernel v11,
+git `fc5090c`. The first time this project has been in the top half of the
+board, and +391 places.
+
+**But the transfer rate is the worst of the three we have, and it is the
+contamination showing up exactly where the decomposition said it would.**
+
+| change | CV | LB | CV Δ | LB Δ | transfer |
+|---|---|---|---|---|---|
+| post-processing stack | 0.8687 | 0.905 | +0.086 | +0.059 | 69 % |
+| relink learned bonus | 0.8760 | 0.908 | +0.007 | +0.003 | 43 % |
+| **reference path + ILP** | **0.9270** | **0.920** | **+0.0346** | **+0.012** | **35 %** |
+
+**And the sign of the CV/LB level gap has flipped.** Our CV sat 0.016–0.036
+*below* the LB for every geometric configuration; it is now **0.007 above** it.
+That is the predicted consequence of leaning on the contaminated half: the
+decomposition put 96 % of this gain on a learned edge head that trained on both
+our folds, so the more weight the pipeline puts on that head, the more our CV
+inflates. **Operational rule from here: discount any further gain measured on
+the edge-head side, and treat the CV as an upper bound rather than a
+conservative estimate.** The detector-side arms (blend, TTA) are the ones our
+CV still *understates*, for the opposite reason.
+
+So the reference path is genuinely better on an unseen embryo — +0.012 is far
+above the board's 0.001 resolution — and roughly two thirds of what it looked
+like locally was memorisation. Both halves of that were predicted before the
+submission, which is the first time this project has called a transfer rate in
+advance. The visible run is clean —
+validator PASS, 115,196 nodes and 109,905 edges over the four placeholders —
+and it settles the runtime question with a measurement rather than an
+extrapolation from this box: **78.5 s/video on the T4, 4.34 h for a
+train-sized test set**. That is 4× the 19.6 s/video here, so the A6000-to-T4
+ratio for this path is much worse than the 1.5× the detector alone showed, and
+4.34 h against a 12 h cap is comfortable but no longer generous. Anything that
+multiplies the detector cost again — eight-view TTA, a second seed — has to be
+budgeted against that number, not against the old one. But the same pipeline on our **honestly held-out**
+detector (E7 fold 1 epoch 99) scores **0.7579 against our own stack's 0.7799**
+— i.e. −0.022, the opposite sign.
+
+**Read that control carefully, because it confounds three things.** Our E7
+model is 100 epochs against the pack's 400 and scores 0.80 against 0.876
+through the identical stack, so its *edge head* is undertrained in exactly the
+way its detector is; the reference path also changes the peak window (3-voxel
+against our 5) and adds flip TTA, and on our weaker map that combination took
+node recall to 0.8789 against 0.9377. So it does not isolate contamination. What
+it does establish is that the reference path is **not** unconditionally better —
+it is better *with this checkpoint*.
+
+**Tuning the prune, fold 1, against the 0.9124 baseline.** Two knobs, and they
+say the same thing:
+
+| disappearance | 0.5 | 1.0 | **1.5** | 2.0 (ref) | 3.0 |
+|---|---|---|---|---|---|
+| score | 0.9032 | 0.9131 | **0.9134** | 0.9124 | 0.9120 |
+| node recall | 0.9821 | 0.9778 | 0.9744 | 0.9700 | 0.9641 |
+
+| min_track_len | 3 | 4 | 6 (shipped) |
+|---|---|---|---|
+| score | 0.9140 | **0.9140** | 0.9124 |
+| node recall | 0.9817 | 0.9817 | 0.9700 |
+
+**Both together are worth nothing on the weighted metric, and the reason is the
+node-count penalty.** `min_track_len 4 + disappearance 1.5` on fold 1 gives
+**0.9145** (+0.0021, the two partly add), and on fold 0 it gives **0.9294
+against 0.9296** — nothing. Weighted, 0.9272 against 0.9270: **+0.0002, exactly
+the noise floor.** The mechanism is visible in the node ratio. Fold 1 sits at
+**−0.238**, deep in the multiplier's bonus region, so keeping more nodes is free
+there; fold 0 sits at −0.043 and keeping more nodes pushes it to **+0.0149**,
+across zero and into the penalty. **So every node-retention knob has a per-fold
+optimum set by where that embryo sits on the node-count curve**, and tuning them
+on fold 1 — 15 % of the weight — and carrying the result to fold 0 is precisely
+the mistake this file warns about. Both increments are dropped, not banked.
+
+**3 and 4 are bit-identical on all five metrics**, which is not a coincidence and
+pins the mechanism: a chain of L nodes carries L−1 edges worth at most 1.0 each
+against a disappearance cost of 2.0, so a 3-node component is break-even at
+best and the solver has already dropped every component below 4. The length
+filter therefore has nothing left to do below 4, and **its old value of 6 was
+cutting tracks the ILP had already paid for**.
+
+**The reference's own retune runs backwards here** — their ablation prices
+disappearance 3.0 at +0.004 on 18 of 20 volumes, and it is our worst setting —
+because their post-processing does not re-add structure and ours does. And
+`min_track_len` 4 *gains* 0.0016 where it *lost* 0.003 on the old pipeline:
+once the ILP deletes nodes, every later stage that also deletes is cutting the
+same tracks twice. But 0.5 collapses to 0.9032, so the prune is doing real work
+and is merely slightly over-tuned; the optimum is interior and flat between 1.0
+and 2.0. Both gains are ~0.001, i.e. above the 0.0002 noise floor and below the
+0.005 that justifies a submission slot on its own — bank them.
+
+**The dual-seed blend is the largest increment on top of the reference path, and
+it gains on both terms.** Fold 0, against the shipped 0.9296:
+
+| blend weight | 0 | 0.10 | **0.15** | 0.20 | 0.30 | 0.45 |
+|---|---|---|---|---|---|---|
+| score | 0.9296 | 0.9347 | **0.9361** | 0.9345 | 0.9336 | 0.9310 |
+| adjJ | 0.9236 | 0.9275 | **0.9279** | 0.9267 | 0.9259 | 0.9246 |
+| divJ | 0.0597 | 0.0723 | **0.0816** | 0.0775 | 0.0775 | 0.0639 |
+| node recall | 0.9764 | 0.9781 | 0.9789 | 0.9780 | 0.9772 | 0.9770 |
+| node ratio | −0.0430 | −0.0404 | −0.0391 | −0.0390 | −0.0402 | −0.0407 |
+
+**The optimum moved, and we submitted the old one.** 0.3 was found under the
+old detect-and-link on fold 1 (0.2 → 0.8765, 0.3 → 0.8852, 0.4 → 0.8816); under
+the reference path on fold 0 the peak is **0.15**, worth **+0.0025** over the
+0.30 that went out as `56432361`. Six points, unimodal, and adjJ and divJ and
+node recall all peak together at 0.15 — which is what a real optimum looks like
+rather than a lucky draw. A knob tuned against one linker does not carry to
+another; that is now the third instance, after the division gates and the
+disappearance cost.
+
+**+0.0040 on the fold that carries 85 % of the weight**, and unlike the
+node-retention knobs it moves adjusted edge Jaccard *and* the division term
+while barely touching the node count — so it is not trading one against the
+other. `reference_predict.make_blend` runs it inside the copied path, blending
+whichever frame of the window the caller names rather than a duplicated one.
+
+**Confirmed on both folds at w = 0.15: fold 0 0.9361, fold 1 0.9168, weighted
+0.9332** — against 0.9308 for the w = 0.30 configuration sitting in the graded
+queue and 0.9270 for the one that scored 0.920. Fold 1 prefers 0.15 to 0.30 too
+(0.9168 against 0.9150), so the retune is not a fold-0 artefact the way the
+node-retention knobs were.
+
+Fold 1 with the w = 0.30 blend and the appearance term is **0.9150** (adjJ 0.9042 -> 0.9092, a +0.005 jump, while divJ
+falls 0.0822 -> 0.0580 on that fold's handful of division events). Weighted with
+fold 0's 0.9336 that is **0.9308 against the shipped 0.9270, +0.0038.**
+
+**Superseded by kernel v13** (git `b5f5e0f`), the same path at the swept w = 0.15
+— visible run clean, **102.3 s/video, 5.66 h** for a train-sized test set. The
+graded reruns have been taking roughly 1.6x their visible-run estimate, so
+expect ~9 h: inside the 12 h cap, and the point at which nothing else that
+multiplies detector cost can be stacked on top.
+
+**Submitted as `56432361`** (kernel v12, git `04f8bf3`). Visible run clean —
+blend active, validator PASS, 116,006 nodes — and **90.6 s/video, 5.01 h for a
+train-sized test set** against the 12 h cap, up from 4.34 h without the blend.
+Worth noting for the endgame: the 0.920 rerun took ~7 h of wall clock against a
+4.34 h estimate, so a 5.01 h estimate is probably ~8 h in practice. That is
+still inside the cap but it is the first configuration where the margin is
+worth thinking about, and it rules out stacking anything else that multiplies
+the detector cost.
+
+Two reasons to expect the leaderboard to like it more than this number does.
+It is **detector-side**, so our contaminated fold understates it by the argument
+above; and it is variance reduction across two independently-seeded nets, which
+pays more on an unseen embryo than in-domain. Under the old detect-and-link it
+was +0.0033 on fold 0 and **+0.0092 on fold 1**.
+
+**What does move the division term is the appearance feature,**What does move the division term is the appearance feature, and it is the one
+increment today with a clean mechanism.** Fold 0, against the shipped 0.9296:
+
+| `--div-rise-weight` | 0 | 10 | 30 |
+|---|---|---|---|
+| score | 0.9296 | **0.9304** | 0.9303 |
+| divJ | 0.0597 | **0.0669** | 0.0664 |
+| adjJ | 0.9236 | 0.9237 | 0.9237 |
+| node recall | 0.9764 | 0.9764 | 0.9765 |
+| node ratio | −0.0430 | −0.0430 | −0.0430 |
+
+**And it is subsumed by the blend, so it does not ship.** Fold 0: blend alone
+0.9336, blend + rise 0.9337. Both work on the division term and the blend
+already takes divJ 0.0597 -> 0.0775, so there is nothing left for the ranker to
+reorder (0.0775 -> 0.0784). The feature is real -- AUC 0.632, the only fork
+feature this project has found that separates -- and worth +0.0008 on its own,
+but it is not additive with the thing we would ship anyway. Keep the code and
+the measurement; ship `--div-rise-weight 0`.
+
+Flat from 10 to 30, so the term saturates: by weight 10 it already dominates
+the geometric ordering wherever it disagrees, and tripling it reorders nothing
+further. No more sweeping.
+
+**adjJ, node recall and the node ratio are unchanged to four decimals** — this
+only reorders which forks win the cap, so it is a pure division-term effect and
+**cannot reverse between folds the way the node-retention knobs did**, since
+those reversed through the node-count multiplier. +0.0008 of score for +12 %
+relative on divJ, and 10 was a first guess at a weight for a feature measured
+at AUC 0.632, so the sweep is worth finishing.
+
+**Not the caps.** divJ fell 0.1034 → 0.0822 when the prune landed and the
+obvious suspect was the fork caps, which are fractions of node and edge counts
+that the prune cut by a fifth. Scaling both by 1.25 gives 0.9123 against
+0.9124, divJ 0.0800 against 0.0822 — nothing. The division loss under the new
+linker is structural, not a cap artefact.
+
+**The decomposition, and it puts almost all the gain on the memorisation-exposed
+half.** Full fold 1, one variable at a time:
+
+| arm | score | adjJ | node recall |
+|---|---|---|---|
+| our detection + our relink (shipped) | 0.8760 | 0.8657 | 0.9841 |
+| **reference detection + our relink** | **0.8776** | 0.8705 | **0.9931** |
+| reference detection + their edge head + ILP | **0.9124** | 0.9042 | 0.9700 |
+
+**The detection half is worth +0.0016. The linker half is worth +0.0348** — 96 %
+of it. Their peak picker and flip TTA do produce a better node set (recall
+0.9931, the highest measured in this project), and our geometric relink simply
+does not convert it; what converts it is the learned edge head choosing the
+topology, with the ILP pruning what it over-commits.
+
+**And the specific risk is nameable.** Both the 0.8760 baseline and the 0.9124
+candidate use the same contaminated detector, so the detector half is not what
+differs. What differs is the linker: ours is geometric, theirs is a learned edge
+head choosing the topology — and that head is part of a checkpoint that trained
+on these 71 videos. If its advantage is association memorised from them, the
+hidden embryo will not reproduce it. **There is no local instrument that can
+settle this**, because the public checkpoint saw all 199 training videos and
+there is no held-out fold for it. The leaderboard is the only test, which makes
+this exactly the kind of genuinely uncertain change a submission slot is for —
+and the 0.908 submission stays banked as one of the two final picks regardless.
+
+**The gain is concentrated in the tail, which is the shape that should
+transfer.** Per sample, adjusted edge Jaccard, ours against the reference path
+plus our post-processing:
+
+| sample | ours | reference path + our stack | Δ |
+|---|---|---|---|
+| `6bba_062c8d37` | 0.9908 | 0.9864 | **−0.004** |
+| `44b6_12dfb391` | 0.8971 | 0.9454 | +0.048 |
+| `6bba_07e24132` | 0.7637 | 0.8483 | +0.085 |
+| `44b6_267148e4` | 0.7297 | 0.8647 | **+0.135** |
+
+It does nothing on the sample we already score 0.99 on and the most on the two
+worst. That matters for the hidden embryo specifically: this file's own
+decomposition found that lifting the worst 20 samples of fold 1 to our p90
+would move weighted adjJ 0.863 → 0.919, and a third unseen embryo puts *more*
+samples in that tail, not fewer. A change that only raised the mean would be
+the one to distrust.
+
+**Where our stack is genuinely ahead: divisions.** The reference-with-ILP scores divJ
+**0.0000** on this set — its `division_weight` 1.2 is a cost and it prunes the forks —
+against our **0.1250**. At the 0.1 weight that is +0.0125 of score we hold and they do
+not, and it is why `0.9299 + 0.1 × our divisions ≈ 0.942` reproduces their proxy almost
+exactly. **The target configuration is their linker with our division pass**, not one
+or the other.
+
+**Runtime, measured rather than feared.** The reference path costs ~10 s/video without
+the ILP and ~25–30 s/video with it on an A6000, the solver being single-threaded SCIP.
+Extrapolating from the T4 detector measurement that is roughly 3 h for a train-sized
+199-video test set against the 12 h cap. `tracksdata`, `ilpy`, `pyscipopt` and
+`rustworkx` wheels all ship in the public pack, so the offline constraint that kept the
+ILP out is not a constraint.
+
+**A second measurement error of the same shape: our "TTA" is not their TTA — and TTA
+is not a loss at all once the ruler is fixed.** Their `PredictConfig.det_tta` is
+**flip-xy, four views**; ours averaged the full **eight-view D4 group**, rotations
+included, and a 90° turn through an anisotropic PSF is a far stronger perturbation
+than a mirror. Separately, every detector-side number we have was measured on a
+checkpoint that trained on both our folds. On the **honestly held-out** detector
+(E7 fold 1 epoch 99, trained on `6bba`, tested on `44b6`), full fold:
+
+| arm | score | adjJ | divJ | node recall |
+|---|---|---|---|---|
+| no TTA | 0.7799 | 0.7752 | 0.0462 | 0.9377 |
+| **4-view flips** (theirs) | **0.7864** | 0.7775 | 0.0896 | 0.9369 |
+| 8-view D4 (ours) | **0.7870** | 0.7801 | 0.0690 | 0.9410 |
+| feature TTA | 0.7794 | 0.7748 | 0.0462 | 0.9378 |
+
+**The sign flips with contamination** — the same 8-view average is −0.015 on the
+public checkpoint and +0.0071 here — and **the flip subgroup captures essentially all
+of it at half the cost**, which is what the reference ships and therefore what the
+reference path runs. Feature TTA stays out: neutral on the honest detector too. The
+general rule this establishes: **no detector-side change can be ranked on our CV**,
+because the hidden set is a third unseen embryo and that is the held-out regime.
+
+**Also settled today: the dual-seed blend transfers to the heavy fold.** w = 0.3,
+moment-matched in logit space with the 0.90 retention guard: fold 0 **0.8953 → 0.8986**
+(adjJ 0.8879 → 0.8913), fold 1 **0.8760 → 0.8852** (adjJ 0.8657 → 0.8735), weighted
+**0.8924 → 0.8966**. Both folds gain on adjJ, so it is not the division lottery. Weight
+0.2 and 0.4 bracket it (fold 1: 0.8765 / 0.8816), and 0.5 and 0.8 fall back — a clean
+interior optimum. `kaggle_env.find_secondary_weights` looks for
+`secondary/edge_predictor_best.pth` beside its config, and `find_weights` now refuses
+to return that file as the primary.
+
+**And a new division feature, the first one that separates.** `CLAUDE.md` has recorded
+since 2026-09-12 that geometric fork features overlap at the quartiles and named
+appearance as the untested axis. Measured over **all 151 GT divisions against 1,729
+same-frame controls** (`scripts/division_appearance.py`): absolute brightness barely
+separates (AUC 0.53–0.59), but the **two-frame intensity *rise* does, inverted** — a
+parent about to divide has *lost* ~10 % of its peak intensity relative to itself two
+frames earlier (median 0.901) while a non-dividing cell is flat (1.002), giving
+**AUC 0.632**. My stated prediction was the opposite (condensing chromatin should
+brighten), and the direction that actually shows up is the one the mechanism implies:
+the mass is already splitting, so the single centroid dims. It is the strongest fork
+feature measured in this project against a field of ~0.50, and it is free at inference
+— the volumes are already in memory. Not yet wired into `add_safe_divisions`, whose
+ranking is still `d_par + 0.15 * d_sis`.
 
 **2026-09-19 — SEVEN POST-PROCESSING IDEAS, ONE WIN, AND THE PIPELINE IS AT A
 LOCAL OPTIMUM IN EVERY DIRECTION TESTED.** All on the full 71-sample fold against
@@ -2184,8 +3115,17 @@ track into one weakly-connected component plus fake forks, exploiting the old ru
 a division TP needed only shared-component reachability. Patched 2026-07-17
 (`aa65e90`); `metrics.md` now says "Merely sharing a weakly connected component is not
 sufficient." **Our `division_metrics.py` contains the post-patch
-`_is_strongly_connected_division`, so our CV measures the current metric.** The
-0.946/0.947 clusters (231 + 209 teams) are defanged forks of those notebooks. Also
+`_is_strongly_connected_division`, so our CV measures the current metric.**
+**CORRECTED 2026-09-20: the 0.946/0.947 cluster is NOT a defanged fork of those hack
+notebooks.** It is `reyhanksatria/biohub-cell-tracking-0-947-lb` with a clean documented
+lineage (pilkwang's learned-graph baseline → `nusrati/0-938` → `evgendvorkin/0-927`,
+bidirectional fusion → Reyhan Ksatria for 0.941→0.947); the runnable public copy is
+`zhincez/biohub-0-947-lb-runnable-with-public-datasets`. No hub nodes anywhere in it.
+The hack was patched 2026-07-17 (`aa65e90`) and **every submission was rescored by
+2026-07-23** (Kaggle admin: "The rescore is complete"), after which the augmentation is
+*negative* (measured 0.9839 → 0.9794). The 0.963–0.966 figures still visible on some
+notebook badges are fossils of the pre-patch metric — the badges were never refreshed,
+the leaderboard was. Also
 note: the widely-forked *offline* metric still uses the pre-patch rule and reports
 division Jaccard **double** — score locally with ours, never theirs.
 
@@ -2294,112 +3234,64 @@ scoring bug.
 
 ## Plan
 
-**Gate 0 — the team is the only thing left that needs a human.** Dev subset downloaded,
-`pytest -m "not slow"` green at 122 passed on the dev box; the Linux server is
-provisioned, its environment questions are all answered, and the full dataset is
-downloading. Remaining: **form the Kaggle team before Sept 22** — 20 days out, and
-nothing recovers a miss.
+**Rewritten 2026-09-21 (end of day). Steps 1–7 of the old plan are done or superseded;
+the historical reasoning is preserved in Status, which is where the measurements live.**
+Eight days to the 2026-09-29 deadline. **Public LB 0.925**; best measured weighted LOEO
+CV **0.9449**.
 
-1. **Measure before designing — substantially done, needs committing.** The sweep over
-   all 199 samples is complete and its findings are folded into Data (counts vs
-   `estimated_number_of_nodes`, pooled displacement percentiles, single-lineage count,
-   sparsity by embryo, per-sample metric weight). What remains is turning it into
-   `scripts/inspect_data.py` so it is reproducible and re-runnable, emitting a per-sample
-   CSV — that table is the input to the split design in step 2 and to the node-budget
-   sweep in step 7, and it is also a portfolio artifact. Still genuinely open from this
-   step: **residual displacement after global registration** (the number that decides
-   whether step 6a is worth anything), and the nucleus radius σ that step 5's Gaussian
-   heatmap targets need.
-2. **CV harness** — `scripts/make_splits.py` emitting **both** splits described in Data:
-   the 2-fold leave-one-embryo-out (the honest number) and a within-embryo FOV split (the
-   fast one). Every experiment scored through it, one row per run in `experiments.csv`,
-   both numbers recorded.
-3. **First submission, classical** — DoG local maxima + Hungarian on µm distance,
-   gated at ~2× median displacement, no divisions. The point is a scored end-to-end
-   chain and a floor. Teams that skip this find their CSV bugs on Sept 28.
-4. **Offline submission chain** (parallel with 3) — a directory-mode `predict`,
-   `validate_submission()` diffed against `sample_submission.csv`, wheels/code/weights
-   datasets, thin notebook. Confirm the LB score matches local CV. **A CV/LB
-   disagreement here is the most important bug in the project;** chase it down before any
-   modelling. Also time one video end to end and extrapolate to a train-sized hidden test
-   set against the 12 h cap.
-5. **Detection — REWRITTEN AGAIN 2026-09-08. Read this ordering before starting any
-   detector work; it has now been wrong twice.** What changed: retuning four scalars
-   moved the *classical* baseline +0.068 and +0.109, more than any model change has, and
-   it invalidated the previous day's model comparison entirely. So:
-   **(0) RETUNE THE BASELINE WHENEVER YOU RETUNE A MODEL.** A model scored against a
-   baseline frozen at old defaults tells you nothing. This is the single cheapest way to
-   avoid wasting a week.
-   **(1) Per-sample node budget.** Edge Jaccard keeps rising with budget (0.7008 at 1.5×)
-   while the score peaks at 1.0× purely because of the node penalty. `T_true` is
-   predictable from stored quantiles at Spearman 0.856, so this is reachable upside with
-   no modelling at all — the best remaining lever.
-   **(2) Prefer the U-Net on generalisation, not on average.** The two methods tie on
-   weighted CV but the U-Net's fold spread is 0.003 against DoG's 0.199, and the hidden
-   test set is a third unseen embryo.
-   **(3) Then the loss/metric divergence** (below), now measurable via `--save-every`
-   and `epoch_metrics.csv`.
-   *Superseded ordering from 2026-09-07, kept because the reasoning still holds:*
-   **(a) sweep the linking gate per detector.** Worth **+0.082** on model A from one
-   scalar, and it is what takes the learned detector past the classical floor. Nothing
-   else measured today comes close to that return. Then re-sweep the budget *jointly*,
-   since detector and linker are coupled through the FP-exposure mechanism in metric
-   fact 3.
-   **(b) find out why the detection loss is anti-correlated with the score.** Model A's
-   loss fell 4.4x while its CV fell; best epoch is 0. Until that is understood, longer
-   training makes the model worse and every detector experiment is fighting it. Score
-   per-epoch checkpoints, not just the best one — the harness makes this cheap.
-   **(c) sweep `det_neg_weight` and `bright_threshold`**, still unswept and still the
-   cheapest remaining detector knobs.
-   **(d) drop or fix the learned linker.** Deprioritised on geometry, then partly
-   rehabilitated: precision 0.755 says the *atypical* cases are where the score now
-   leaks, which is what a learned edge cost is for. But it emits zero edges today, so
-   fix the gate sweep first and revisit only if (a)–(c) plateau.
-   **Not a priority: more labels.** Pseudo-supervising the unannotated 96.5 % bought
-   +0.004, and closing every joinable annotation gap is worth ~+1.4 % more edges.
-   **Also not a priority: node recall.** It is a bad proxy target — three independent
-   knobs raise it while lowering the score (see Status). Score, or do not measure.
+### The three things that actually matter now
 
-   *Previous framing, kept because the reasoning is still sound:* the loss is written,
-   the evidence is not.
-   `src/volt_biohub/detection_targets.py` implements Gaussian targets at the measured
-   sigma plus positive-unlabeled masking, defaulted on, with `--det-target voxel` /
-   `--no-det-pu-mask` retained so each half can be ablated. All three paths train and
-   detect on the fixture. **What is missing is the only thing that matters: a CV number.**
-   The fixture is a 5-frame overfit and proves nothing about generalisation, so this
-   stays open until step 2 exists and the ablation runs through it. Still to do here,
-   in the order that unblocks the most:
-   **(a) switch checkpoint selection to the real scorer** — this is now the gating item,
-   not a tidy-up: `test_acc × test_recall` reads 0.9943/0.9408 after *20 iterations*
-   (see Known defects), so nothing printed during training can rank a loss variant, and
-   until it is replaced the ablation cannot be run at all;
-   **(b) sweep `bright_threshold`** — measured to over-mask by 4.5× at the median while
-   correctly tracking density at ρ +0.87, so it is one scalar with a known direction
-   (raise it), the cheapest open knob here;
-   **(c) re-sweep `--det-threshold`** now that calibration has changed, reconciling the
-   logit-vs-sigmoid mismatch noted under Known defects.
-   Fallback if the UNet
-   will not converge in budget: Spotiflow 3D, which trains natively from point labels
-   and is legal here (pre-trained models are explicitly allowed).
-6. **Linking (week 3)** — note (a) below is now partly superseded: the 12 µm gate was
-   derived from motion percentiles and turned out to be 4 µm too generous once the
-   detector improved, so *gate sweeping* moved into step 5a. The rest stands, in
-   priority order: (a) **global frame-to-frame registration
-   before association** — bulk motion removed makes a dense assignment easy, and most
-   teams skip it; temper the expectation, though, since these are ~104 µm crops rather
-   than whole embryos, so measure the residual displacement in step 1 before investing.
-   (b) candidate graph + ILP (`tracksdata.solvers.ILPSolver`, already wired as
-   `--use-ilp`), weights tuned on CV and never on the leaderboard. (c) gap handling by
-   interpolated node insertion. (d) learned edge costs (`SimpleNodeTransformer`) last,
-   only if a–c plateau.
-7. **Freeze week (Sept 22–29)** — tune total node count (metric fact 4), full
-   test-set timing on Kaggle hardware, ≥2 submissions banked before the final day,
-   nothing new on Sept 29.
+**1. Get the measured configurations onto the board, in order.** Two are ready and the
+ordering is a hard constraint, not a preference — a graded rerun executes at *submission*
+time against the **current** dataset versions, and `kernel-metadata.json` lists all three
+datasets unpinned:
 
-Rejected, so they don't get re-proposed: **Trackastra** needs instance masks we don't
-have, and synthesizing spheres from centroids discards the appearance features that
-make it strong. **Ultrack** duplicates in-repo tracksdata functionality and adds
-offline-install burden.
+- **v14** — soup2, weighted CV 0.9407, pushed and run clean (validator PASS, 97.4 s/video
+  → 5.38 h). Blocked on a `CompetitionApiService` 403; see Status. **Until it is
+  submitted and scored, nothing may be uploaded to volt-weights or volt-code**, or v14
+  stops measuring what it was built to measure.
+- **v15** — soup4 + edge head 0.5 + bidir 0.25, weighted CV **0.9449**, both folds. The
+  weights are already persisted and md5-verified at `weights/soup_members/`.
+
+**2. Select both final submissions by hand, on CV rather than on the public LB.** The
+public board is 29 % of the test set and the 0.947 pile is 700 teams fitted to that 29 %.
+Our instrument is a 199-sample held-out-by-embryo estimate; theirs is four movies at
+effective n ≈ 2. Pick the CV-best pipeline for one slot, and for the other a
+configuration whose **failure mode is uncorrelated** — realistically the 0.925 stack,
+which differs in the whole detector, so one systematic problem cannot take both down.
+
+**3. Identity verification — human action, prize eligibility depends on it**
+(`requiresIdentityVerification: true`). Still open.
+
+### What is measured out, so it does not get re-proposed
+
+- **Divisions by gating: closed by elimination.** Every structural gate in
+  `add_safe_divisions` tested individually, none binds (see Status). The caps rank by
+  geometric features measured as non-separating, so more candidates makes it worse. Needs
+  a **new signal** — nuclear shape, or a learned fork classifier — not another threshold.
+  The only separating feature found is the parent's two-frame intensity drop (AUC 0.632),
+  worth +0.0008 and subsumed by the blend.
+- **det_threshold**: exhausted in both directions (0.95 / 0.965 / 0.98 all within noise).
+- **The port inventory**: every remaining component is worth ≤ +0.0015 here against the
+  reference's published ≥ +0.005, because their deltas repair a defect we do not have.
+  Do not port another on the strength of its published delta.
+- **Sub-0.005 CV arms are invisible on the board** — measured, not inferred: two configs
+  0.0024 apart in CV both scored exactly 0.925, and `scoreTruncationNumDecimals: 3`
+  explains why. Hold them and bundle.
+- **Trackastra / Ultrack**: need instance masks we do not have.
+
+### The levers that remain, best first
+
+- **More soup members, but measure — member count has an INTERIOR optimum** (2 → 0.9428,
+  4 → 0.9440 on fold 0), because averaging smooths the map and sisters at p5 5.41 µm
+  merge. SWA is producing members; `scripts/soup_checkpoints.py` builds any subset.
+- **A genuinely independent third detector** for the blend. Souping cancels
+  checkpoint-selection noise and blending cancels initialisation noise, and the two were
+  measured to *add* (+0.0036 for the blend on top of the soup). A third run would extend
+  the second axis, which is the only axis with headroom left.
+- **The decision rule for spending a slot**, from the measured transfer rates: a
+  detector-side +0.005 is a real +0.005 on the board; an edge-head-side +0.005 is +0.002.
+  Weight arms accordingly.
 
 **Division of labour.** A: data inspection, CV harness, detection. B: CSV writer +
 validator + offline chain, linking + ILP tuning, LB probes. Both: local scorer from

@@ -240,3 +240,45 @@ def link_pair(
         kids[i] = kids.get(i, 0) + 1
         parents[j] = parents.get(j, 0) + 1
     return out
+
+
+def resolve_greedy(
+    probs: np.ndarray,
+    coords_src: np.ndarray,
+    coords_tgt: np.ndarray,
+    iso_um: float,
+    threshold: float = 0.5,
+    max_parents: int = 1,
+    max_children: int = 2,
+) -> list[tuple[int, int, float]]:
+    """The reference's edge stage, in micrometres and off a probability matrix.
+
+    Same rule as :func:`link_pair` -- keep pairs above *threshold*, then take
+    them strongest-first under <=1 parent and <=2 children -- but separated from
+    feature extraction so the same probabilities can feed both this and the
+    relink's cost bonus, and with distances in micrometres rather than
+    ``link_pair``'s anisotropic original-voxel units, which is what the rest of
+    the post-processing compares against.
+
+    This is the graph the reference hands to its ILP, and that ordering is the
+    point: solved *after* greedy resolution the ILP is worth +0.047 of adjusted
+    edge Jaccard, solved over the raw candidate set it costs 0.05
+    (:mod:`volt_biohub.ilp_link`).
+    """
+    if probs.size == 0 or len(coords_src) == 0 or len(coords_tgt) == 0:
+        return []
+    ii, jj = np.nonzero(probs > threshold)
+    cand = sorted(((float(probs[i, j]), int(i), int(j))
+                   for i, j in zip(ii, jj, strict=True)), reverse=True)
+    out: list[tuple[int, int, float]] = []
+    kids: dict[int, int] = {}
+    parents: dict[int, int] = {}
+    src = np.asarray(coords_src, dtype=np.float64)
+    tgt = np.asarray(coords_tgt, dtype=np.float64)
+    for _p, i, j in cand:
+        if kids.get(i, 0) >= max_children or parents.get(j, 0) >= max_parents:
+            continue
+        out.append((i, j, float(np.linalg.norm((src[i] - tgt[j]) * iso_um))))
+        kids[i] = kids.get(i, 0) + 1
+        parents[j] = parents.get(j, 0) + 1
+    return out

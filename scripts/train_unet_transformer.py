@@ -1182,6 +1182,19 @@ def _save_this_epoch(epoch: int, n_epochs: int, save_every: int) -> bool:
     return epoch % save_every == 0 or epoch == n_epochs - 1
 
 
+def load_state_dict_for_model(path: Path) -> dict:
+    """A bare ``UNetNodeTransformer`` state dict, unwrapping a training checkpoint.
+
+    The public pack ships both forms in one directory: ``edge_predictor_best.pth``
+    is a bare state dict, ``checkpoint_last.pth`` is 25 MB of optimizer state
+    with the weights under ``model_state_dict``.
+    """
+    obj = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(obj, dict) and "model_state_dict" in obj:
+        return obj["model_state_dict"]
+    return obj
+
+
 def train(
     data_dir: Path,
     fold: int,
@@ -1217,6 +1230,7 @@ def train(
     select_budget: float = 1.0,
     legacy_eval_batches: int | None = 20,
     save_every: int = 0,
+    init_weights: Path | None = None,
 ) -> UNetNodeTransformer:
     """Train on one fold from a pre-computed splits file.
 
@@ -1300,6 +1314,7 @@ def train(
         "det_neg_weight": det_neg_weight,
         "det_pseudo_weight": det_pseudo_weight,
         "unet_weights": None if unet_weights is None else str(unet_weights),
+        "init_weights": None if init_weights is None else str(init_weights),
         "augmentations": [getattr(a, "__name__", str(a)) for a in (augmentations or [])],
         "data_parallel": data_parallel,
         "select_videos": select_videos,
@@ -1396,6 +1411,20 @@ def train(
         unet_out_channels=unet_out_channels,
         pos_feat_dim=pos_feat_dim,
     ).to(device)
+
+    # Warm-start the WHOLE model, not just the trunk. --unet-weights loads into
+    # `unet` with strict=False, and a full checkpoint's keys are `unet.`-
+    # prefixed, so it matches nothing and silently trains from scratch while
+    # printing a reassuring count. This path is strict and covers the detection
+    # head and the transformer too, which is what continuing a public 400-epoch
+    # run requires -- their validation_score oscillates without trend over the
+    # last thirty epochs, so more members to average is worth more than more
+    # epochs, and averaging needs a warm start rather than a fresh one.
+    if init_weights is not None:
+        state = load_state_dict_for_model(init_weights)
+        model.load_state_dict(state)
+        print(f"  warm start: {len(state)} tensors from {init_weights}",
+              flush=True)
 
     # Simple multi-GPU: split the heavy UNet pass across all visible GPUs.
     # Only the UNet is wrapped (it takes/returns plain batched tensors); the
@@ -1546,7 +1575,14 @@ def main() -> None:
     parser.add_argument("--unet-layers", type=str, default="32,64,128",
                         help="Comma-separated UNet channel widths, shallow→deep.")
     parser.add_argument("--unet-weights", type=str, default=None,
-                        help="Path to pretrained UNet weights; loaded with strict=False.")
+                        help="Path to pretrained UNet weights; loaded with strict=False. "
+                             "NOTE this matches nothing if given a full model "
+                             "checkpoint, whose keys are 'unet.'-prefixed -- use "
+                             "--init-weights for that.")
+    parser.add_argument("--init-weights", type=Path, default=None,
+                        help="Warm-start the whole model (trunk, detection head "
+                             "and transformer) from a checkpoint, strictly. "
+                             "Accepts a bare state dict or a training checkpoint.")
     parser.add_argument("--downsample", type=str, default="1,4,4",
                         help="Comma-separated spatial downsample strides Z,Y,X (default: 1,4,4).")
     parser.add_argument("--det-loss-weight", type=float, default=1e0,
@@ -1684,6 +1720,7 @@ def main() -> None:
             pool_kernel_um=args.pool_kernel_um,
             data_parallel=args.data_parallel,
             save_every=args.save_every,
+            init_weights=args.init_weights,
         )
 
 

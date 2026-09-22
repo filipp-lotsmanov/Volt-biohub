@@ -146,6 +146,12 @@ def main(argv=None) -> int:
                         "own clean-split ablation prices this at +0.037, the "
                         "largest single component; our adjJ 0.858 sits exactly on "
                         "their 'ILP off' arm of 0.8587. Needs --weights.")
+    p.add_argument("--ilp-prune", action="store_true",
+                   help="Solve the link set the relink already resolved, so the "
+                        "solver only decides what to KEEP. This is what the "
+                        "reference does; --ilp hands it the raw candidate graph "
+                        "instead, and that difference is -0.05 against +0.047 "
+                        "(volt_biohub.ilp_link, measured 2026-09-21).")
     p.add_argument("--learned-bonus", type=float, default=0.0,
                    help="Subtract this x the edge-head probability from the "
                         "relink's Hungarian cost, in micrometres. The reference "
@@ -159,12 +165,26 @@ def main(argv=None) -> int:
                         "lost here (fusion -0.001, feature TTA -0.011), which "
                         "says the cost reads the RANKING; this tests the "
                         "opposite direction. Not the same as the bonus size.")
+    p.add_argument("--secondary-weights", type=Path, default=None,
+                   help="A second detector checkpoint to blend with. The public "
+                        "cluster runs two (support-pack-50ep primary + seed314159 "
+                        "secondary); we shipped one. Measured separately the two "
+                        "are a dead heat but disagree in their errors.")
+    p.add_argument("--secondary-weight", type=float, default=0.0,
+                   help="Blend weight for the secondary, moment-matched in logit "
+                        "space with a per-frame retention guard. Reference 0.80.")
     p.add_argument("--feature-tta", action="store_true",
                    help="Average the U-Net FEATURES over the 8 D4 views while "
                         "leaving detection sharp. Detection TTA loses here "
                         "(0.8609 vs 0.8687) by blurring daughters into one peak; "
                         "this touches only what the edge head reads, and is the "
                         "public chain's largest single step (0.941 -> 0.946).")
+    p.add_argument("--secondary-edge-weight", type=float, default=0.0,
+                   help="Ensemble the SECONDARY checkpoint's transformer edge "
+                        "head at this weight (reference path only). Separate "
+                        "from --secondary-weight, which blends detection maps: "
+                        "the two halves of the same checkpoint are worth "
+                        "different amounts and compose independently.")
     p.add_argument("--bidirectional-weight", type=float, default=0.0,
                    help="Fuse forward and reverse edge probabilities by a "
                         "weighted harmonic mean (reference 0.15, measured "
@@ -200,13 +220,56 @@ def main(argv=None) -> int:
     p.add_argument("--div-diverge-um", type=float, default=None,
                    help="Minimum extra separation of the grandchildren over the "
                         "sisters. Raise to demand stronger post-mitotic divergence.")
+    p.add_argument("--div-frame-frac", type=float, default=None,
+                   help="Per-frame fork cap as a fraction of that frame's nodes. "
+                        "It interacts with the ILP prune, which cuts node counts "
+                        "by about a fifth -- so the cap tightens by the same "
+                        "fifth without anyone asking it to, and divJ fell "
+                        "0.1034 -> 0.0822 on fold 1 and 0.0738 -> 0.0597 on "
+                        "fold 0 when the prune landed.")
     p.add_argument("--div-global-frac", type=float, default=None,
                    help="Cap on forks as a fraction of edges. A blunt count limit: "
                         "it drops candidates by order, not by quality.")
     p.add_argument("--div-parent-um", type=float, default=None)
     p.add_argument("--div-sister-um", type=float, default=None)
+    p.add_argument("--div-no-grandchildren", action="store_true",
+                   help="Stop REQUIRING both daughters to have a child before a "
+                        "fork is admitted. The forward-divergence DISTANCE is "
+                        "measured as already optimal (loosening it to 1.0 and "
+                        "-2.0 both lose monotonically), but its structural half "
+                        "was unreachable from any knob and demands two further "
+                        "frames of correct linking on both branches. Absence of "
+                        "a grandchild is not evidence against a division.")
+    p.add_argument("--div-rise-weight", type=float, default=None,
+                   help="Weight on the parent's own two-frame intensity rise in "
+                        "the fork ranking, micrometre-equivalent. The only fork "
+                        "feature measured to separate: AUC 0.632 over all 151 GT "
+                        "divisions against 1,729 controls, where every geometric "
+                        "feature sits at 0.50. A dividing parent DIMS (median "
+                        "rise 0.901 against 1.002), so a positive weight "
+                        "penalises brightening candidates.")
     p.add_argument("--tta", action="store_true",
                    help="8-view D4 TTA in (y, x), averaged in logit space.")
+    p.add_argument("--tta-views", type=int, default=8, choices=(4, 8),
+                   help="8 is the full D4 group (what our -0.015 measured); 4 is "
+                        "the flip subgroup, which is what the reference's "
+                        "det_tta actually does and what its +0.009 refers to. "
+                        "Rotating a 90-degree turn through an anisotropic PSF is "
+                        "a much stronger perturbation than a mirror.")
+    p.add_argument("--reference", action="store_true",
+                   help="Run volt_biohub.reference_predict -- the upstream "
+                        "inference path copied verbatim -- instead of this "
+                        "repo's detect-and-link. On the public notebooks' own "
+                        "4-movie proxy set it reaches adjusted edge Jaccard "
+                        "0.9299 where the rewrite reaches 0.8888, and 0.9505 "
+                        "total once our post-processing runs on top.")
+    p.add_argument("--real-pairs", action="store_true",
+                   help="Compute the edge head's trunk features from a REAL "
+                        "consecutive pair instead of one frame duplicated. The "
+                        "fake pair is free for detection (node recall 0.9973 "
+                        "against 0.9967) and is the leading suspect for the edge "
+                        "head scoring 0.86 here against 0.93 through the "
+                        "reference's own code on the same weights.")
     p.add_argument("--switch-at", type=float, default=None)
     p.add_argument("--refine", action="store_true", default=True)
     p.add_argument("--keep-csv", type=Path, default=None)
@@ -247,12 +310,19 @@ def main(argv=None) -> int:
             learned_edges=args.learned_edges,
             edge_threshold=args.edge_threshold,
             tta=args.tta,
+            tta_views=args.tta_views,
             ilp=args.ilp,
+            ilp_prune=args.ilp_prune,
             learned_bonus=args.learned_bonus,
+            secondary_edge_weight=args.secondary_edge_weight,
             bidirectional_weight=args.bidirectional_weight,
             feature_tta=args.feature_tta,
+            secondary_weights=args.secondary_weights,
+            secondary_weight=args.secondary_weight,
             temperature=args.edge_temperature,
             candidate_threshold=args.candidate_threshold,
+            real_pairs=args.real_pairs,
+            reference=args.reference,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {
                 "disappearance_weight": args.ilp_disappearance,
@@ -265,8 +335,14 @@ def main(argv=None) -> int:
                 "symmetry_tau": args.div_symmetry_tau,
                 "diverge_um": args.div_diverge_um,
                 "global_frac": args.div_global_frac,
+                "frame_frac": args.div_frame_frac,
                 "parent_um": args.div_parent_um,
                 "sister_um": args.div_sister_um,
+                "rise_weight": args.div_rise_weight,
+                # False is meaningful here, so it cannot ride the
+                # `v is not None` filter as a plain flag default.
+                "require_grandchildren": (
+                    False if args.div_no_grandchildren else None),
             }.items() if v is not None} or None,
         )
         rows = score_csv(csv_path, data_dir, names)

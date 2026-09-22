@@ -12,8 +12,17 @@
 #     -> volt_biohub.gpu                 torch (lazily), subprocess
 #
 # NOT on the path, and that is the whole point: tracksdata, geff, dask, pandas,
-# matplotlib, tqdm. `tracksdata` is the one that could not be bundled even if we
-# wanted to — see "The one blocker" in kaggle/README.md.
+# matplotlib, tqdm. The claim this file used to make about tracksdata — "the one
+# that could not be bundled even if we wanted to" — is false: the public support
+# pack ships a wheel for it alongside ilpy, pyscipopt and rustworkx. It stays off
+# the list for a better reason. The one thing we wanted it for was the ILP, and
+# after greedy resolution the link graph is a forest, over which tracksdata's
+# formulation is separable — so `volt_biohub.ilp_link.prune_dp` returns the
+# identical edge set by tree DP (verified against the solver on two full videos:
+# 24,540 nodes against 24,542, 42,186 against 42,184, the differences being
+# equal-objective ties). Bundling it would have meant installing 62 wheels,
+# including scikit-image, dask, numba and a numpy>2 requirement, over an image
+# whose torch and scipy are built against its own numpy.
 #
 # COMPLETENESS IS NOT ESTABLISHED BY check_offline.py. That gate runs inside the
 # dev venv, where everything is installed, so it only proves nothing *forbidden*

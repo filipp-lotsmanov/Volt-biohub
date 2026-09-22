@@ -95,6 +95,15 @@ MODULES = (
     "volt_biohub.models",
     "volt_biohub.gpu",
     "volt_biohub.submission",
+    "volt_biohub.postprocess",
+    "volt_biohub.edge_head",
+    # The two modules the shipped configuration added, and the two most likely
+    # to drag tracksdata back in. reference_predict is a copy of a script whose
+    # original imports it at module scope, and ilp_link does use it -- but only
+    # inside `prune`, while `prune_dp` is the one the notebook calls and must
+    # stay import-clean.
+    "volt_biohub.reference_predict",
+    "volt_biohub.ilp_link",
     "submission",
     "submit",
 )
