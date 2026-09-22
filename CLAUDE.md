@@ -2198,11 +2198,27 @@ mainly through the *edge head*, where averaging sharpens fork topology instead o
 peaks. **So the primary's "4 members then flat" conclusion does not carry to the
 secondary** — a genuine asymmetry with a mechanism, not two noisy curves.
 
-Fold 1 is running. Only three same-run pack50 checkpoints exist publicly (best,
-`checkpoint_last` at 402, and 350), so going further on this axis would need an SWA
-continuation of that run — about 6 h on one card, which is affordable in the remaining
-week if fold 1 confirms. Persisted md5-verified as
+Fold 1 is running. Persisted md5-verified as
 `weights/soup_members/soup_pack3_secondary_best.pth` (`7fcade11c29ebcf7ffc6981e8ad656ca`).
+
+**Only three same-run pack50 checkpoints exist publicly, and an SWA continuation to get
+more is FULLY SPECIFIED — its recipe is inside the checkpoint.** `pack50`'s
+`checkpoint_last.pth` is a 25 MB training checkpoint carrying `epoch 402`, an
+`optimizer_state_dict` with **lr 1e-4** at step 940,278, `method
+unet_transformer_5090_50ep_v1`, and — decisively — `metrics.det_loss = 0.002303`. That
+number *identifies the loss variant without a probe*: the inherited voxel loss reads
+~0.0023 on these weights while our Gaussian+PU default reads **0.0386**, 16× higher (see
+the loss-compatibility table). So a continuation is
+`--init-weights <that checkpoint> --det-target voxel --no-det-pu-mask --lr 1e-4`,
+the same recipe as the pubfull SWA that produced soup4's two extra members — about 6 h on
+one card, and worth it only if fold 1 confirms soup3.
+
+**It also corroborates the soup rationale from a third source.** The same checkpoint
+records `best_score 0.9835` against this epoch's `score 0.9764` on their
+`validation_acc × validation_recall` selector — the metric this project measured as
+worthless. So `pack50`'s `edge_predictor_best.pth` is an **argmax of noise** exactly as
+`pubfull`'s is, which is why averaging it with epochs 402 and 350 recovers something
+rather than diluting it.
 
 **2026-09-22 — LINE-FIT SMOOTHING IS WORTH +0.0031 HERE, AND IT IS THE FIRST PORTED
 COMPONENT WHOSE PUBLISHED DELTA ROUGHLY TRANSFERS.** It had no CLI path until today —
