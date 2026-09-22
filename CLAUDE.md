@@ -1966,6 +1966,40 @@ reassuring count. `--init-weights` loads trunk, detection head and transformer s
 from either a bare state dict or a training checkpoint — which is what continuing the
 public 400-epoch run for more soup members requires.
 
+**2026-09-22 — THE PUBLIC CHECKPOINT INVENTORY, hashed rather than guessed at. Eight
+distinct architecture-compatible checkpoints exist, from FIVE independent runs, and the
+12 h cap is what decides how many we can use.** Every one is `TemporalUNet3D` + node
+transformer, 136 tensors, config `downsample [1,4,4] / window 2 / layers [32,64,128] /
+out 32`, so all are drop-in for `--secondary-weights`.
+
+| sha256 (first 8) | bytes | dataset | what it is |
+|---|---|---|---|
+| `9bac2fa0` | 8,363,159 | `pilkwang/biohub-temporal-unet3d-seed314159-v1` | **pubfull best, epoch 381** — our primary's soup member |
+| `ee6c1237` | 25,070,547 | same | pubfull `checkpoint_last`, **epoch 400** — soup member |
+| `12f6881e` | 8,363,159 | `pilkwang/biohub-tracking-support-pack-50ep-v1` | **pack50 best** — our secondary |
+| — | — | same | pack50 `checkpoint_last`, epoch 402 — soup member |
+| `dfb848aa` | 8,363,159 | `shehailrs/biohub-tracking-350ep-public-weight-snapshot` | **epoch 350 of the pack50 run** — its manifest names `…-50ep-v1` *version 9* as the source, so a valid third soup member |
+| `347915de` | 8,357,783 | `pilkwang/biohub-tracking-support-pack-v1` | **independent run** — the ORIGINAL support pack (252 downloads against the 50ep pack's 20,689), one checkpoint, no `checkpoint_last` |
+| `102f847e` | 8,357,362 | `aashishnegi23/cellmot-ft-detector-biohub` | **independent**, a fine-tuned detector; a byte size no other checkpoint has |
+| `4b44531a` | 8,357,783 | `ideaplatsteven/biohub-celltrack-pipeline` | **independent** ("norel7") |
+
+Two datasets that look like new checkpoints and are not: `leonixis/biohub-p314159-pipeline`
+repackages pubfull — its `edge_predictor_best.pth` hashes to `9bac2fa0`, identical — and
+it usefully corroborates the soup rationale from a second source, carrying
+`best_epoch 381, best_score 0.97798, epoch 400, method
+unet_transformer_alltrain_seed314159_v1`. `dmitriygerasimov/…-epoch4-0818` is an epoch-4
+probe.
+
+**Souping vs blending decides which of these is usable, and the runtime cap decides how
+many.** Same-run checkpoints (381/400/350/402 and our SWA epochs) may be **souped**,
+which is free at inference. Different runs must be combined at the **activation** level —
+the detection blend — and each extra member costs an extra `encode`. The shipped config
+already runs **97.4 s/video → 5.38 h** visible and graded reruns have taken ~1.6× the
+visible estimate, i.e. ~8.6 h against a 12 h cap. Two more encodes would put that at
+risk, so **the plan is one secondary, chosen as the best of the candidates, not a 3-way
+blend** — which also needs no code change, since `Secondary` takes exactly one model.
+That is why the arms measure candidates *in the same slot* rather than stacking them.
+
 **2026-09-21 — THE ENDGAME PLAN, and it follows from the 29 % split rather than
 from the rank table.** Board as of today: 3,778 teams, **Volt rank 2,038 at 0.908**.
 The cliff has hardened — **703 teams at exactly 0.947**, 170 at 0.946, 87 at 0.948 —
