@@ -1881,10 +1881,35 @@ instrument, not the knob: a gate sweep guided by a rejection log found in one ar
 four blind arms missed**, because the log says which clause fires and at what value,
 rather than leaving the sweep to guess a direction and a magnitude.
 
-Still to settle before it ships: **fold 1** (which holds ~26 divisions against fold 0's
-124, so watch the *sign* rather than the size), and whether symmetry 1.2 — which the log
-says captures the 5th and last refused daughter, at 1,535 false admits against 710 — is
-worth its share. Both are running.
+**AND FOLD 1 KILLS IT. The gate widening does NOT ship, and my "largest division gain in
+the project" was a fold-0 statement that does not survive weighting.** Same souped
+secondary on both sides, so a clean one-variable comparison:
+
+| | fold 0 (85 % of weight) | fold 1 (15 %) | **weighted** |
+|---|---|---|---|
+| score Δ | +0.0006 | **−0.0044** | **−0.0002** |
+| divJ | 0.1020 → 0.1133 (+0.0113) | 0.1311 → **0.0946** (−0.0365) | — |
+| adjJ | −0.0005 | −0.0008 | — |
+
+**A wash, and by this file's own rule it was never shippable on a fold-0 number alone:**
+*never tune a hyperparameter on a delta smaller than the gap between the two folds.* The
++0.0006 on fold 0 is a fifth of the 0.0019 gap between the folds at this configuration.
+
+The honest reading, stated rather than resolved: fold 0 carries 124 GT divisions and fold
+1 about 26, so this file's standing advice is that **fold 0 is the division measurement to
+trust**. By that rule the +0.0113 is signal and the −0.0365 is noise on ~26 events. But
+the *weighted* score is what the competition grades, fold 1 contributes 15 % of it, and a
+swing that large at that n cancels the gain — so the estimate itself is too noisy to act
+on. Both things are true, which is exactly why it is a coin flip and not a win.
+
+What survives is the **method**, not the arm: a gate sweep guided by a rejection log found
+a real fold-0 effect where four blind sweeps found nothing, and it took one arm instead of
+four. The mechanism is also confirmed — divJ moves by ±0.01 to ±0.04 while node recall and
+the node ratio stay put, so these gates genuinely control which forks get admitted and
+nothing else. That is worth keeping for any future attempt on the term.
+
+Symmetry 1.2 was still running when fold 1 landed; its fold-0 number is now of academic
+interest only, since the binding problem is the fold disagreement rather than the level.
 
 Also worth noting: **7 of the 25 GT divisions were never even considered**, i.e. the true
 daughter was not an unclaimed orphan within 14 µm of the existing child, or the divider
@@ -3565,8 +3590,9 @@ scoring bug.
 **Rewritten 2026-09-21 (end of day). Steps 1–7 of the old plan are done or superseded;
 the historical reasoning is preserved in Status, which is where the measurements live.**
 Seven days to the 2026-09-29 deadline. **Public LB 0.925**; best measured weighted LOEO
-CV **0.9466** (soup4 + souped pack50 secondary + edge head 0.5 + bidir 0.25), with the
-division gates measured positive on fold 0 on top of that and confirming on fold 1.
+CV **0.9466** (soup4 + souped pack50 secondary + edge head 0.5 + bidir 0.25). The
+division gates gained on fold 0 and lost on fold 1, netting −0.0002 weighted, so they are
+not part of it.
 
 ### The three things that actually matter now
 
@@ -3625,12 +3651,12 @@ which differs in the whole detector, so one systematic problem cannot take both 
 
 ### The levers that remain, best first
 
-- **The division gates, which the rejection log found and which PAY.** `parent 12 /
-  symmetry 0.9` gives fold 0 0.9469 against 0.9463 with divJ 0.1020 → **0.1133**, the
-  largest division-term gain in the project, as a pure division effect (recall and node
-  ratio unchanged). Fold 1 is confirming. This is the one lever that was not at a measured
-  optimum, and the *method* is the transferable part: sweep gates against a log that names
-  which clause fires and at what value, never blind.
+- ~~**The division gates, which the rejection log found and which PAY.**~~ **Measured out
+  on fold 1: +0.0006 on fold 0 but −0.0044 on fold 1, weighted −0.0002.** A wash, and a
+  fold-0 delta a fifth the size of the inter-fold gap was never shippable by this file's
+  own rule. The *method* survives and is the transferable part — a gate sweep guided by a
+  rejection log that names which clause fires and at what value found a real fold-0 effect
+  in one arm where four blind sweeps found none — but the arm itself does not ship.
 - **Souping the secondary: +0.0017 weighted, and free.** Already banked into the v15
   candidate. Its fold asymmetry (+0.0006 on fold 0, **+0.0083 on fold 1**) is the shape to
   expect from any detector-side variance reduction, and the reason to keep trusting the
