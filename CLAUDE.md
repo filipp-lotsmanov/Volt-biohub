@@ -1908,8 +1908,26 @@ four. The mechanism is also confirmed — divJ moves by ±0.01 to ±0.04 while n
 the node ratio stay put, so these gates genuinely control which forks get admitted and
 nothing else. That is worth keeping for any future attempt on the term.
 
-Symmetry 1.2 was still running when fold 1 landed; its fold-0 number is now of academic
-interest only, since the binding problem is the fold disagreement rather than the level.
+**And symmetry 1.2 sharpens the reason to drop it, rather than being academic.** The
+fold-0 response is a clean interior optimum:
+
+| symmetry τ at parent 12, fold 0 | 0.6 (shipped) | **0.9** | 1.2 |
+|---|---|---|---|
+| score | 0.9463 | **0.9469** | 0.9445 |
+| divJ | 0.1020 | **0.1133** | 0.0955 |
+
+Unimodal with symmetric falloff is what a **real** effect looks like, not a lucky draw —
+and the log explains both ends: 0.9 admits 4 of the 5 symmetry-refused true daughters at
+710 extra false admits, while 1.2 buys the 5th at 1,535 and the flood finally wins.
+
+So the honest conclusion is **not** "fold 0's gain was noise". It is that **the optimal
+gate width is embryo-dependent**: a genuine, well-shaped optimum on `6bba` that reverses
+on `44b6`. For a third unseen embryo that is unpickable, which is a stronger reason to
+drop the arm than noise would be — and a reason not to revisit parent/symmetry widening
+at all without a per-sample predictor for it. Note the same shape has now bitten three
+times (division gates, the disappearance cost, `min_track_len`), and in every case the
+mechanism was a knob whose optimum tracks a property of the embryo rather than of the
+pipeline.
 
 Also worth noting: **7 of the 25 GT divisions were never even considered**, i.e. the true
 daughter was not an unclaimed orphan within 14 µm of the existing child, or the divider
