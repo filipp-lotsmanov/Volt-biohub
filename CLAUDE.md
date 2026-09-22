@@ -2146,6 +2146,32 @@ how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
+**2026-09-22 — THE PRIMARY/SECONDARY ROLE ASSIGNMENT: no reason to swap, but MY ARM WAS
+CONFOUNDED and the family question stays open.** We run `pubfull` as primary (0.85 of the
+detection blend, and it supplies the edge head's base probabilities) with `pack50` as
+secondary; the public cluster does the reverse, which is a hint we had never tested.
+
+| fold 0 | score | adjJ | divJ | node ratio |
+|---|---|---|---|---|
+| soup4(pubfull) primary + soup2(pack50) secondary — shipped | **0.9469** | 0.9367 | 0.1016 | −0.0293 |
+| soup2(pack50) primary + soup4(pubfull) secondary | 0.9454 | 0.9347 | 0.1067 | −0.0052 |
+
+**−0.0015 for the swap, so keep the assignment — but the arm does not establish what I
+designed it to.** I wrote in its notes that "both are souped here so the comparison is
+between model families, not checkpoint selection". That is wrong: the shipped side's
+primary is a **4-member** soup and the swap's is a **2-member** one, and the primary's
+member count is independently worth about +0.0009 (2 → 0.9454, 4 → 0.9463 with the raw
+secondary). So roughly two thirds of the −0.0015 is member count, the residual attributable
+to model family is ~−0.0006, and that is inside a fold's noise. **The family question is
+open; only the practical conclusion is settled.** A clean version would need matched member
+counts on both sides.
+
+Worth noting what did move: the swap takes the node ratio from −0.0293 to **−0.0052**, i.e.
+`pack50` as primary emits noticeably more nodes, and it gains divJ (+0.0051) while losing
+adjJ (−0.0020). That is the over-detection/division trade of metric fact 2 running in
+miniature, and it is the reason the two families are not interchangeable even at equal
+soup depth.
+
 **2026-09-22 — A THREE-MEMBER SECONDARY SOUP GIVES 0.9484, THE HIGHEST FOLD-0 SCORE IN
 THE PROJECT, AND IT MOVES THE DIVISION TERM RATHER THAN THE EDGE TERM.** The third member
 is `shehailrs/biohub-tracking-350ep-public-weight-snapshot`, whose manifest names
