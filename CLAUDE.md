@@ -3781,8 +3781,21 @@ datasets unpinned:
   was never a rules problem — see Status). Validator PASS, 97.4 s/video → 5.38 h.
   **Until it has scored, nothing may be uploaded to volt-weights or volt-code**, or v14
   stops measuring what it was built to measure.
-- **v15** — soup4 + edge head 0.5 + bidir 0.25, weighted CV **0.9449**, both folds. The
-  weights are already persisted and md5-verified at `weights/soup_members/`.
+- **v15 — SUBMITTED 2026-09-22 as `56466575`**, git `0ad16d0`, kernel version 15. soup4
+  primary + **3-member pack50 secondary soup** (best + 402 + 350) + secondary edge head
+  0.5 + bidirectional fusion 0.25. Weighted LOEO CV **0.9480** (fold 0 0.9484, fold 1
+  0.9456). Visible run clean: secondary found so the blend is active, both new args
+  echoed in the log, validator PASS, 121,227 nodes over the four placeholders,
+  **94.1 s/video → 5.20 h** for a train-sized set (~8.3 h graded at the observed 1.6×).
+  **Expect only ~+0.0015 on the board**, not the CV delta — see the 13 % within-run
+  transfer rate measured on v14.
+- **Two upload traps cost a near-miss and are now documented in `kaggle/README.md`.**
+  `-r zip` is load-bearing: `--dir-mode` defaults to `skip`, so the first push dropped
+  `secondary/` entirely, and a missing secondary makes `notebook.py` degrade to the
+  single-detector configuration *by design* — the run completes, the validator passes and
+  the score is quietly ~0.007 lower. And **verifying by file size is not sufficient here**:
+  every soup of this architecture is 8,355,927 bytes, so size proves the file is a soup and
+  cannot tell soup2 from soup4 or soup3. Download the uploaded version and md5 it.
 
 **2. Select both final submissions by hand, on CV rather than on the public LB.** The
 public board is 29 % of the test set and the 0.947 pile is 700 teams fitted to that 29 %.
