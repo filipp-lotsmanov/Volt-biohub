@@ -182,6 +182,18 @@ submit.run(
     weights=WEIGHTS if USE_UNET else None,
     secondary_weights=SECONDARY if USE_UNET else None,
     secondary_weight=0.15 if (USE_UNET and SECONDARY) else 0.0,
+    # The secondary's EDGE head, which was being thrown away. The old
+    # implementation hand-assembled only its UNet and 1x1 detection head, so its
+    # trained transformer was never consulted -- on the axis carrying half our
+    # remaining loss. Worth +0.0011 on fold 0 at weight 0.5, a clean interior
+    # optimum (0.3 -> -0.0006, 0.65 -> -0.0013).
+    secondary_edge_weight=0.5 if (USE_UNET and SECONDARY) else 0.0,
+    # Bidirectional harmonic fusion. Swapping the frame pair makes the same
+    # softmax-over-sources answer the complementary question, and a weighted
+    # harmonic mean of the two is an agreement test rather than an average. A
+    # plateau, not a spike: 0.25 and 0.35 tied exactly under the two-member soup
+    # and 0.25 wins by 0.0004 under this one, while 0.50 falls below w=0.
+    bidirectional_weight=0.25 if USE_UNET else 0.0,
     budget=1.0,
     det_threshold=0.965 if USE_UNET else None,
     reference=USE_UNET,
