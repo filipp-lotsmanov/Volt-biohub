@@ -3564,8 +3564,9 @@ scoring bug.
 
 **Rewritten 2026-09-21 (end of day). Steps 1–7 of the old plan are done or superseded;
 the historical reasoning is preserved in Status, which is where the measurements live.**
-Eight days to the 2026-09-29 deadline. **Public LB 0.925**; best measured weighted LOEO
-CV **0.9449**.
+Seven days to the 2026-09-29 deadline. **Public LB 0.925**; best measured weighted LOEO
+CV **0.9466** (soup4 + souped pack50 secondary + edge head 0.5 + bidir 0.25), with the
+division gates measured positive on fold 0 on top of that and confirming on fold 1.
 
 ### The three things that actually matter now
 
@@ -3624,20 +3625,36 @@ which differs in the whole detector, so one systematic problem cannot take both 
 
 ### The levers that remain, best first
 
-- **More soup members, but measure — member count has an INTERIOR optimum** (2 → 0.9428,
-  4 → 0.9440 on fold 0), because averaging smooths the map and sisters at p5 5.41 µm
-  merge. SWA is producing members; `scripts/soup_checkpoints.py` builds any subset.
-- **A genuinely independent third detector** for the blend. Souping cancels
-  checkpoint-selection noise and blending cancels initialisation noise, and the two were
-  measured to *add* (+0.0036 for the blend on top of the soup). A third run would extend
-  the second axis. The only independent checkpoint on this box is `E7_alltrain` at
-  0.8007 through the identical stack against the pack's 0.8760, so a third member would
-  be 0.076 weaker than the two we have — a poor bet at the blend's measured weight, and
-  the reason this has not been tried.
-- **The division pool, reopened by measurement** (see above). It is the largest single
-  pool left by arithmetic: divJ 0.1020 contributes 0.0102 of the 0.9463, so ~0.09 of
-  score sits behind the term. Unlike every other remaining lever it is not a knob at a
-  measured optimum — it is a candidate-generation rule that has never been varied.
+- **The division gates, which the rejection log found and which PAY.** `parent 12 /
+  symmetry 0.9` gives fold 0 0.9469 against 0.9463 with divJ 0.1020 → **0.1133**, the
+  largest division-term gain in the project, as a pure division effect (recall and node
+  ratio unchanged). Fold 1 is confirming. This is the one lever that was not at a measured
+  optimum, and the *method* is the transferable part: sweep gates against a log that names
+  which clause fires and at what value, never blind.
+- **Souping the secondary: +0.0017 weighted, and free.** Already banked into the v15
+  candidate. Its fold asymmetry (+0.0006 on fold 0, **+0.0083 on fold 1**) is the shape to
+  expect from any detector-side variance reduction, and the reason to keep trusting the
+  fold-1 number on that axis specifically.
+- **More soup members — member count has an INTERIOR optimum** (2 → 0.9428, 4 → 0.9440,
+  8 → 0.9466 on fold 0), because averaging smooths the map and sisters at p5 5.41 µm merge.
+  4 is the operating point. `scripts/soup_checkpoints.py` builds any subset, and
+  `shehailrs/…350ep` adds a third *same-run* member for the secondary.
+- ~~**A genuinely independent third detector** for the blend.~~ **Largely closed by
+  measurement 2026-09-22.** Three independent public runs were found and hashed (see the
+  checkpoint inventory), so the material existed — but the first one measured,
+  `pilkwang/biohub-tracking-support-pack-v1`, scores **0.9321 as the secondary against
+  pack50's 0.9463, i.e. −0.0142**. So the detection blend is *sensitive to secondary
+  quality*: its +0.0036 is not "any second model helps", it needs a peer, and an
+  independent-but-weaker checkpoint actively costs. `ftdet` and `norel7` remain untested.
+  Two further constraints make this axis narrow regardless: our own `E7_alltrain` is 0.076
+  weaker through the identical stack, and the **12 h cap** allows only one secondary
+  because each member costs an extra encode (v14 runs ~8.6 h graded).
+- **The division pool's remaining 80 %** — 99 of 124 GT divisions never become candidates
+  at all, and ~0.09 of score sits behind the term. But note what is now *closed* inside it
+  (see Status): the ranking does not bind, `n_cand` is measured negative, and the edge head
+  carries no division signal (AUC 0.502). What is left is detection- and linking-limited —
+  7 of 25 true daughters were never even inside the sister gate — or needs a fork
+  classifier trained for the task, which is a new model rather than a knob.
 - **The decision rule for spending a slot.** One clean point per side: the detector-side
   blend transferred at ~81 % (+0.0062 CV → +0.005 LB) and the edge-head-side reference
   path at ~35 % (+0.0346 → +0.012). Weight arms by which side they touch, but treat each
