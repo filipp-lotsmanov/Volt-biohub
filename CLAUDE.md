@@ -1777,10 +1777,30 @@ measured; nothing here licenses a prediction about the score.** Five of my divis
 predictions have now been falsified, and the audit above is a measurement of the *pool*,
 not of the outcome.
 
-**AND THE HEADROOM IS LARGE: 19 of 25 GT divisions never reach the pool at all.** Only
-**24 %** are represented by an admitted candidate, and all 6 that are get accepted at
-rank 0. So the division loss is almost entirely *proposal* failure, which is the first
-time this project has had a number for that.
+**AND THE HEADROOM IS LARGE: 99 of 124 GT divisions never reach the pool at all.**
+Confirmed on the **full 128-sample fold 0**, not just the division-rich subset, with four
+times the positives:
+
+| | 6 division-rich samples | **full fold 0** |
+|---|---|---|
+| GT divisions | 25 | **124** |
+| represented by an admitted candidate | 6 (24.0 %) | **25 (20.2 %)** |
+| **missing from the pool entirely** | 19 | **99** |
+| true forks accepted | 6 / 6 | **25 / 25** |
+| their rank, p25/p50/p75 | 0 / 0 / 0 | **0 / 0 / 0** |
+| lost to the frame cap | 0 | **0** |
+| lost to the global cap | 0 | **0** |
+| frames where `n_props > frame_cap` | 12.8 % | 22.1 % |
+| candidates accepted | 83.1 % | 68.2 % |
+| shipped ranking AUC | 0.531 | **0.541** |
+
+**Every one of 25 true forks that reaches the pool is accepted, and every one ranks
+first.** The cap binds more often at full-fold scale (22.1 % of frames) and still loses
+nothing, because the ordering puts the real fork on top whenever there is one. So the
+division loss is almost entirely *proposal* failure — the first number this project has
+had for that — and a better ranker has nothing to win: it would have to reorder cases
+that do not exist. The best single feature over the admitted pool is forward divergence
+at AUC 0.663, and it is already a gate rather than a ranking term.
 
 **MY OWN FIX WAS THEN FALSIFIED BY THE NEXT MEASUREMENT, BEFORE THE ARM LANDED — record
 it as a wrong prediction, not as a near miss.** I argued the single-nearest-orphan rule
