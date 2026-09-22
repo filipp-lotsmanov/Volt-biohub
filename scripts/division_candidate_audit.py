@@ -147,6 +147,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump", type=Path, required=True)
     ap.add_argument("--log", type=Path, required=True)
+    ap.add_argument("--reject", type=Path, default=None,
+                    help="CSV from VOLT_DIV_REJECT: every orphan inside the "
+                         "sister gate with the first gate that refused it. This "
+                         "is what attributes the GT divisions that never reach "
+                         "the pool at all -- the dump alone records survivors.")
     ap.add_argument("--data-dir", type=Path, default=DATASET_PATH)
     ap.add_argument("--iso-um", type=float, default=1.625)
     args = ap.parse_args()
@@ -175,6 +180,7 @@ def main() -> None:
 
     # --- 2/3. label against GT ---
     labels = []
+    n_gt = 0
     for call, sub in df.group_by("call", maintain_order=True):
         idx = int(call[0]) - 1
         if idx < 0 or idx >= len(names):
@@ -185,10 +191,21 @@ def main() -> None:
         except Exception as exc:                      # a missing geff is not fatal here
             print(f"  ! {names[idx]}: {exc}")
             divs = []
+        n_gt += len(divs)
         labels.append(label(sub, divs, args.iso_um))
     df = df.sort("call").with_columns(pl.Series("y", np.concatenate(labels)))
 
+    # The headroom of the whole proposal-limited line. If most GT divisions are
+    # already represented in the pool, widening candidate generation cannot pay
+    # however free the false ones are -- so this ratio, not the cap statistics,
+    # is what bounds the line. Counted only over videos that produced at least
+    # one candidate, since a video contributing no rows is invisible here.
     n_pos = int(df["y"].sum())
+    print("\n--- headroom: GT divisions vs the pool ---")
+    print(f"GT divisions in the audited videos   {n_gt}")
+    print(f"represented by an admitted candidate {n_pos} "
+          f"({100 * n_pos / max(1, n_gt):.1f} %)")
+    print(f"MISSING from the pool entirely       {max(0, n_gt - n_pos)}")
     print(f"\n--- 2. where do the {n_pos} TRUE forks sit in the ranking ---")
     if n_pos:
         pos = df.filter(pl.col("y") == 1)
@@ -221,6 +238,35 @@ def main() -> None:
     out = args.dump.with_suffix(".labelled.csv")
     df.write_csv(out)
     print(f"\nlabelled pool -> {out}")
+
+    if args.reject is not None and args.reject.exists():
+        rj = pl.read_csv(args.reject)
+        rlabels = []
+        for call, sub in rj.group_by("call", maintain_order=True):
+            idx = int(call[0]) - 1
+            divs = (gt_divisions(names[idx], args.data_dir)
+                    if 0 <= idx < len(names) else [])
+            rlabels.append(label(sub, divs, args.iso_um))
+        rj = rj.sort("call").with_columns(pl.Series("y", np.concatenate(rlabels)))
+        true_rows = rj.filter(pl.col("y") == 1)
+        print(f"\n--- 4. what refuses the TRUE second daughter "
+              f"({true_rows.height} considered) ---")
+        if true_rows.height:
+            for r in (true_rows.group_by("reason")
+                      .agg(pl.len().alias("n"), pl.col("k_rank").median())
+                      .sort("n", descending=True).iter_rows(named=True)):
+                print(f"  {r['n']:4d}  {r['reason']:<18} "
+                      f"median k_rank {r['k_rank']}")
+            reachable = true_rows.filter(pl.col("reason") == "pass")
+            print(f"\n  would PASS every gate: {reachable.height}")
+            if reachable.height:
+                ks = reachable["k_rank"]
+                print(f"  their k_rank p50/p90/max: {ks.median()} / "
+                      f"{ks.quantile(0.9)} / {ks.max()}   "
+                      f"<- n_cand must exceed this to reach them")
+        rout = args.reject.with_suffix(".labelled.csv")
+        rj.write_csv(rout)
+        print(f"\nlabelled rejections -> {rout}")
 
 
 if __name__ == "__main__":

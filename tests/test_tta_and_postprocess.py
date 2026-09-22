@@ -251,3 +251,31 @@ def test_fallback_never_exceeds_two_children() -> None:
         for a, _b, _w in t_links:
             counts[a] = counts.get(a, 0) + 1
         assert not counts or max(counts.values()) <= 2
+
+
+def test_reject_diagnostic_agrees_with_the_live_gate_order(tmp_path, monkeypatch) -> None:
+    """The diagnostic re-implements the gates; drift would misattribute the loss.
+
+    It is a re-implementation on purpose -- the live loop must stay exactly the
+    shipped behaviour and must not carry a diagnostic in its hot path -- so the
+    thing worth pinning is that the two agree on the same fixture. The pool
+    audit measured 19 of 25 GT divisions never reaching the pool at all, and
+    this is the column that says which gate loses them; a wrong gate order here
+    would point the next fix at the wrong clause.
+    """
+    import csv
+
+    from volt_biohub.postprocess import add_safe_divisions
+
+    out_csv = tmp_path / "reject.csv"
+    monkeypatch.setenv("VOLT_DIV_REJECT", str(out_csv))
+    coords, links = _fork_fallback_fixture()
+    add_safe_divisions(coords, links, 1.625, n_cand=1)
+
+    rows = list(csv.DictReader(out_csv.read_text().splitlines()))
+    by_rank = {int(r["k_rank"]): r["reason"] for r in rows}
+    # The duplicate is nearest and has no child of its own; the true sister is
+    # behind it and clears everything. That is exactly why n_cand=1 finds
+    # nothing here while n_cand=2 finds the fork.
+    assert by_rank[0] == "no_grandchild"
+    assert by_rank[1] == "pass"

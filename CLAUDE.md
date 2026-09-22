@@ -1777,6 +1777,60 @@ measured; nothing here licenses a prediction about the score.** Five of my divis
 predictions have now been falsified, and the audit above is a measurement of the *pool*,
 not of the outcome.
 
+**AND THE HEADROOM IS LARGE: 19 of 25 GT divisions never reach the pool at all.** Only
+**24 %** are represented by an admitted candidate, and all 6 that are get accepted at
+rank 0. So the division loss is almost entirely *proposal* failure, which is the first
+time this project has had a number for that.
+
+**MY OWN FIX WAS THEN FALSIFIED BY THE NEXT MEASUREMENT, BEFORE THE ARM LANDED — record
+it as a wrong prediction, not as a near miss.** I argued the single-nearest-orphan rule
+was the culprit and built `--div-n-cand` around it. `VOLT_DIV_REJECT` logs every orphan
+inside the sister gate with the first gate that refuses it, and it says otherwise. Of the
+**18** true second daughters ever considered:
+
+| refused by | n | median `k_rank` |
+|---|---|---|
+| **`d_par`** (parent distance > 9.0 µm) | **7** | 0 |
+| **`symmetry`** (τ > 0.6) | **5** | 0 |
+| would pass every gate | 6 | 0 |
+
+**Every true daughter that would pass is already the NEAREST orphan — max `k_rank` 0.**
+The true sister is never hidden behind a duplicate in these data, so `n_cand > 1` reaches
+nothing and the mechanism I wrote a test for does not occur at this operating point. The
+test and the knob are kept because the knob is a no-op at its default and the fixture
+pins a real behaviour, but the hypothesis is dead.
+
+**The gates that DO bind are `d_par` and `symmetry`, and they are mis-set rather than
+unreachable:**
+
+| gate | shipped | true daughters need | if moved there, false also admitted |
+|---|---|---|---|
+| `d_par` | 9.0 | min 9.34, **p50 10.41**, max 11.83 | 10 → 3/7 true; **12 → 7/7 true, 4,647 false** |
+| `symmetry` τ | 0.6 | min 0.69, **p50 0.84**, max 1.07 | 0.9 → 4/5 true, 710 false; 1.2 → 5/5, 1,535 |
+
+That 1:664 ratio at `d_par` 12 is the same 1:556 base rate measured on 2026-09-12, which
+is *why* every widening arm lost: the gates sit exactly at the knee, and with a
+non-binding cap the flood is accepted rather than out-ranked.
+
+**But the 2026-09-18 widening arm tested the wrong pair.** It moved parent 9 → 11 and
+**sister** 14 → 18 while leaving symmetry at 0.6, on fold 1, under the pre-reference-path
+pipeline. Sister was never the blocker — the largest `d_sis` among refused true daughters
+is **13.98 µm, inside the shipped 14.0** — and symmetry is an independent blocker for 5
+of 18 that it never touched. Parent 11 also only reaches 5 of 7.
+
+**One limitation of the diagnostic, stated so the cost figures are not over-read:** the
+reject log records only the *first* failing gate, so a row refused by `d_par` was never
+tested against symmetry, the grandchild clause or divergence. The 4,647 false admits are
+therefore an **upper bound** on what a looser `d_par` adds to the pool, and divergence —
+which does most of the filtering in the admitted pool — would absorb an unknown share.
+That is exactly why `--div-parent-um 12 --div-symmetry-tau 0.9` is being measured on the
+full fold rather than argued from the log.
+
+Also worth noting: **7 of the 25 GT divisions were never even considered**, i.e. the true
+daughter was not an unclaimed orphan within 14 µm of the existing child, or the divider
+was not a single-child node. Those are detection- and linking-limited and no division
+knob reaches them.
+
 The only fork feature ever measured to separate is the parent's two-frame intensity
 *drop* (AUC 0.632), already measured at +0.0008 alone and subsumed by the blend. A
 learned fork *classifier* is now a lower priority than it looked, for the same reason:
@@ -3354,11 +3408,17 @@ which differs in the whole detector, so one systematic problem cannot take both 
   true fork already in the pool ranks first and is accepted (6/6). So a better *ranker*
   has nothing to do — the pool is missing its candidates, because the mutual-nearest rule
   proposes only the **single** nearest orphan and a spurious detection nearer than the
-  true sister is unreachable by any gate width. That is a selection rule, not a
-  threshold, which is why every gate sweep came back empty. `--div-n-cand` is the knob;
-  it is launched and unmeasured, and five division predictions have already been
-  falsified, so do not assume it works. Over-proposing is nearly free on this metric:
-  only 40 of 4,053 emitted forks are ever charged as FP.
+  true sister is unreachable by any gate width. **That sub-hypothesis is itself now
+  falsified** — the rejection log says every true daughter that clears the gates is
+  already the *nearest* orphan (max `k_rank` 0), so `--div-n-cand` reaches nothing. The
+  gates that bind are **`d_par`** (7 of 18 refused, needing up to 11.8 µm against the
+  shipped 9.0) and **`symmetry`** (5 of 18, needing up to 1.07 against 0.6); the
+  2026-09-18 widening arm moved parent and *sister* on fold 1 and left symmetry alone,
+  and sister was never the blocker. `--div-parent-um 12 --div-symmetry-tau 0.9` is the
+  targeted arm, running on fold 0. Over-proposing is cheap on this metric — only 40 of
+  4,053 emitted forks are charged as FP — but the gates sit at a 1:664 knee, so this is
+  a genuine trade rather than a free win, and 19 of 25 GT divisions missing the pool is
+  the headroom it is competing for.
 - **det_threshold**: exhausted in both directions (0.95 / 0.965 / 0.98 all within noise).
 - **The port inventory**: every remaining component is worth ≤ +0.0015 here against the
   reference's published ≥ +0.005, because their deltas repair a defect we do not have.

@@ -334,6 +334,47 @@ def _self_rise(node: int, t: int, pos, parents, intensity, lag: int = 2):
 _DIV_DUMP_CALL = 0
 
 
+def _div_reject_rows(path, rows):
+    new = not os.path.exists(path)
+    with open(path, "a") as fh:
+        if new:
+            fh.write("call,t,k_rank,reason,d_par,d_sis,d_exist,"
+                     "pz,py,px,cz,cy,cx,hz,hy,hx\n")
+        fh.writelines(rows)
+
+
+def _div_reject_reason(p, ch, cand, pos, iso_um, d_exist, children, claimed,
+                       parent_um, sister_um, symmetry_tau, diverge_um,
+                       require_grandchildren):
+    """The first gate that rejects (p, ch, cand), or "pass".
+
+    Deliberately a re-implementation of the gate order rather than a
+    refactor of the live loop: the live loop must stay byte-for-byte the
+    shipped behaviour, and a shared helper would put a diagnostic in its
+    hot path. The order here mirrors it and the test pins the two agreeing.
+    """
+    if cand in claimed:
+        return "claimed"
+    d_par = _dist(pos[p], pos[cand], iso_um)
+    d_sis = _dist(pos[ch], pos[cand], iso_um)
+    if d_par > parent_um:
+        return "d_par"
+    if d_sis > sister_um:
+        return "d_sis"
+    m = 0.5 * (d_exist + d_par)
+    if m > 0 and abs(d_exist - d_par) / m > symmetry_tau:
+        return "symmetry"
+    g1, g2 = children.get(ch, []), children.get(cand, [])
+    if len(g1) > 1 or len(g2) > 1:
+        return "grandchild_multi"
+    if len(g1) == 1 and len(g2) == 1:
+        if _dist(pos[g1[0]], pos[g2[0]], iso_um) - d_sis < diverge_um:
+            return "diverge"
+    elif require_grandchildren:
+        return "no_grandchild"
+    return "pass"
+
+
 def _div_dump_rows(path, rows):
     new = not os.path.exists(path)
     with open(path, "a") as fh:
@@ -403,7 +444,9 @@ def add_safe_divisions(
     """
     global _DIV_DUMP_CALL
     dump_path = os.environ.get("VOLT_DIV_DUMP")
-    if dump_path:
+    reject_path = os.environ.get("VOLT_DIV_REJECT")
+    reject_rows: list[str] = []
+    if dump_path or reject_path:
         _DIV_DUMP_CALL += 1
 
     ts, pos, edges, _ = _flatten(coords_per_t, links_per_t)
@@ -501,6 +544,28 @@ def add_safe_divisions(
                     )
                 break
 
+            if reject_path:
+                # Every orphan within the sister gate of the existing child,
+                # ordered by that distance, with the reason each is refused.
+                # `k_rank` is what says whether the true sister was simply
+                # further down the queue than `n_cand` reaches.
+                near = tree.query_ball_point(pos[ch], sister_um / iso_um)
+                near.sort(key=lambda o: _dist(pos[ch], pos[orphans[o]], iso_um))
+                for k_rank, o in enumerate(near):
+                    c = orphans[o]
+                    why = _div_reject_reason(
+                        p, ch, c, pos, iso_um, d_exist, children, claimed,
+                        parent_um, sister_um, symmetry_tau, diverge_um,
+                        require_grandchildren)
+                    reject_rows.append(
+                        f"{_DIV_DUMP_CALL},{t},{k_rank},{why},"
+                        f"{_dist(pos[p], pos[c], iso_um):.4f},"
+                        f"{_dist(pos[ch], pos[c], iso_um):.4f},{d_exist:.4f},"
+                        f"{pos[p][0]:.2f},{pos[p][1]:.2f},{pos[p][2]:.2f},"
+                        f"{pos[c][0]:.2f},{pos[c][1]:.2f},{pos[c][2]:.2f},"
+                        f"{pos[ch][0]:.2f},{pos[ch][1]:.2f},{pos[ch][2]:.2f}\n"
+                    )
+
         ranked = sorted(props)[:frame_cap]
         added_before = set(added)
 
@@ -527,6 +592,9 @@ def add_safe_divisions(
                     f"{ph[0]:.2f},{ph[1]:.2f},{ph[2]:.2f}\n"
                 )
             _div_dump_rows(dump_path, rows)
+
+    if reject_path and reject_rows:
+        _div_reject_rows(reject_path, reject_rows)
 
     return _unflatten(ts, pos, edges | added, n_frames)
 
