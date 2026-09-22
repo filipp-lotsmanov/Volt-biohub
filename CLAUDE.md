@@ -1836,15 +1836,36 @@ The only fork feature ever measured to separate is the parent's two-frame intens
 learned fork *classifier* is now a lower priority than it looked, for the same reason:
 ranking is not where the loss is.
 
-**One more signal is unavailable by construction, and it is worth knowing before anyone
-proposes it.** The obvious new feature is the edge head's own probability for the
-divider→orphan pair, mirroring the relink's learned bonus (our biggest post-processing
-win at +0.0073). It cannot be read today: `reference_predict.predict_video` records only
-pairs that **exceeded threshold 0.5 and won the greedy resolution**, so the sparse
-`probs` handed to `probs_as_matrices` contains accepted edges only. The sub-threshold
-divider→orphan probabilities — exactly the ones a fork ranker wants — are discarded
-before post-processing sees them. Recovering them is one argmax per unparented target
-column inside `predict_video`, not a new forward pass.
+**AND THE OBVIOUS NEW SIGNAL IS MEASURED AND DEAD: the edge head carries NO division
+information.** The natural feature is the head's own probability for the divider→orphan
+pair, mirroring the relink's learned bonus, which is our biggest post-processing win at
++0.0073. It was not readable at all — `predict_video` records only pairs that exceeded
+threshold 0.5 *and* won the greedy resolution, so an unparented target reaches
+post-processing with no learned evidence attached, and an unparented target is exactly
+what a second daughter is. It is now recovered (`orphan_parents` out-param →
+`orphan_parents_per_frame` → `--div-orphan-probs`), diagnostic-only, and the answer is
+flat:
+
+| among the gate-refused candidates | n | with a recorded probability |
+|---|---|---|
+| **true** second daughters | 12 | **1** |
+| true, would-pass (control) | 6 | **0** |
+| **false** | 11,470 | 983 (8.6 %) |
+
+**AUC 0.502 — chance.** And the coverage pins the interpretation rather than leaving it
+open: recording the top **50** of a ~600-way softmax should reach 8.3 % of pairs at
+random, the false candidates appear at 8.6 %, and the true daughters at 1/12 = 8.3 %.
+**The divider's rank among an orphan's candidate parents is indistinguishable from
+uniform.** The first version of this test recorded only the top 5 and could not separate
+"no signal" from "signal below the 5th source"; at 50 that ambiguity is gone.
+
+The mechanism is structural, not a training deficiency: the softmax is over *sources* per
+target, so it ranks a cell's possible parents, and a divider 9–12 µm away is out-competed
+by dozens of nearer cells. The head was never asked "is this a division", and it has not
+learned it as a side effect. So a learned fork classifier would have to be **trained for
+the task** — the existing head cannot be repurposed — and that is a new model, not a
+feature. Keep the plumbing: it is a no-op at its default, all three probes score
+bit-identically (0.9776, divJ 0.2000), and it is the artifact behind this negative.
 
 One counting trap, because the first version of this analysis fell into it: a divider
 with out-degree 1 *necessarily* parents one daughter, so "a daughter already has a
