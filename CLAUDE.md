@@ -2146,6 +2146,54 @@ how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
+**2026-09-22 — v14 SCORED 0.926, AND IT FALSIFIES THIS FILE'S OWN PREDICTION. THE SOUP
+TRANSFERRED AT 13 %, NOT 80 %.** Submission `56460859`, read by ref: **0.926** against
+v13's 0.925. Rank **1616 of 3804** (2038 → 1647 → 1616). CV said +0.0075; the board gave
+**+0.001**.
+
+This file predicted "at that rate the soup's +0.0075 lands near 0.932–0.933", using the
+~81 % rate measured for the dual-seed blend. **Wrong by a factor of six**, and the reason
+was written down here before the submission and then not applied: *"both members trained
+on all 199 movies, so no held-out set exists for them and a soup's CV gain cannot be
+separated from sharper memorisation. Only the leaderboard can arbitrate this one."* It has
+arbitrated. **About 87 % of the soup's CV gain was memorisation.**
+
+**The fix is a sharper rule, because "detector-side" was too coarse a category:**
+
+| change | CV Δ | LB Δ | transfer |
+|---|---|---|---|
+| reference path + ILP (edge-head-side) | +0.0346 | +0.012 | **35 %** |
+| dual-seed blend (**across**-run averaging) | +0.0062 | +0.005 | **81 %** |
+| weight soup (**within**-run averaging) | +0.0075 | **+0.001** | **13 %** |
+
+**Across-run averaging generalises; within-run averaging mostly does not.** The blend
+combines two *independently trained* nets, so it cancels initialisation and data-order
+noise — a real generalisation gain. A soup averages checkpoints of *one* run that trained
+on both our folds, so what it cancels is checkpoint-selection noise *measured on data the
+run memorised*; sharpening that fit shows up in CV and not on a third embryo. Both are
+"detector-side", and they differ by 6×.
+
+**Consequences, and they are not small:**
+
+1. **Every remaining CV gain we hold is within-run averaging.** soup4-over-soup2
+   (+0.0016), the souped secondary (+0.0017 weighted), the third secondary member
+   (+0.0015 on fold 0) — all same-run. At 13 % those are worth about **+0.0006 on the
+   board in total**, not +0.005. So v15 should be expected at **~0.927**, not the ~0.929
+   I projected earlier in the day from the 81 % figure. Ship it — it is positive and slots
+   are not scarce — but do not expect the CV delta.
+2. **Our weighted CV of 0.9466 is NOT an estimate of our board score.** The honest
+   estimate is ~0.927. The gap is the contaminated half, and it has now been measured
+   rather than argued about.
+3. **The public rank is nearly insensitive where we sit and a wall above.** 0.925 → 0.926
+   bought **one rank**; 0.925 → 0.930 is 63 ranks; and there are **729 teams at exactly
+   0.947** with 174 at 0.946 and 100 at 0.948. Nothing available to us moves us through
+   that pile, which is the argument for the endgame plan already written below: pick both
+   final slots on CV, accept the public rank, and let the private 71 % scatter the pile.
+4. **What would still transfer** is an across-run or genuinely-held-out gain. The blend is
+   already in; a third independent detector was the obvious extension and both candidates
+   measured worse (−0.0075, −0.0142). So the axis with the good transfer rate is the one
+   with no material left.
+
 **2026-09-22 — THE PRIMARY/SECONDARY ROLE ASSIGNMENT: no reason to swap, but MY ARM WAS
 CONFOUNDED and the family question stays open.** We run `pubfull` as primary (0.85 of the
 detection blend, and it supplies the edge head's base probabilities) with `pack50` as
