@@ -661,6 +661,8 @@ def run(
     gaps: bool = True,
     relink_kwargs: dict | None = None,
     gap_kwargs: dict | None = None,
+    smooth: bool = True,
+    smooth_kwargs: dict | None = None,
 ) -> Path:
     """Predict every video in *test_dir* and write a validated submission."""
     names = list_datasets(test_dir)
@@ -955,6 +957,15 @@ def run(
                        if probs_per_pair is not None and not use_reference else {}),
                 } or None,
                 gap_kwargs=gap_kwargs,
+                # Line-fit smoothing had no path from here at all, so it always
+                # ran at window 2 / weight 0.8 and could be neither swept nor
+                # switched off. It is the one pass the reference's own clean
+                # ablation prices unambiguously positive (+0.0072) and the only
+                # one of theirs we had never checked against our pipeline --
+                # where every other ported component's published delta failed to
+                # transfer, in both directions.
+                smooth=smooth,
+                smooth_kwargs=smooth_kwargs,
                 prune_fn=(_make_prune(probs_per_pair)
                           if ilp_prune and not use_reference else None),
             )

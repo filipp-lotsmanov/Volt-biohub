@@ -140,6 +140,24 @@ def main(argv=None) -> int:
     p.add_argument("--postprocess", action="store_true",
                    help="Full post-detection stack; replaces gate linking.")
     p.add_argument("--min-track-len", type=int, default=6)
+    p.add_argument("--no-smooth", action="store_true",
+                   help="Turn OFF line-fit trajectory smoothing. It had no CLI "
+                        "path until now, so it has only ever run at its "
+                        "defaults. The reference's clean ablation prices it at "
+                        "+0.0072, the largest of their unambiguously positive "
+                        "passes -- but every other component of theirs we "
+                        "ported failed to reproduce its published delta here, "
+                        "in both directions, so it is worth one arm.")
+    p.add_argument("--smooth-window", type=int, default=None,
+                   help="Half-width of the neighbourhood the linear fit uses "
+                        "(default 2). Only nodes with an unambiguous chain on "
+                        "both sides move, so a wider window reaches fewer "
+                        "nodes, not more.")
+    p.add_argument("--smooth-weight", type=float, default=None,
+                   help="How far each node is pulled toward its fit, 0-1 "
+                        "(default 0.8). Smoothing already pulled a border node "
+                        "outside the grid once, which the validator caught and "
+                        "the score would not have.")
     p.add_argument("--ilp", action="store_true",
                    help="Solve the RAW learned candidate graph with tracksdata's "
                         "ILP instead of assigning per frame pair. The reference's "
@@ -352,6 +370,11 @@ def main(argv=None) -> int:
                 "edge_weight": args.ilp_edge,
             }.items() if v is not None} or None,
             div_orphan_probs=args.div_orphan_probs,
+            smooth=not args.no_smooth,
+            smooth_kwargs={k: v for k, v in {
+                "window": args.smooth_window,
+                "weight": args.smooth_weight,
+            }.items() if v is not None} or None,
             div_kwargs={k: v for k, v in {
                 "symmetry_tau": args.div_symmetry_tau,
                 "diverge_um": args.div_diverge_um,
