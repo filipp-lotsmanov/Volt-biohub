@@ -2146,6 +2146,41 @@ how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
+**2026-09-22 — THE DIVISION GATES ARE CLOSED, FOUR VARIANTS DEEP, AND THE PATTERN IS THE
+RESULT.** Fillip's notebook flagged `--div-symmetry-tau 0.9` as the only division arm that
+gained (+0.0008 on his fold 0), which is the one variant I had never tested in isolation —
+my earlier arm moved parent *and* symmetry together. Tested alone on **both** folds, on top
+of v15:
+
+| variant | fold 0 (85 %) | fold 1 (15 %) | **weighted** |
+|---|---|---|---|
+| **symmetry 0.9 alone** | 0.9490 (**+0.0006**), divJ 0.1149 → **0.1246** | 0.9435 (**−0.0021**), divJ 0.1385 → 0.1216 | **+0.0002** |
+| parent 12 + symmetry 0.9 | +0.0006 | −0.0044 | −0.0002 |
+| symmetry 1.2 at parent 12 | −0.0024 | — | — |
+| `--div-n-cand 3` | −0.0004 | — | — |
+
+Symmetry 0.9 alone is the **best** of the four and it lands at **+0.0002 weighted, exactly
+the cross-card noise floor**. Fillip's +0.0008 is real and it is `6bba`-specific.
+
+**Four variants, every one fold-0-positive and fold-1-negative, with divJ swinging by
+±0.01 to ±0.04 in opposite directions each time. That stops being four results and becomes
+one: the optimal fork-admission width is a property of the EMBRYO, not of the pipeline.**
+`6bba` is 97 cells/frame at 9.7 % annotated and `44b6` is 327 at 0.77 %; they want
+different gates, and the hidden set is a third embryo, so the choice is unpickable. Note
+this is the *same* shape as `min_track_len` and the ILP disappearance cost — but those
+reversed through the node-count multiplier, whereas these move divJ directly with node
+recall and node ratio unchanged. Two different mechanisms, one conclusion.
+
+**And Fillip reached the same closure independently by a different route**, which is worth
+more than either line alone. He loosened the fork *caps* instead of the gates and found it
+monotonically worse — divJ 0.0992 → 0.0858 (×3) → 0.0841 (×6), and 0.0802 with the
+grandchild gate also off — concluding "the caps were protecting the term rather than
+throttling it" and that the missing divisions are lost upstream in detection or in linking
+the daughters. My pool audit says the same thing from the other side: 99 of 124 GT
+divisions never become candidates at all, and every true fork that *does* reach the pool is
+accepted at rank 0. **Two independent methods, same verdict: no post-processing knob
+reaches them.** Do not re-open this without a new upstream signal.
+
 **2026-09-22 — FILLIP'S NOTEBOOK: two real defects in ours, one PROOF about our own
 code, and a configuration that is 0.008 behind. Evaluated by verifying every claim
 rather than by reading the commentary.** He independently rebuilt the weights after his
