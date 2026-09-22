@@ -2070,12 +2070,36 @@ fold 0, the knob is closed. The general shape is worth remembering: a node-count
 move the multiplier in the predicted direction and still lose, because node recall gates
 how much of the linking gets graded (metric fact 3).
 
-**Souping the secondary is the third averaging axis and it works, at the size the blend
-weight predicts.** The secondary carries detection weight 0.15, so if souping a member is
-worth ~+0.0067 to the primary (0.9361 → 0.9428), the secondary's share should be roughly
-0.15/0.85 of that ≈ +0.0012; measured +0.0006, the same order. That is a consistency
-check rather than a new mechanism, and it costs nothing at inference — a different weights
-file, no extra encode. Persisted and md5-verified as
+**Souping the secondary is the third averaging axis, and FOLD 1 SAYS IT IS FOURTEEN TIMES
+BIGGER THAN FOLD 0 SUGGESTED. New best weighted LOEO CV: 0.9466.**
+
+| | fold 0 | fold 1 | **weighted** |
+|---|---|---|---|
+| soup4 + raw pack50 secondary + edge head 0.5 + bidir 0.25 | 0.9463 | 0.9367 | 0.9449 |
+| **+ souped secondary** | 0.9469 | **0.9450** | **0.9466** |
+| adjusted edge Jaccard | 0.9361 → 0.9367 | **0.9261 → 0.9319** | — |
+| division Jaccard | 0.1020 → 0.1016 | 0.1061 → **0.1311** | — |
+
+**+0.0083 on fold 1 against +0.0006 on fold 0, and it is not the division lottery** —
+adjusted edge Jaccard alone moves +0.0058 there, well clear of any noise floor. Fold 1's
+divJ rests on ~26 events and should be discounted; its adjJ does not.
+
+**The fold asymmetry reproduces a pattern already in this file, which is what makes it
+credible rather than a fluke.** The dual-seed blend measured +0.0033 on fold 0 and
+**+0.0092 on fold 1** under the old detect-and-link. Detector-side variance reduction pays
+far more on `44b6` — the crowded, 0.77 %-annotated embryo where the detector is weakest —
+than on `6bba`, where it is already near its ceiling. That is the same direction as the
+standing argument that **our CV understates detector-side changes**, and the hidden set is
+a third unseen embryo, i.e. the regime where the larger number applies. Note also that
+fold 1's node ratio is −0.1830, deep in the multiplier's bonus region, so extra retained
+nodes are nearly free there while fold 0 sits at −0.0345 and cannot absorb them — the same
+per-fold asymmetry that reversed every node-retention knob, here working in our favour.
+
+It costs nothing at inference: a different weights file, no extra encode. The earlier
+reading of this arm — that +0.0006 was "the size the blend weight predicts", 0.15/0.85 of
+the primary soup's +0.0067 ≈ +0.0012 — held for fold 0 and **understated the whole
+picture**, because it assumed the effect scales only with the blend weight and not with
+how much headroom the fold's detector has. Persisted and md5-verified as
 `weights/soup_members/soup_pack_secondary_best.pth`
 (`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
 
