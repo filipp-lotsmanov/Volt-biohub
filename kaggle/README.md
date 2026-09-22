@@ -178,7 +178,19 @@ cat > /tmp/volt-weights/dataset-metadata.json <<'EOF'
 {"title": "volt-weights", "id": "USERNAME/volt-weights", "licenses": [{"name": "other"}]}
 EOF
 uv run kaggle datasets create -p /tmp/volt-weights -r zip
+# EVERY push after, and -r zip IS LOAD-BEARING:
+uv run kaggle datasets version -p /tmp/volt-weights -m "..." -r zip
 ```
+
+**`-r zip` is not optional and omitting it fails silently** (2026-09-22). The CLI's
+`--dir-mode` defaults to **`skip`**, so a push without it uploads the root files and
+**drops every subdirectory** — including `secondary/`. Nothing errors: the version
+processes normally, `datasets files` lists three files instead of five, and
+`find_secondary_weights()` then returns `None`, at which point `notebook.py`
+degrades to the single-detector configuration *by design*. The run completes, the
+validator passes, and the submission is quietly worth ~0.920 instead of ~0.927. This
+is the same shape as the `split_0/` failure below: a missing input degrades rather
+than raises, so **the upload has to be verified, not assumed**.
 
 **What Kaggle's unzip actually does — measured on the real upload 2026-09-11,
 and it is not consistent.** `-r zip` sends each top-level subdirectory as
@@ -278,6 +290,13 @@ into the Kaggle editor.
 
 1. `uv run python kaggle/check_offline.py` — imports and runs with tracksdata hidden.
 2. `kaggle datasets files <each>` — sizes match local, so you know the *version*
+   mounted is the one you built. **But sizes are not always sufficient, and for
+   `volt-weights` they are not** (2026-09-22): every soup of this architecture is
+   **8,355,927 bytes**, so a size check proves the file is *a* soup and cannot tell
+   soup2 from soup4 or soup3. When two candidate artifacts share a byte size,
+   download the uploaded version and **md5 it**:
+   `kaggle datasets download <ref> --unzip -p /tmp/check && md5sum /tmp/check/**/*.pth`.
+   That is 15 MB and it is the only check that distinguishes them
    you think is mounted is the one that is.
 3. `kaggle kernels push` → `status` → `output`, and **read the log**: the
    detector actually chosen, the test dir actually found, the per-video timing.
