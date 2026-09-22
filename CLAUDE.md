@@ -1966,6 +1966,39 @@ reassuring count. `--init-weights` loads trunk, detection head and transformer s
 from either a bare state dict or a training checkpoint — which is what continuing the
 public 400-epoch run for more soup members requires.
 
+**2026-09-22 — THE KNOB SWEEP AROUND THE BEST CONFIGURATION. Baseline is soup4 + raw
+pack50 secondary + edge head 0.5 + bidir 0.25 = fold 0 0.9463, adjJ 0.9361, divJ 0.1020,
+node recall 0.9830, node ratio −0.0350.** One variable each, full fold 0:
+
+| arm | score | adjJ | divJ | node recall | ratio | verdict |
+|---|---|---|---|---|---|---|
+| **souped secondary** (pack50 best + last) | **0.9469** | 0.9367 | 0.1016 | 0.9835 | −0.0293 | **+0.0006, keep** — free |
+| edge-head ensemble 0.65 (was 0.5) | 0.9450 | 0.9354 | 0.0960 | 0.9822 | −0.0407 | −0.0013 |
+| `min_track_len` 8 (was 6) | 0.9439 | 0.9338 | 0.1008 | 0.9740 | −0.0760 | −0.0024 |
+
+**The edge-head ensemble weight now has a clean interior optimum at 0.5** — 0.3 gave
+−0.0006 on the old primary, 0.5 gives +0.0011, 0.65 gives −0.0013. Stop sweeping it.
+
+**And `min_track_len` is exhausted in both directions, with the node-count mechanism
+behaving exactly as the metric predicts and still losing.** My reasoning for trying 8 was
+that the soup had moved fold 0's ratio from −0.0391 to −0.0350 with *higher* node recall,
+so a more aggressive deleter should have room. The multiplier duly improved — ratio
+−0.0350 → −0.0760, worth about +0.004 on its own — but node recall fell 0.9830 → 0.9740
+and adjJ fell 0.0023, so **J falls faster than the multiplier rises**. Together with 3 and
+4 being bit-identical (the ILP has already dropped every component below 4) and 4 ≈ 6 on
+fold 0, the knob is closed. The general shape is worth remembering: a node-count knob can
+move the multiplier in the predicted direction and still lose, because node recall gates
+how much of the linking gets graded (metric fact 3).
+
+**Souping the secondary is the third averaging axis and it works, at the size the blend
+weight predicts.** The secondary carries detection weight 0.15, so if souping a member is
+worth ~+0.0067 to the primary (0.9361 → 0.9428), the secondary's share should be roughly
+0.15/0.85 of that ≈ +0.0012; measured +0.0006, the same order. That is a consistency
+check rather than a new mechanism, and it costs nothing at inference — a different weights
+file, no extra encode. Persisted and md5-verified as
+`weights/soup_members/soup_pack_secondary_best.pth`
+(`97e5d6eb6a6cd72416d122a7f7351ed8`) with `PROVENANCE.md` beside it.
+
 **2026-09-22 — THE PUBLIC CHECKPOINT INVENTORY, hashed rather than guessed at. Eight
 distinct architecture-compatible checkpoints exist, from FIVE independent runs, and the
 12 h cap is what decides how many we can use.** Every one is `TemporalUNet3D` + node
