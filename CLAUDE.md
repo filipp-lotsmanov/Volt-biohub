@@ -4018,13 +4018,22 @@ so expect about half of our +0.0073 on the board. It keeps the ILP's edge-head-c
 links, where x138's relink re-derives them geometrically. The raised bonus does **not**
 approximate it: the relink's Hungarian step is still one-to-one. Submitted as
 **`56525170`**. The gap filler never helps on any movie in either fold but is worth only
-+0.0002, so it is bundle material, not a slot. **The coordinate head is real: switching it off costs −0.0069 on fold 1** (22/49 movie
++0.0002, so it is bundle material, not a slot. **On top of relink off, the ILP preset Kai-Gowers measured on honest volumes also pays:**
+disappearance 2 → 3.0 plus edge candidate threshold 0.48 → 0.44. Against relink-off alone
+it is +0.0026 on fold 0 (74/54) and +0.0050 on fold 1 (49/22). **Against x138 it is +0.0100
+on fold 0 (100/28 movies) and +0.0115 on fold 1 (48/23), about +0.010 weighted.** This is the
+best local number, and every component of it has independent honest-checkpoint support.
+Submitted as **`56527321`**. The disappearance weight sits in cell 1's configuration guard
+as well as cell 0, so the builder's `--replace` has to patch both.
+
+**The coordinate head is real: switching it off costs −0.0069 on fold 1** (22/49 movie
 wins, i.e. it helps 49 of 71). That is about x138's whole board lead over Geometric Fusion,
 and it confirms the head is the main new component. Retraining it is a weaker lead. Offline,
 cross-embryo transfer is 6–9 % less distance to GT whatever the data volume: 36 and 128
 training movies gave the same held-out-44b6 number. Our leave-one-embryo-out head is ~equal
-to theirs on held-out 6bba and worse on 44b6, where theirs may be in-sample. A pipeline
-test with the honest 6bba-trained head on fold 1 is running.
+to theirs on held-out 6bba and worse on 44b6, where theirs may be in-sample. **Measured in the pipeline: our honest 6bba-trained head scores −0.0029 against theirs on
+fold 1 (34/36), though +0.0040 over no head.** Theirs stays; the retraining line is
+closed.
 
 **Temporal TTA is measured, and it does not pay.** Each interior frame is encoded twice,
 as slot 1 of window (t−1,t) and slot 0 of (t,t+1), and the upstream loop keeps only the
