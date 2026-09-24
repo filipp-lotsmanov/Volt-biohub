@@ -161,7 +161,8 @@ def patch_v1284_mode(src: str, mode: str) -> str:
 def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None,
           v1284_mode: str | None, env: dict[str, str] | None = None,
           v1284_head: tuple[str, str] | None = None,
-          add_env: dict[str, str] | None = None) -> Path:
+          add_env: dict[str, str] | None = None,
+          replace: list[tuple[str, str]] | None = None) -> Path:
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     if sha != X138_SHA256:
@@ -183,6 +184,8 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
     for key, value in (add_env or {}).items():
         patches.append(('print("BIOHUB_PRESET:", BIOHUB_PRESET)\n',
                         lambda s, k=key, v=value: patch_add_env(s, k, v)))
+    for old, new in replace or []:
+        patches.append((old, lambda s, o=old, n=new: _replace_once(s, o, n, f"replace {o!r}")))
     if not patches:
         raise SystemExit("no patch requested; that is the public notebook unchanged")
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
@@ -218,14 +221,19 @@ def main(argv=None) -> int:
     p.add_argument("--add", action="append", default=[], metavar="KEY=VALUE",
                    help="add an os.environ setting cell 0 does not make, e.g. "
                         "BIOHUB_OUTPUT_MOTION_RELINK=0")
+    p.add_argument("--replace", action="append", default=[], metavar="OLD=>NEW",
+                   help="exact text replacement anywhere in the notebook; the text must "
+                        "occur exactly once in exactly one cell (for settings outside "
+                        "cell 0 and for cell 1's configuration guard)")
     p.add_argument("--v1284-head", default=None, metavar="FILE=MD5",
                    help="a head file in the soups dataset, with its md5")
     a = p.parse_args(argv)
     env = dict(kv.split("=", 1) for kv in a.set)
     head = tuple(a.v1284_head.split("=", 1)) if a.v1284_head else None
     add = dict(kv.split("=", 1) for kv in a.add)
+    rep = [tuple(r.split("=>", 1)) for r in a.replace]
     build(a.notebook, a.out_dir, a.slug, secondary_soup=a.secondary_soup,
-          v1284_mode=a.v1284_mode, env=env, v1284_head=head, add_env=add)
+          v1284_mode=a.v1284_mode, env=env, v1284_head=head, add_env=add, replace=rep)
     return 0
 
 
