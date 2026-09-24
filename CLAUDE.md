@@ -4018,9 +4018,13 @@ so expect about half of our +0.0073 on the board. It keeps the ILP's edge-head-c
 links, where x138's relink re-derives them geometrically. The raised bonus does **not**
 approximate it: the relink's Hungarian step is still one-to-one. Submitted as
 **`56525170`**. The gap filler never helps on any movie in either fold but is worth only
-+0.0002, so it is bundle material, not a slot. The retrained coordinate head is not a lead:
-see task notes and `scripts/train_coord_head.py`. Cross-embryo transfer is 6–9 % whatever
-the data volume.
++0.0002, so it is bundle material, not a slot. **The coordinate head is real: switching it off costs −0.0069 on fold 1** (22/49 movie
+wins, i.e. it helps 49 of 71). That is about x138's whole board lead over Geometric Fusion,
+and it confirms the head is the main new component. Retraining it is a weaker lead. Offline,
+cross-embryo transfer is 6–9 % less distance to GT whatever the data volume: 36 and 128
+training movies gave the same held-out-44b6 number. Our leave-one-embryo-out head is ~equal
+to theirs on held-out 6bba and worse on 44b6, where theirs may be in-sample. A pipeline
+test with the honest 6bba-trained head on fold 1 is running.
 
 **Temporal TTA is measured, and it does not pay.** Each interior frame is encoded twice,
 as slot 1 of window (t−1,t) and slot 0 of (t,t+1), and the upstream loop keeps only the
