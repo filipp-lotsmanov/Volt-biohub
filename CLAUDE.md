@@ -4031,6 +4031,16 @@ best local number, and every component of it has independent honest-checkpoint s
 Submitted as **`56527321`**. The disappearance weight sits in cell 1's configuration guard
 as well as cell 0, so the builder's `--replace` has to patch both.
 
+**Follow-ups on top of relink off + ILP preset, all measured on both folds, none adopted:**
+
+- gap filler off: +0.0000 / +0.0005, never worse on any movie. Bundle material only.
+- min track length 4: worse on most movies (20/107, 6/65).
+- disappearance 4.0: −0.0004 / −0.0014.
+- **ILP division weight 0.8: +0.0017 on fold 0 but −0.0033 on fold 1.** With appearance cost
+  0 the ILP cannot fork at all at ≥ 1.0 (the same algebra as `prune_dp`). Below it, the forks
+  it emits are embryo-dependent: fold 1 went TP 6 → 7, FP 17 → 39. That is the fifth division
+  knob with opposite signs by fold.
+
 **The coordinate head is real: switching it off costs −0.0069 on fold 1** (22/49 movie
 wins, i.e. it helps 49 of 71). That is about x138's whole board lead over Geometric Fusion,
 and it confirms the head is the main new component. Retraining it is a weaker lead. Offline,
