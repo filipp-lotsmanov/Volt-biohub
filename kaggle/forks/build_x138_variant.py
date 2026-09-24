@@ -105,6 +105,16 @@ def patch_secondary_soup(src: str, name: str) -> str:
     return _replace_once(src, anchor, new, "secondary-soup")
 
 
+def patch_env(src: str, key: str, value: str) -> str:
+    """Override one of cell 0's ``os.environ[...] = ...`` settings."""
+    import re
+    pat = re.compile(r'^os\.environ\[["\']' + re.escape(key) + r'["\']\]\s*=\s*.*$', re.M)
+    hits = pat.findall(src)
+    if len(hits) != 1:
+        raise SystemExit(f"--set {key}: {len(hits)} assignments in the cell, expected 1")
+    return pat.sub(f'os.environ["{key}"] = "{value}"  # volt patch', src)
+
+
 def patch_v1284_mode(src: str, mode: str) -> str:
     anchor = "os.environ['V1284_MODE']='candidate'\n"
     return _replace_once(src, anchor, f"os.environ['V1284_MODE']={mode!r}  # volt patch\n",
@@ -112,7 +122,7 @@ def patch_v1284_mode(src: str, mode: str) -> str:
 
 
 def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None,
-          v1284_mode: str | None) -> Path:
+          v1284_mode: str | None, env: dict[str, str] | None = None) -> Path:
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     if sha != X138_SHA256:
@@ -126,6 +136,8 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
     if v1284_mode:
         patches.append(("os.environ['V1284_MODE']='candidate'\n",
                         lambda s: patch_v1284_mode(s, v1284_mode)))
+    for key, value in (env or {}).items():
+        patches.append((f'os.environ["{key}"]', lambda s, k=key, v=value: patch_env(s, k, v)))
     if not patches:
         raise SystemExit("no patch requested; that is the public notebook unchanged")
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
@@ -155,9 +167,13 @@ def main(argv=None) -> int:
     p.add_argument("--slug", required=True, help="kernel slug under our account")
     p.add_argument("--secondary-soup", choices=sorted(SOUP_MD5), default=None)
     p.add_argument("--v1284-mode", choices=("zero", "candidate"), default=None)
+    p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                   help="override one of cell 0's os.environ settings, e.g. "
+                        "BIOHUB_MOTION_RELINK_LEARNED_BONUS=15.0")
     a = p.parse_args(argv)
+    env = dict(kv.split("=", 1) for kv in a.set)
     build(a.notebook, a.out_dir, a.slug, secondary_soup=a.secondary_soup,
-          v1284_mode=a.v1284_mode)
+          v1284_mode=a.v1284_mode, env=env)
     return 0
 
 

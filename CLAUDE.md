@@ -3929,6 +3929,59 @@ scoring bug.
 
 ## Plan
 
+### 2026-09-24 — READ THIS FIRST: the frontier is a public notebook, and the endgame is "it plus a real increment"
+
+**The board moved while we tuned.** 3,873 teams on 2026-09-24. A new pile at **0.953**:
+49 teams, 38 of which submitted that day. The **top-10 % line is 0.948 (rank 387)** and
+rising. The 0.947 pile is 712 teams. We are rank 1716 at 0.926.
+
+**The 0.953 is `anvithpothula/biohub-x138`**, a public notebook (ipynb sha256 `6b655e39…`).
+It uses the same two checkpoints we use, plus DeepCenter and a 34 KB coordinate head from
+the public dataset `anvithpothula/biohub-v1284-head-s075`. It descends from Aman Atar's
+Geometric Fusion, which scored 0.947 in an independent byte-exact reproduction (Jin-Ruoting
+E029, github). x138 adds five things:
+
+- a **V1284 coordinate head**: moves each detection < 2 µm (median 0.72 µm) from frozen
+  primary features;
+- a neighbourhood-flow prior in the motion relink;
+- readmission of ILP-dropped detections;
+- a gap filler that bridges on sub-threshold peaks;
+- a relink tight gate of 5.5 µm.
+
+Its roles are the opposite of ours: pack50 is primary at 20 % of the detection map but
+100 % of the edge logits and the head's input; pubfull is secondary at 80 % of detection.
+It shards movies over **both T4s**, which our notebook never did. Jin-Ruoting's board tests
+on top of Geometric Fusion: flow relink alone 0.946, per-track motion EMA 0.946 (both
+−0.001). Readmission and the gap filler were flat on their dev set. So **the head is the
+prime suspect for x138's +0.006**. Its author trained it on only **4,136 pairs from
+20 movies** and noted a 4-movie version was worse, which says it is data-limited.
+
+**Private tie-break decides what "reaching 0.953" is worth.** Forks produce byte-identical
+CSVs, so they tie exactly on the private 71 % too. Kaggle breaks ties by submission time,
+so an unchanged fork ranks at the **bottom** of its pile. The only way above the pile is a
+change that is genuinely better on the hidden embryo. Even +0.0005 that is real is worth
+hundreds of places.
+
+**Tools built 2026-09-24:**
+
+- `kaggle/forks/build_x138_variant.py` builds sha-pinned variants of the pulled notebook
+  with single-anchor patches: `--secondary-soup`, `--v1284-mode`, `--set KEY=VALUE`.
+  Third-party code is never committed.
+- A **local harness** runs the notebook unchanged against a stand-in `/kaggle` tree of train
+  movies. It reproduces Kaggle's visible-run output to within 0.05 % of nodes/edges (A6000
+  vs T4 numerics).
+- `scripts/train_coord_head.py` retrains the head from the notebook's own `capture` dumps.
+- Temporal TTA in `reference_predict` (off by default).
+- Dataset `oleksiikrasnoshtanov/volt-x138-soups`: md5-verified soups, flat layout, no
+  subdirectory trap.
+
+**Submissions:** `56522624` = x138 unchanged, to verify the number on our account. The
+soup-secondary variant follows. Record every result here by ref.
+
+**Rotating TTA in x138 is really 7 views, not 8.** Its "anti-transpose" is flip-x, so
+flip-x is counted twice. The same mistake appears in all five TTA sites. It is a free fix,
+but the anchors are inside patch strings, so it is fiddly.
+
 **Rewritten 2026-09-21 (end of day). Steps 1–7 of the old plan are done or superseded;
 the historical reasoning is preserved in Status, which is where the measurements live.**
 Seven days to the 2026-09-29 deadline. **Public LB 0.925**; best measured weighted LOEO
