@@ -3975,8 +3975,28 @@ hundreds of places.
 - Dataset `oleksiikrasnoshtanov/volt-x138-soups`: md5-verified soups, flat layout, no
   subdirectory trap.
 
-**Submissions:** `56522624` = x138 unchanged, to verify the number on our account. The
-soup-secondary variant follows. Record every result here by ref.
+**Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
+`56523276` = x138 with a same-run soup as the secondary (pubfull 381+400, md5 `3af2701d`,
+80 % of detection). That is one variable, and the shape that gave +0.001 as our v14.
+Record every result here by ref.
+
+**The final pair follows from the tie-break.** Kaggle scores the *better* of the two
+selected submissions, so one slot should be **plain x138** (`56522624`), which guarantees
+the pile's private score. The other should be **the variant most likely to beat the pile
+on the paired comparison**, which is not necessarily the one with the highest expected
+score. The variant only has to be better than x138 on the same private movies, and that
+paired difference is far less noisy than the public/private split. So bundle every
+increment that is individually positive in expectation, measure the bundle on the public
+board, and prefer consistency (per-movie wins on CV) over size.
+
+**Temporal TTA is measured, and it does not pay.** Each interior frame is encoded twice,
+as slot 1 of window (t−1,t) and slot 0 of (t,t+1), and the upstream loop keeps only the
+first view. Averaging the two costs no extra encode. It was tested on the **honest** E7
+fold-1 detector, the right instrument for a detector-side change. The pooled score moved
+0.7579 → 0.7593, but **per movie it was 33 wins, 36 losses, median −0.0001**. The mean is
+carried by a few weak movies swinging (44b6_f28707c6 gained +0.056). That is noise and not
+a consistent gain, so it is not ported to x138. The code stays in `reference_predict`,
+off by default, with its exactness test.
 
 **Rotating TTA in x138 is really 7 views, not 8.** Its "anti-transpose" is flip-x, so
 flip-x is counted twice. The same mistake appears in all five TTA sites. It is a free fix,
