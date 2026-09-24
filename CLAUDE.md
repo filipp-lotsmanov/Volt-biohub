@@ -4009,6 +4009,19 @@ job scratch: `mkroot.sh`, `launch_full.sh`, `stash_run.sh`, `launch_postonly.sh`
 `make_postonly.py`, and `x138_f1_e7.py` for the E7 run patched with three `patch_script.py`
 replacements. They cover the primary weights path, the secondary env, and V1284 mode zero.
 
+**`56527778` (the bundle: relink off + ILP preset + soup secondary) scored 0.948**, the
+lowest of the five. Every change CV liked has lost on the board. **Screens on the E7
+instrument:**
+
+| change vs x138 | Δ | movie wins |
+|---|---|---|
+| relink bonus 1.0 → 0 | −0.0005 | 29/39 |
+| relink tight gate 5.5 → 6.0 | +0.0002 | 21/17 |
+| gap filler off | +0.0000 | 64/2 |
+
+So x138's relink settings are at or near their honest optimum, as far as the instrument can
+see.
+
 **Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
 `56523276` = x138 with a same-run soup as the secondary (pubfull 381+400, md5 `3af2701d`,
 80 % of detection). That is one variable, and the shape that gave +0.001 as our v14.
