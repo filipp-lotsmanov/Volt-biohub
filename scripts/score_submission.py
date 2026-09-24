@@ -315,6 +315,11 @@ def main(argv=None) -> int:
                         "4-movie proxy set it reaches adjusted edge Jaccard "
                         "0.9299 where the rewrite reaches 0.8888, and 0.9505 "
                         "total once our post-processing runs on top.")
+    p.add_argument("--temporal-tta", action="store_true",
+                   help="reference path only: detect each interior frame from the "
+                        "mean of its two window views (slot 1 of (t-1,t) and slot 0 "
+                        "of (t,t+1)); the upstream loop keeps only the first. No "
+                        "extra encode.")
     p.add_argument("--real-pairs", action="store_true",
                    help="Compute the edge head's trunk features from a REAL "
                         "consecutive pair instead of one frame duplicated. The "
@@ -375,6 +380,7 @@ def main(argv=None) -> int:
             candidate_threshold=args.candidate_threshold,
             real_pairs=args.real_pairs,
             reference=args.reference,
+            temporal_tta=args.temporal_tta,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {
                 "disappearance_weight": args.ilp_disappearance,

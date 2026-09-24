@@ -657,6 +657,7 @@ def run(
     candidate_threshold: float = 0.48,
     real_pairs: bool = False,
     reference: bool = False,
+    temporal_tta: bool = False,
     ilp_kwargs: dict | None = None,
     gaps: bool = True,
     relink_kwargs: dict | None = None,
@@ -736,7 +737,8 @@ def run(
         if tuple(ref_down) != DOWNSAMPLE:
             raise SystemExit(f"checkpoint downsample {ref_down} != {DOWNSAMPLE}")
         ref_cfg = rp.PredictConfig(det_threshold=det_threshold if det_threshold
-                                   else 0.965, det_tta=tta)
+                                   else 0.965, det_tta=tta,
+                                   temporal_tta=temporal_tta)
         ref_secondary = rp.make_secondary(
             secondary_weights, resolve_device(), secondary_weight,
             secondary_edge_weight, window_size=ref_W,
@@ -749,6 +751,7 @@ def run(
                   f"{bidirectional_weight}",
                   flush=True)
         print(f"linker: REFERENCE path (det_tta={ref_cfg.det_tta}, "
+              f"temporal_tta={ref_cfg.temporal_tta}, "
               f"pool {ref_cfg.pool_kernel_um} um, edge threshold "
               f"{ref_cfg.threshold})", flush=True)
 
