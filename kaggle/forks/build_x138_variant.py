@@ -115,6 +115,32 @@ def patch_env(src: str, key: str, value: str) -> str:
     return pat.sub(f'os.environ["{key}"] = "{value}"  # volt patch', src)
 
 
+def patch_v1284_head(src: str, name: str, md5: str) -> str:
+    """Load the coordinate head from our dataset instead of the author's.
+
+    The architecture is fixed by the notebook's own module (224 -> 32 -> 3), so
+    only the weights and the input normalisation change. Replacing the rglob
+    also drops a full walk of /kaggle/input, which the notebook's own comments
+    price at minutes on the graded rerun.
+    """
+    anchor = "_myhead = sorted(Path('/kaggle/input').rglob('biohub-v1284-head-s075/v1284_head.pt'))\n"
+    owner, slug = SOUPS_DATASET.split("/")
+    new = (
+        "# ---- volt patch: our coordinate head ----\n"
+        "import hashlib as _volt_hashlib\n"
+        f"_volt_hc = [Path('/kaggle/input/{slug}/{name}'),\n"
+        f"            Path('/kaggle/input/datasets/{owner}/{slug}/{name}')]\n"
+        "_volt_head = next((p for p in _volt_hc if p.is_file()), None)\n"
+        "if _volt_head is None:\n"
+        "    raise FileNotFoundError(('volt head not mounted', [str(p) for p in _volt_hc]))\n"
+        f"if _volt_hashlib.md5(_volt_head.read_bytes()).hexdigest() != '{md5}':\n"
+        f"    raise RuntimeError('volt head {name} md5 mismatch')\n"
+        "_myhead = [_volt_head]\n"
+        f"print('VOLT coordinate head: {name}', _volt_head, flush=True)\n"
+    )
+    return _replace_once(src, anchor, new, "v1284-head")
+
+
 def patch_v1284_mode(src: str, mode: str) -> str:
     anchor = "os.environ['V1284_MODE']='candidate'\n"
     return _replace_once(src, anchor, f"os.environ['V1284_MODE']={mode!r}  # volt patch\n",
@@ -122,7 +148,8 @@ def patch_v1284_mode(src: str, mode: str) -> str:
 
 
 def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None,
-          v1284_mode: str | None, env: dict[str, str] | None = None) -> Path:
+          v1284_mode: str | None, env: dict[str, str] | None = None,
+          v1284_head: tuple[str, str] | None = None) -> Path:
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     if sha != X138_SHA256:
@@ -136,6 +163,9 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
     if v1284_mode:
         patches.append(("os.environ['V1284_MODE']='candidate'\n",
                         lambda s: patch_v1284_mode(s, v1284_mode)))
+    if v1284_head:
+        patches.append(("_myhead = sorted(Path('/kaggle/input').rglob(",
+                        lambda s: patch_v1284_head(s, *v1284_head)))
     for key, value in (env or {}).items():
         patches.append((f'os.environ["{key}"]', lambda s, k=key, v=value: patch_env(s, k, v)))
     if not patches:
@@ -152,7 +182,7 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
     (out_dir / code_file).write_text(json.dumps(nb, indent=1))
     meta = {"id": f"oleksiikrasnoshtanov/{slug}", "title": slug, "code_file": code_file,
             **BASE_METADATA}
-    if secondary_soup:
+    if secondary_soup or v1284_head:
         meta["dataset_sources"] = [*meta["dataset_sources"], SOUPS_DATASET]
     (out_dir / "kernel-metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(f"wrote {out_dir / code_file} ({patched} cell(s) patched) and kernel-metadata.json")
@@ -170,10 +200,13 @@ def main(argv=None) -> int:
     p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="override one of cell 0's os.environ settings, e.g. "
                         "BIOHUB_MOTION_RELINK_LEARNED_BONUS=15.0")
+    p.add_argument("--v1284-head", default=None, metavar="FILE=MD5",
+                   help="a head file in the soups dataset, with its md5")
     a = p.parse_args(argv)
     env = dict(kv.split("=", 1) for kv in a.set)
+    head = tuple(a.v1284_head.split("=", 1)) if a.v1284_head else None
     build(a.notebook, a.out_dir, a.slug, secondary_soup=a.secondary_soup,
-          v1284_mode=a.v1284_mode, env=env)
+          v1284_mode=a.v1284_mode, env=env, v1284_head=head)
     return 0
 
 
