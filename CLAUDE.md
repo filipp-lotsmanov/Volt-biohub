@@ -4009,7 +4009,18 @@ job scratch: `mkroot.sh`, `launch_full.sh`, `stash_run.sh`, `launch_postonly.sh`
 `make_postonly.py`, and `x138_f1_e7.py` for the E7 run patched with three `patch_script.py`
 replacements. They cover the primary weights path, the secondary env, and V1284 mode zero.
 
-**`56527778` (the bundle: relink off + ILP preset + soup secondary) scored 0.948**, the
+**The day's five, read by ref:**
+
+| ref | change vs x138 | board | Δ | contaminated CV said |
+|---|---|---|---|---|
+| `56522624` | none | **0.953** | — | — |
+| `56523276` | soup secondary | 0.951 | −0.002 | (not ranked) |
+| `56525170` | relink off | 0.951 | −0.002 | +0.0073 |
+| `56527321` | relink off + ILP preset | 0.950 | −0.003 | +0.0102 |
+| `56527778` | relink off + ILP preset + soup | 0.948 | −0.005 | — |
+
+The soup reads −0.002 twice, independently, and the ILP preset adds −0.001 on top of relink
+off. **`56527778` (the bundle: relink off + ILP preset + soup secondary) scored 0.948**, the
 lowest of the five. Every change CV liked has lost on the board. **Screens on the E7
 instrument:**
 
