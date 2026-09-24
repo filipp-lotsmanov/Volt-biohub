@@ -152,6 +152,43 @@ def patch_add_env(src: str, key: str, value: str) -> str:
                          f"add-env {key}")
 
 
+# x138's "8-view" D4 TTA takes rot90(x, 1).transpose(-1, -2) as its eighth view, which is
+# flip-x again, so flip-x carries 2/8 of the average and the anti-transpose is missing. The
+# same expression is repeated at every TTA site (primary and secondary detection, both
+# feature averages, DeepCenter), partly inside patch strings with escaped newlines. The fix
+# uses rot90(x.transpose(-1, -2), 2) for the view, which is the anti-transpose, an
+# involution, so its inverse is the same expression. Nothing in the upstream script
+# contains these rot90 terms, so rewriting every occurrence consistently keeps each patch's
+# anchor matching the text the earlier patch wrote.
+_D4_RULES = [
+    # (pattern, replacement, expected count over the whole notebook)
+    (r"(rot90)\(([\w\[\]]+), 1, dims=\(-2, -1\)\)\.transpose\(-1, -2\)",
+     r"\1(\2.transpose(-1, -2), 2, dims=(-2, -1))", 4),
+    (r"(rot90)\(\\n(\s*)imgs, 1, dims=\(-2, -1\)\\n(\s*)\)\.transpose\(-1, -2\)",
+     r"\1(\\n\2imgs.transpose(-1, -2), 2, dims=(-2, -1)\\n\3)", 3),
+    (r"(rot90)\(([\w\[\]\(\)]+)\.transpose\(-1, -2\), -1, dims=\(-2, -1\)\)",
+     r"\1(\2.transpose(-1, -2), 2, dims=(-2, -1))", 5),
+    (r"(secondary_det_at\[f\]\.transpose\(-1, -2\),\\n\s*)-1,",
+     r"\g<1>2,", 3),
+    (r"(_secondary_u_at\.transpose\(-1, -2\)), -1, dims=\(-2, -1\)",
+     r"\1, 2, dims=(-2, -1)", 1),
+]
+
+
+def patch_d4(cells: list[dict]) -> None:
+    import re
+    for pat, rep, want in _D4_RULES:
+        rx = re.compile(pat)
+        got = sum(len(rx.findall("".join(c["source"]))) for c in cells)
+        if got != want:
+            raise SystemExit(f"--fix-d4: {pat!r} matched {got} times, expected {want}")
+        for c in cells:
+            c["source"] = rx.sub(rep, "".join(c["source"]))
+    left = sum("".join(c["source"]).count(".transpose(-1, -2), -1, dims=(-2, -1))") for c in cells)
+    if left:
+        raise SystemExit(f"--fix-d4: {left} old inverse(s) survived")
+
+
 def patch_v1284_mode(src: str, mode: str) -> str:
     anchor = "os.environ['V1284_MODE']='candidate'\n"
     return _replace_once(src, anchor, f"os.environ['V1284_MODE']={mode!r}  # volt patch\n",
@@ -162,7 +199,7 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
           v1284_mode: str | None, env: dict[str, str] | None = None,
           v1284_head: tuple[str, str] | None = None,
           add_env: dict[str, str] | None = None,
-          replace: list[tuple[str, str]] | None = None) -> Path:
+          replace: list[tuple[str, str]] | None = None, fix_d4: bool = False) -> Path:
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     if sha != X138_SHA256:
@@ -186,15 +223,17 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
                         lambda s, k=key, v=value: patch_add_env(s, k, v)))
     for old, new in replace or []:
         patches.append((old, lambda s, o=old, n=new: _replace_once(s, o, n, f"replace {o!r}")))
-    if not patches:
+    if not patches and not fix_d4:
         raise SystemExit("no patch requested; that is the public notebook unchanged")
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
+    if fix_d4:
+        patch_d4(code_cells)
     for anchor, apply in patches:
         hits = [c for c in code_cells if anchor in "".join(c["source"])]
         if len(hits) != 1:
             raise SystemExit(f"anchor {anchor!r} is in {len(hits)} cells, expected 1")
         hits[0]["source"] = apply("".join(hits[0]["source"]))
-    patched = len(patches)
+    patched = len(patches) + int(fix_d4)
     out_dir.mkdir(parents=True, exist_ok=True)
     code_file = f"{slug}.ipynb"
     (out_dir / code_file).write_text(json.dumps(nb, indent=1))
@@ -225,6 +264,9 @@ def main(argv=None) -> int:
                    help="exact text replacement anywhere in the notebook; the text must "
                         "occur exactly once in exactly one cell (for settings outside "
                         "cell 0 and for cell 1's configuration guard)")
+    p.add_argument("--fix-d4", action="store_true",
+                   help="replace the duplicated flip-x view with the anti-transpose at "
+                        "every TTA site, making it the full 8-element D4 average")
     p.add_argument("--v1284-head", default=None, metavar="FILE=MD5",
                    help="a head file in the soups dataset, with its md5")
     a = p.parse_args(argv)
@@ -233,7 +275,8 @@ def main(argv=None) -> int:
     add = dict(kv.split("=", 1) for kv in a.add)
     rep = [tuple(r.split("=>", 1)) for r in a.replace]
     build(a.notebook, a.out_dir, a.slug, secondary_soup=a.secondary_soup,
-          v1284_mode=a.v1284_mode, env=env, v1284_head=head, add_env=add, replace=rep)
+          v1284_mode=a.v1284_mode, env=env, v1284_head=head, add_env=add, replace=rep,
+          fix_d4=a.fix_d4)
     return 0
 
 
