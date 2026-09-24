@@ -3989,6 +3989,39 @@ paired difference is far less noisy than the public/private split. So bundle eve
 increment that is individually positive in expectation, measure the bundle on the public
 board, and prefer consistency (per-movie wins on CV) over size.
 
+**x138 through our own CV, and it exposes the instrument.** x138 runs unchanged in the local
+harness and scores **fold 0 0.9271, fold 1 0.9217**. Our v15 pipeline scores 0.9484 / 0.9456
+on the same folds, i.e. **our CV prefers our pipeline by ~+0.022**, while the board ranks
+x138 about +0.027 *above* it (if 56522624 confirms 0.953). Per movie on fold 1, ours wins
+46 / 25. So **our CV cannot rank whole pipelines built on the public checkpoints**.
+Soups alone account for about +0.015 of CV that never reached the board (v13→v15), and the
+rest is detection- and edge-side choices on contaminated weights. Treat every local number
+below as a ranking of *post-processing on fixed detections*. That is the one class where
+CV has transferred at 35–81 %.
+
+**Post-processing-only arms on x138's own predictions.** The harness restores a finished
+run's predictions and side files, then reruns only the notebook's post-processing. It is
+verified byte-identical to the base CSV.
+
+| arm | fold 0 (Δ, movie wins) | fold 1 (Δ, movie wins) |
+|---|---|---|
+| **motion relink OFF** | **+0.0074** (89/39) | **+0.0065** (40/31) |
+| readmission off | +0.0008 (92/36) | −0.0010 (52/19) |
+| gap filler off | +0.0001 (**77/0**) | +0.0002 (**68/0**) |
+| relink bonus 5 (was 1.0) | +0.0005 | −0.0001 |
+| relink bonus 15 | +0.0008 | +0.0003 |
+
+**Relink off is the one real lead, and it has outside support.** Kai-Gowers measured the
+same change on 20 volumes their *own* weights never trained on: +0.011 (blend), +0.009
+(single seed), and +0.018 on the leaky public weights. Honest roughly equals half of leaky,
+so expect about half of our +0.0073 on the board. It keeps the ILP's edge-head-chosen
+links, where x138's relink re-derives them geometrically. The raised bonus does **not**
+approximate it: the relink's Hungarian step is still one-to-one. Submitted as
+**`56525170`**. The gap filler never helps on any movie in either fold but is worth only
++0.0002, so it is bundle material, not a slot. The retrained coordinate head is not a lead:
+see task notes and `scripts/train_coord_head.py`. Cross-embryo transfer is 6–9 % whatever
+the data volume.
+
 **Temporal TTA is measured, and it does not pay.** Each interior frame is encoded twice,
 as slot 1 of window (t−1,t) and slot 0 of (t,t+1), and the upstream loop keeps only the
 first view. Averaging the two costs no extra encode. It was tested on the **honest** E7
