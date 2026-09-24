@@ -3980,6 +3980,13 @@ public top 10 % (cutoff rank 389 at 0.948) for the first time. The graded rerun 
 By that evening the 0.953 pile had grown from 49 to **122 teams** (ranks 114–235). We sit at
 210 inside it because ties break by submission time: the private-tie problem made concrete.
 
+**`56523276` (x138 with the soup2 secondary) scored 0.951, −0.002 against x138.** In x138
+the secondary carries 80 % of detection and every map is already a 7-view TTA average.
+Averaging the weights as well smooths it further, and this project has measured that
+smoothing merges close sisters (the soup member-count curve). The same soup was +0.001 as
+our v14 primary. **Soups are out of the endgame**; `56527778` (the bundle with the soup)
+will read the same effect a second time.
+
 **Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
 `56523276` = x138 with a same-run soup as the secondary (pubfull 381+400, md5 `3af2701d`,
 80 % of detection). That is one variable, and the shape that gave +0.001 as our v14.
