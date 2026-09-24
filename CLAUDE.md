@@ -3987,6 +3987,19 @@ smoothing merges close sisters (the soup member-count curve). The same soup was 
 our v14 primary. **Soups are out of the endgame**; `56527778` (the bundle with the soup)
 will read the same effect a second time.
 
+**`56525170` (x138 + relink OFF) scored 0.951, −0.002, against a local CV of +0.0073 on
+both folds and Kai-Gowers' +0.009..0.011.** This is the most instructive miss in this file.
+Their "honest" volumes were held out from their own models, but they come from the **same
+two embryos**, so they measure within-embryo generalisation. The hidden set is a third
+embryo. The edge head's links transfer within an embryo. x138's geometric relink with a
+neighbourhood-flow prior transfers across embryos, and turning it off cost 0.002 there.
+**So neither our CV nor a same-embryo hold-out can rank x138 variants.** The only
+cross-embryo-honest local instrument is a model trained on one embryo and scored on the
+other: `E7_fold1_100ep`, trained on 6bba only, scored on 44b6. It must be run inside x138's
+pipeline with the coordinate head off, because the head's inputs are pack50 features.
+Validate it first on this very result (relink off must lose there) before trusting it for
+anything else.
+
 **Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
 `56523276` = x138 with a same-run soup as the secondary (pubfull 381+400, md5 `3af2701d`,
 80 % of detection). That is one variable, and the shape that gave +0.001 as our v14.
