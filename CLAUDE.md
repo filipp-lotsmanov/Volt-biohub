@@ -4000,6 +4000,15 @@ pipeline with the coordinate head off, because the head's inputs are pack50 feat
 Validate it first on this very result (relink off must lose there) before trusting it for
 anything else.
 
+**VALIDATED 2026-09-24: on the E7 instrument relink off loses −0.0118 (22/49 movies),
+matching the board's sign where our contaminated CV said +0.0073.** Readmission off also
+loses there (−0.0024). Baseline for the instrument is x138 on E7 = **0.8116** on fold 1,
+with node recall 0.937 against the public weights' 0.988. So its magnitudes are not the
+board's; use its **signs**, and only paired against its own baseline. The scripts live in
+job scratch: `mkroot.sh`, `launch_full.sh`, `stash_run.sh`, `launch_postonly.sh`,
+`make_postonly.py`, and `x138_f1_e7.py` for the E7 run patched with three `patch_script.py`
+replacements. They cover the primary weights path, the secondary env, and V1284 mode zero.
+
 **Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
 `56523276` = x138 with a same-run soup as the secondary (pubfull 381+400, md5 `3af2701d`,
 80 % of detection). That is one variable, and the shape that gave +0.001 as our v14.
