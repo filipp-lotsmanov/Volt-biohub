@@ -141,6 +141,17 @@ def patch_v1284_head(src: str, name: str, md5: str) -> str:
     return _replace_once(src, anchor, new, "v1284-head")
 
 
+def patch_add_env(src: str, key: str, value: str) -> str:
+    """Add an ``os.environ`` setting cell 0 does not make (the notebook reads it
+    later with a default, e.g. BIOHUB_OUTPUT_MOTION_RELINK). Refuses keys cell 0
+    already assigns -- those go through --set, so there is one owner per key."""
+    if f'os.environ["{key}"]' in src or f"os.environ['{key}']" in src:
+        raise SystemExit(f"--add {key}: cell 0 already sets it; use --set")
+    anchor = 'print("BIOHUB_PRESET:", BIOHUB_PRESET)\n'
+    return _replace_once(src, anchor, f'os.environ["{key}"] = "{value}"  # volt patch\n' + anchor,
+                         f"add-env {key}")
+
+
 def patch_v1284_mode(src: str, mode: str) -> str:
     anchor = "os.environ['V1284_MODE']='candidate'\n"
     return _replace_once(src, anchor, f"os.environ['V1284_MODE']={mode!r}  # volt patch\n",
@@ -149,7 +160,8 @@ def patch_v1284_mode(src: str, mode: str) -> str:
 
 def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None,
           v1284_mode: str | None, env: dict[str, str] | None = None,
-          v1284_head: tuple[str, str] | None = None) -> Path:
+          v1284_head: tuple[str, str] | None = None,
+          add_env: dict[str, str] | None = None) -> Path:
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     if sha != X138_SHA256:
@@ -168,6 +180,9 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
                         lambda s: patch_v1284_head(s, *v1284_head)))
     for key, value in (env or {}).items():
         patches.append((f'os.environ["{key}"]', lambda s, k=key, v=value: patch_env(s, k, v)))
+    for key, value in (add_env or {}).items():
+        patches.append(('print("BIOHUB_PRESET:", BIOHUB_PRESET)\n',
+                        lambda s, k=key, v=value: patch_add_env(s, k, v)))
     if not patches:
         raise SystemExit("no patch requested; that is the public notebook unchanged")
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
@@ -200,13 +215,17 @@ def main(argv=None) -> int:
     p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="override one of cell 0's os.environ settings, e.g. "
                         "BIOHUB_MOTION_RELINK_LEARNED_BONUS=15.0")
+    p.add_argument("--add", action="append", default=[], metavar="KEY=VALUE",
+                   help="add an os.environ setting cell 0 does not make, e.g. "
+                        "BIOHUB_OUTPUT_MOTION_RELINK=0")
     p.add_argument("--v1284-head", default=None, metavar="FILE=MD5",
                    help="a head file in the soups dataset, with its md5")
     a = p.parse_args(argv)
     env = dict(kv.split("=", 1) for kv in a.set)
     head = tuple(a.v1284_head.split("=", 1)) if a.v1284_head else None
+    add = dict(kv.split("=", 1) for kv in a.add)
     build(a.notebook, a.out_dir, a.slug, secondary_soup=a.secondary_soup,
-          v1284_mode=a.v1284_mode, env=env, v1284_head=head)
+          v1284_mode=a.v1284_mode, env=env, v1284_head=head, add_env=add)
     return 0
 
 
