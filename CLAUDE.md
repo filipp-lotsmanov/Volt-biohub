@@ -4062,6 +4062,17 @@ lost 0.001. **1.5 submitted as `56539713`.** The curve continues:
 
 It plateaus below 1.0.
 
+**`56539713` (ILP disappearance 1.5) scored 0.952, −0.001, against E7's +0.0048.** That
+closes the x138-tweak line. **Nine x138 submissions, eight of them variants, and every
+variant is at or below 0.953.** The E7 instrument called its two large *negatives* right
+(relink off, disappearance 3.0). It went **0 for 4 on its positives**: readmission 6,
+window 3, D4 and disappearance 1.5. The most likely reason is its operating point. E7 misses
+far more cells (recall 0.937), so node-retention and geometry changes help it and not the
+strong public detector. The other part is selection: x138's own settings were tuned against
+the public 29 %, so its 0.953 is flattered and an equally good variant reads lower. Neither
+local instrument can find a board increment on x138. **Stop tweaking x138; any further gain
+needs a new idea, not a knob.**
+
 **`56536436` (the D4 TTA fix) scored 0.947, −0.006, the largest loss of any variant.**
 The likely mechanism is that **x138's coordinate head was trained on features from the
 buggy 7-view average.** Fixing the average shifts every input the head sees, and the head is
