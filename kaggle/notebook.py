@@ -69,6 +69,26 @@ SECONDARY = kaggle_env.find_secondary_weights()
 USE_UNET = WEIGHTS is not None and kaggle_env.gpu_is_usable()
 print(f"test {TEST} · weights {WEIGHTS} · secondary {SECONDARY} · "
       f"detector {'unet' if USE_UNET else 'DoG fallback'}", flush=True)
+# THE DoG FALLBACK IS FATAL, not a degradation — Fillip's catch, verified here.
+# `detect_video`'s docstring says it outright: "*threshold* switches the learned
+# path off the node budget". We pass `det_threshold` only when USE_UNET, so the
+# fallback runs with threshold None and `budget=1.0`, which re-arms the top-N
+# node budget that produced the 0.588 / 0.578 / 0.581 / 0.575 submissions and
+# that this project's own notes say must never come back. Kaggle substitutes
+# hardware when a shape is unavailable, so `gpu_is_usable()` returning False on a
+# GRADED rerun is not hypothetical — and it would score ~0.58 with nothing in the
+# log to say anything was different. There is no third option: DoG is inherently
+# budget-based (`detect_dog` takes n_per_frame and no threshold), so the
+# degradation cannot be made safe. Fail visibly instead: a failure costs the same
+# slot and tells us, while a silent 0.58 could be selected as a final pick.
+if not USE_UNET:
+    raise SystemExit(
+        f"refusing to run the DoG fallback: weights={WEIGHTS} "
+        f"gpu_usable={kaggle_env.gpu_is_usable()}. With det_threshold None and "
+        "budget 1.0 this path re-arms the node budget and scores ~0.58. Attach "
+        "volt-weights and check the accelerator is on."
+    )
+
 if WEIGHTS is not None:
     # Say WHICH checkpoint this is. Every checkpoint of this architecture is the
     # same 8,357,783 bytes, so a size check cannot tell two runs apart and a stale
@@ -80,6 +100,24 @@ if WEIGHTS is not None:
     print(f"  checkpoint: method={_c.get('method')} fold={_c.get('fold')} "
           f"lr={_c.get('lr')} seed={_c.get('seed')} "
           f"det_neg_weight={_c.get('det_neg_weight')}", flush=True)
+    # And the md5, because config.json carries ARCHITECTURE, not provenance: it
+    # is byte-identical across every checkpoint of this family, souped or not, so
+    # it cannot say which one is mounted. Nor can the file size — every soup here
+    # is 8,355,927 bytes, which is how the first v15 upload nearly shipped the
+    # wrong secondary unnoticed. The md5 is the only thing that distinguishes
+    # them, and printing it in the log makes the graded rerun self-documenting.
+    #   467180ab…  soup4      pubfull 381 + 400 + 2 SWA epochs   (v15 primary)
+    #   7fcade11…  soup3      pack50 best + 402 + 350            (v15 secondary)
+    #   97e5d6eb…  soup2pack  pack50 best + 402
+    #   3af2701d…  soup2      pubfull 381 + 400                  (v14 primary)
+    #   4ae09601…  raw pubfull best 381
+    #   827abaaf…  raw pack50 best
+    import hashlib as _hashlib
+
+    for _label, _p in (("primary", WEIGHTS), ("secondary", SECONDARY)):
+        if _p is not None:
+            print(f"  {_label} md5 {_hashlib.md5(_p.read_bytes()).hexdigest()}",
+                  flush=True)
 
 # Best configuration measured through the submission path ITSELF, not through a
 # parallel harness -- that mismatch is what produced CV 0.7366 against LB 0.588.
@@ -182,6 +220,18 @@ submit.run(
     weights=WEIGHTS if USE_UNET else None,
     secondary_weights=SECONDARY if USE_UNET else None,
     secondary_weight=0.15 if (USE_UNET and SECONDARY) else 0.0,
+    # The secondary's EDGE head, which was being thrown away. The old
+    # implementation hand-assembled only its UNet and 1x1 detection head, so its
+    # trained transformer was never consulted -- on the axis carrying half our
+    # remaining loss. Worth +0.0011 on fold 0 at weight 0.5, a clean interior
+    # optimum (0.3 -> -0.0006, 0.65 -> -0.0013).
+    secondary_edge_weight=0.5 if (USE_UNET and SECONDARY) else 0.0,
+    # Bidirectional harmonic fusion. Swapping the frame pair makes the same
+    # softmax-over-sources answer the complementary question, and a weighted
+    # harmonic mean of the two is an agreement test rather than an average. A
+    # plateau, not a spike: 0.25 and 0.35 tied exactly under the two-member soup
+    # and 0.25 wins by 0.0004 under this one, while 0.50 falls below w=0.
+    bidirectional_weight=0.25 if USE_UNET else 0.0,
     budget=1.0,
     det_threshold=0.965 if USE_UNET else None,
     reference=USE_UNET,

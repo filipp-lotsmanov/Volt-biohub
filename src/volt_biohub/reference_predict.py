@@ -93,15 +93,23 @@ def _open_meta(ds_path: Path, downsample: tuple[int, ...]) -> _Meta:
                  zarr_path=ds_path, image_shape=shape, scale=scale)
 
 
-def to_per_frame(coords: np.ndarray, edges, downsample: tuple[int, int, int],
-                 n_frames: int, iso_um: float):
-    """``(coords, edges)`` -> the ``(coords_per_t, links_per_t, probs)`` triple.
+# 50 of a ~600-way softmax, i.e. the top ~8 % of sources. 5 was the first
+# choice and it was too few to settle anything: the dividing parent fell outside
+# it for 11 of 12 true second daughters, which cannot distinguish "the head
+# carries no division signal" from "the signal sits below the 5th source". At 50
+# an absence is genuine evidence, and the cost is one argpartition per
+# unparented column either way.
+_ORPHAN_TOPK = 50
 
-    Coordinates come back on the **downsampled** grid, which is the space
-    ``volt_biohub.postprocess`` measures distances in (multiplying by
-    *iso_um*), and the submission writer multiplies back out by *downsample*.
-    The probabilities ride alongside the links because
-    :func:`volt_biohub.ilp_link.prune_dp` prices an edge by its probability.
+
+def _per_frame_index(coords: np.ndarray, downsample, n_frames: int):
+    """``(coords_per_t, {global row -> index within its frame})``.
+
+    Shared by :func:`to_per_frame` and :func:`orphan_parents_per_frame` on
+    purpose. Both translate global row ids from :func:`predict_video` into the
+    per-frame indices ``volt_biohub.postprocess`` works in, and two copies of
+    that mapping is exactly the kind of coordinate-space duplication that fails
+    silently rather than loudly.
     """
     down = np.asarray(downsample, dtype=np.float64)
     coords_per_t: list[np.ndarray] = []
@@ -112,6 +120,51 @@ def to_per_frame(coords: np.ndarray, edges, downsample: tuple[int, int, int],
             local[int(gi)] = k
         coords_per_t.append(coords[sel, 1:].astype(np.float64) / down
                             if len(sel) else np.empty((0, 3)))
+    return coords_per_t, local
+
+
+def orphan_parents_per_frame(coords: np.ndarray, raw, downsample,
+                             n_frames: int):
+    """``predict_video``'s raw orphan-parent triples -> one dict per frame pair.
+
+    ``{target index: [(source index, prob), ...]}``, best source first.
+
+    These are the probabilities the greedy resolution throws away. It keeps a
+    pair only if it clears ``cfg.threshold`` (0.5) *and* wins the >=1-parent /
+    <=2-children pass, so a target nobody claimed contributes nothing to the
+    sparse ``probs`` that reaches post-processing -- and an unparented target is
+    precisely what a division's second daughter is. Measured consequence: 19 of
+    25 GT divisions never reach ``add_safe_divisions``' candidate pool, and the
+    two gates that refuse the ones that do (parent distance and symmetry) sit
+    at a 1:664 true:false knee, so geometry cannot separate them. This is the
+    only other signal available, and it costs one argmax per column rather than
+    a second forward pass.
+    """
+    _coords_per_t, local = _per_frame_index(coords, downsample, n_frames)
+    out: list[dict[int, list[tuple[int, float]]]] = [
+        {} for _ in range(max(0, n_frames - 1))]
+    for gi, gj, prob in raw:
+        t = int(coords[gi, 0])
+        if int(coords[gj, 0]) != t + 1 or t >= len(out):
+            continue
+        out[t].setdefault(local[int(gj)], []).append((local[int(gi)], float(prob)))
+    for d in out:
+        for v in d.values():
+            v.sort(key=lambda sp: -sp[1])
+    return out
+
+
+def to_per_frame(coords: np.ndarray, edges, downsample: tuple[int, int, int],
+                 n_frames: int, iso_um: float):
+    """``(coords, edges)`` -> the ``(coords_per_t, links_per_t, probs)`` triple.
+
+    Coordinates come back on the **downsampled** grid, which is the space
+    ``volt_biohub.postprocess`` measures distances in (multiplying by
+    *iso_um*), and the submission writer multiplies back out by *downsample*.
+    The probabilities ride alongside the links because
+    :func:`volt_biohub.ilp_link.prune_dp` prices an edge by its probability.
+    """
+    coords_per_t, local = _per_frame_index(coords, downsample, n_frames)
     links: list[list[tuple[int, int, float]]] = [[] for _ in range(max(0, n_frames - 1))]
     probs: list[dict[tuple[int, int], float]] = [{} for _ in range(max(0, n_frames - 1))]
     for gi, gj, prob, _dist in edges:
@@ -310,6 +363,9 @@ class PredictConfig:
     # Detection
     det_threshold: float = 0.5
     det_tta: bool = True  # flip-xy TTA for detection logits
+    # Ours: average each frame's two window views (see predict_video). Off by
+    # default so the copied path stays the reference's.
+    temporal_tta: bool = False
     pool_kernel_um: float = 3.0  # max-pool kernel size in µm for detection peak extraction
     # Edge filtering
     edge_activation: str = "softmax"  # "sigmoid" or "softmax"
@@ -510,6 +566,7 @@ def predict_video(
     downsample: tuple[int, ...] = (1, 4, 4),
     secondary: Secondary | None = None,
     bidir: float = 0.0,
+    orphan_parents: list | None = None,
 ) -> tuple[np.ndarray, list[tuple[int, int, float, float]]]:
     """Run inference on a single video using sliding windows of W frames.
 
@@ -522,6 +579,13 @@ def predict_video(
     coords : np.ndarray
         Shape (N, 4) — columns [t, z, y, x] in original resolution.
     edges : list of (src_idx, tgt_idx, prob, distance) tuples
+
+    If *orphan_parents* is given it is appended to with
+    ``(src_idx, tgt_idx, prob)`` triples for the best few sources of every
+    target the greedy resolution left unparented -- the probabilities that are
+    otherwise discarded here. An out-parameter rather than a third return value
+    so this function stays call-compatible with the verbatim upstream one that
+    ``tests/test_reference_predict.py`` compares it against.
     """
     ds = _open_meta(ds_path, downsample)
     if "0.001" not in ds.quantiles or "0.999" not in ds.quantiles:
@@ -558,66 +622,28 @@ def predict_video(
         if not window_starts or last != window_starts[-1]:
             window_starts.append(last)
 
-    for ws in window_starts:
-        frame_indices = list(range(ws, ws + W))
+    # Temporal TTA -- ours, off by default. With W=2 and stride 1 every
+    # interior frame is encoded twice, as slot 1 of window (t-1, t) and slot 0
+    # of (t, t+1), and the upstream loop detects from the first view only. The
+    # second is computed and thrown away, so averaging the two logit maps costs
+    # no extra encode. It needs a one-window lag: frame t's second view exists
+    # only once window (t, t+1) is encoded, so window (t-1, t)'s edge stage
+    # waits for it. The node order (frame by frame) is unchanged.
+    temporal = cfg.temporal_tta
+    if temporal and W != 2:
+        raise ValueError(f"temporal_tta assumes window_size 2, got {W}")
 
-        # --- UNet encode (single window, batch_size=1) ---
-        imgs = torch.stack([
-            _load_frame(zarr_arr, t, target_shape, downsample)
-            for t in frame_indices
-        ])  # (W, *spatial)
-        # Quantile normalisation (0.1%–99.9%) to match training pipeline.
-        imgs = ((imgs - q_low) / (q_high - q_low + 1e-6)).clamp(0.0)
-        imgs = imgs.unsqueeze(0).to(device)   # (1, W, *spatial)
+    def _register(t, logits):
+        nonlocal global_node_count
+        if t in seen_frames:
+            return
+        arr = _detect_cells_pooled(logits[0], t, cfg.det_threshold, pool_k)
+        coord_offset[t] = (global_node_count, global_node_count + len(arr))
+        global_node_count += len(arr)
+        coord_lists.append(arr)
+        seen_frames.add(t)
 
-        unet_out, det_logits = model.encode(imgs)
-        # unet_out: (1, W, C, *spatial_down), det_logits: list of W × (1, 1, *spatial_down)
-
-        # Detection TTA: original + flip-x + flip-y + flip-xy, average logits.
-        # TTA: flip along Y (-2) and X (-1) only.  Z is excluded because
-        # the data is highly anisotropic (Z resolution ~4x coarser than XY),
-        # so Z-flips would produce out-of-distribution inputs.
-        if cfg.det_tta:
-            tta_flips = [(-1,), (-2,), (-2, -1)]
-            for dims in tta_flips:
-                imgs_flip = imgs.flip(dims)
-                _, det_flip = model.encode(imgs_flip)
-                for f in range(W):
-                    det_logits[f] = det_logits[f] + det_flip[f].flip(dims)
-                del imgs_flip, det_flip
-            for f in range(W):
-                det_logits[f] = det_logits[f] / 4
-
-        # The first addition to the copied body, and a no-op unless a second
-        # checkpoint is passed. One encode serves both halves: the detection
-        # maps are blended here, and the trunk features are held for the edge
-        # stage below. See :class:`Secondary` for why the two halves use
-        # different combiners.
-        unet_out2 = None
-        if secondary is not None:
-            unet_out2, det2 = secondary.model.encode(imgs)
-            if secondary.det_weight > 0.0:
-                for f in range(W):
-                    det_logits[f] = secondary.blend_det(
-                        det_logits[f], det2[f], cfg.det_threshold)
-            del det2
-            if secondary.edge_weight <= 0.0:
-                del unet_out2
-                unet_out2 = None
-
-        del imgs
-
-        # --- Detect cells in each frame (dedup across windows) ---
-        for f_idx, t in enumerate(frame_indices):
-            if t not in seen_frames:
-                arr = _detect_cells_pooled(
-                    det_logits[f_idx][0], t, cfg.det_threshold, pool_k,
-                )
-                coord_offset[t] = (global_node_count, global_node_count + len(arr))
-                global_node_count += len(arr)
-                coord_lists.append(arr)
-                seen_frames.add(t)
-
+    def _edge_stage(frame_indices, unet_out, unet_out2):
         coords_so_far = (
             np.concatenate(coord_lists) if coord_lists else np.empty((0, 4), dtype=np.int16)
         )
@@ -750,7 +776,90 @@ def predict_video(
                 children_count[i] = n_ch + 1
                 parents_count[j] = n_pa + 1
 
-        del unet_out
+            if orphan_parents is not None and probs.size:
+                # The best few sources for every target the resolution left
+                # unparented. Top-k rather than the argmax alone because a
+                # dividing parent need not be an orphan's single best source:
+                # the column mass is split between two plausible parents, which
+                # is why it fell below the 0.5 threshold and became an orphan.
+                top = min(_ORPHAN_TOPK, n_src)
+                for j in range(n_tgt):
+                    if parents_count.get(j, 0):
+                        continue
+                    col = probs[:, j]
+                    for i in np.argpartition(-col, top - 1)[:top]:
+                        orphan_parents.append(
+                            (int(idx_src[i]), int(idx_tgt[j]), float(col[i])))
+
+    pending = None
+    for ws in window_starts:
+        frame_indices = list(range(ws, ws + W))
+
+        # --- UNet encode (single window, batch_size=1) ---
+        imgs = torch.stack([
+            _load_frame(zarr_arr, t, target_shape, downsample)
+            for t in frame_indices
+        ])  # (W, *spatial)
+        # Quantile normalisation (0.1%–99.9%) to match training pipeline.
+        imgs = ((imgs - q_low) / (q_high - q_low + 1e-6)).clamp(0.0)
+        imgs = imgs.unsqueeze(0).to(device)   # (1, W, *spatial)
+
+        unet_out, det_logits = model.encode(imgs)
+        # unet_out: (1, W, C, *spatial_down), det_logits: list of W × (1, 1, *spatial_down)
+
+        # Detection TTA: original + flip-x + flip-y + flip-xy, average logits.
+        # TTA: flip along Y (-2) and X (-1) only.  Z is excluded because
+        # the data is highly anisotropic (Z resolution ~4x coarser than XY),
+        # so Z-flips would produce out-of-distribution inputs.
+        if cfg.det_tta:
+            tta_flips = [(-1,), (-2,), (-2, -1)]
+            for dims in tta_flips:
+                imgs_flip = imgs.flip(dims)
+                _, det_flip = model.encode(imgs_flip)
+                for f in range(W):
+                    det_logits[f] = det_logits[f] + det_flip[f].flip(dims)
+                del imgs_flip, det_flip
+            for f in range(W):
+                det_logits[f] = det_logits[f] / 4
+
+        # The first addition to the copied body, and a no-op unless a second
+        # checkpoint is passed. One encode serves both halves: the detection
+        # maps are blended here, and the trunk features are held for the edge
+        # stage below. See :class:`Secondary` for why the two halves use
+        # different combiners.
+        unet_out2 = None
+        if secondary is not None:
+            unet_out2, det2 = secondary.model.encode(imgs)
+            if secondary.det_weight > 0.0:
+                for f in range(W):
+                    det_logits[f] = secondary.blend_det(
+                        det_logits[f], det2[f], cfg.det_threshold)
+            del det2
+            if secondary.edge_weight <= 0.0:
+                del unet_out2
+                unet_out2 = None
+
+        del imgs
+
+        # --- Detect cells in each frame (dedup across windows) ---
+        if not temporal:
+            for f_idx, t in enumerate(frame_indices):
+                _register(t, det_logits[f_idx])
+            _edge_stage(frame_indices, unet_out, unet_out2)
+        else:
+            if pending is not None and pending[0][-1] == frame_indices[0]:
+                det_logits[0] = 0.5 * (pending[3] + det_logits[0])
+            for f_idx, t in enumerate(frame_indices[:-1]):
+                _register(t, det_logits[f_idx])
+            if pending is not None:
+                _edge_stage(*pending[:3])
+            pending = (frame_indices, unet_out, unet_out2, det_logits[-1])
+        del unet_out, unet_out2
+
+    if pending is not None:
+        _register(pending[0][-1], pending[3])
+        _edge_stage(*pending[:3])
+        pending = None
 
     coords = np.concatenate(coord_lists) if coord_lists else np.empty((0, 4), dtype=np.int16)
     # Scale spatial coords back to original resolution.

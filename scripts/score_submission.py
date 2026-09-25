@@ -140,6 +140,24 @@ def main(argv=None) -> int:
     p.add_argument("--postprocess", action="store_true",
                    help="Full post-detection stack; replaces gate linking.")
     p.add_argument("--min-track-len", type=int, default=6)
+    p.add_argument("--no-smooth", action="store_true",
+                   help="Turn OFF line-fit trajectory smoothing. It had no CLI "
+                        "path until now, so it has only ever run at its "
+                        "defaults. The reference's clean ablation prices it at "
+                        "+0.0072, the largest of their unambiguously positive "
+                        "passes -- but every other component of theirs we "
+                        "ported failed to reproduce its published delta here, "
+                        "in both directions, so it is worth one arm.")
+    p.add_argument("--smooth-window", type=int, default=None,
+                   help="Half-width of the neighbourhood the linear fit uses "
+                        "(default 2). Only nodes with an unambiguous chain on "
+                        "both sides move, so a wider window reaches fewer "
+                        "nodes, not more.")
+    p.add_argument("--smooth-weight", type=float, default=None,
+                   help="How far each node is pulled toward its fit, 0-1 "
+                        "(default 0.8). Smoothing already pulled a border node "
+                        "outside the grid once, which the validator caught and "
+                        "the score would not have.")
     p.add_argument("--ilp", action="store_true",
                    help="Solve the RAW learned candidate graph with tracksdata's "
                         "ILP instead of assigning per frame pair. The reference's "
@@ -209,7 +227,21 @@ def main(argv=None) -> int:
                         "so an edge is worth at most 1.0 against a disappearance "
                         "cost of 2.0 -- scale it up to make links pay.")
     p.add_argument("--ilp-division", type=float, default=None,
-                   help="Cost of a fork. Reference 1.2; 0.8 and 1.6 both lose.")
+                   help="Cost of a fork. INERT at any value >= 1.0, so the "
+                        "shipped 1.2 means prune_dp never emits a fork at all "
+                        "and every division we score comes from "
+                        "add_safe_divisions downstream. Proof: a fork is taken "
+                        "iff w_div + g2 < 0 where "
+                        "g = edge_weight*p + (on[c] - w_app) - free[c]; with "
+                        "APPEARANCE_WEIGHT 0.0, EDGE_WEIGHT -1.0 and "
+                        "free[c] = min(on[c], base) <= on[c], that is g >= -p "
+                        ">= -1, so the branch is unreachable for any input at "
+                        "w_div >= 1. Confirmed: 1.2 and 1.6 return bit-identical "
+                        "metrics. Only below 1.0 does it move anything (0.8 "
+                        "gives divJ 0.0902 -> 0.0939, about four divisions, and "
+                        "+0.0004 of score, i.e. noise). The earlier help here "
+                        "said \"0.8 and 1.6 both lose\", which was measured "
+                        "against the tracksdata SOLVER, not prune_dp.")
     p.add_argument("--no-gaps", action="store_true",
                    help="Skip single-frame gap closing, which the reference's "
                         "ablation prices at +0.0004 once a solver picks topology.")
@@ -230,6 +262,26 @@ def main(argv=None) -> int:
     p.add_argument("--div-global-frac", type=float, default=None,
                    help="Cap on forks as a fraction of edges. A blunt count limit: "
                         "it drops candidates by order, not by quality.")
+    p.add_argument("--div-orphan-probs", action="store_true",
+                   help="Attach the edge head's DISCARDED probabilities to the "
+                        "division pass. The greedy resolution keeps a pair only "
+                        "if it clears 0.5 and wins the <=1-parent pass, so an "
+                        "unparented target -- exactly what a second daughter is "
+                        "-- reaches post-processing with no learned evidence. "
+                        "Diagnostic for now: it only populates the learned_prob "
+                        "column of VOLT_DIV_REJECT, and changes no decision.")
+    p.add_argument("--div-n-cand", type=int, default=None,
+                   help="How many of the nearest orphans to try as the second "
+                        "daughter, as a FALLBACK: the first to clear every gate "
+                        "wins, so the pool size and out-degree are unchanged. "
+                        "1 is the reference's mutual-nearest rule. The measured "
+                        "case for raising it: the per-frame cap holds a median "
+                        "of 1 candidate against a cap of 2 and binds in only "
+                        "12.8 % of frames, every true fork in the pool already "
+                        "ranks first and is accepted (6/6), and ~1 % of emitted "
+                        "forks are charged as FP at all -- so the term is "
+                        "recall-limited and the single-nearest rule, not any "
+                        "threshold, is what keeps the true sister out.")
     p.add_argument("--div-parent-um", type=float, default=None)
     p.add_argument("--div-sister-um", type=float, default=None)
     p.add_argument("--div-no-grandchildren", action="store_true",
@@ -263,6 +315,11 @@ def main(argv=None) -> int:
                         "4-movie proxy set it reaches adjusted edge Jaccard "
                         "0.9299 where the rewrite reaches 0.8888, and 0.9505 "
                         "total once our post-processing runs on top.")
+    p.add_argument("--temporal-tta", action="store_true",
+                   help="reference path only: detect each interior frame from the "
+                        "mean of its two window views (slot 1 of (t-1,t) and slot 0 "
+                        "of (t,t+1)); the upstream loop keeps only the first. No "
+                        "extra encode.")
     p.add_argument("--real-pairs", action="store_true",
                    help="Compute the edge head's trunk features from a REAL "
                         "consecutive pair instead of one frame duplicated. The "
@@ -323,6 +380,7 @@ def main(argv=None) -> int:
             candidate_threshold=args.candidate_threshold,
             real_pairs=args.real_pairs,
             reference=args.reference,
+            temporal_tta=args.temporal_tta,
             gaps=not args.no_gaps,
             ilp_kwargs={k: v for k, v in {
                 "disappearance_weight": args.ilp_disappearance,
@@ -331,6 +389,12 @@ def main(argv=None) -> int:
                 "node_weight": args.ilp_node,
                 "edge_weight": args.ilp_edge,
             }.items() if v is not None} or None,
+            div_orphan_probs=args.div_orphan_probs,
+            smooth=not args.no_smooth,
+            smooth_kwargs={k: v for k, v in {
+                "window": args.smooth_window,
+                "weight": args.smooth_weight,
+            }.items() if v is not None} or None,
             div_kwargs={k: v for k, v in {
                 "symmetry_tau": args.div_symmetry_tau,
                 "diverge_um": args.div_diverge_um,
@@ -338,6 +402,7 @@ def main(argv=None) -> int:
                 "frame_frac": args.div_frame_frac,
                 "parent_um": args.div_parent_um,
                 "sister_um": args.div_sister_um,
+                "n_cand": args.div_n_cand,
                 "rise_weight": args.div_rise_weight,
                 # False is meaningful here, so it cannot ride the
                 # `v is not None` filter as a plain flag default.

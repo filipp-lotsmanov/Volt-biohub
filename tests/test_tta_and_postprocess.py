@@ -172,3 +172,110 @@ def test_writer_enforces_degrees_after_the_duplicate_collapse() -> None:
     # Shortest links win, so the two kept are the 1.0 and 2.0 edges.
     kept_targets = {e["target_id"] for e in edges}
     assert len(kept_targets) == len(edges), "a target was claimed twice"
+
+
+def _fork_fallback_fixture():
+    """A parent whose NEAREST orphan is a duplicate and whose true sister is behind it.
+
+    Laid out along x on the isotropic 1.625 um grid, four frames:
+
+        t0  grandparent x=10      -> gives `p` a parent, which the pass requires
+        t1  p          x=10
+        t2  ch x=8   dup x=8.5   sister x=13
+        t3  g1 x=6                g2 x=15
+
+    `dup` is nearer to `ch` (0.81 um) than `sister` is (8.13 um), so the
+    single-nearest rule proposes it and nothing else. It clears the distance and
+    symmetry gates and fails only the divergence clause, having no child of its
+    own -- which is the measured shape of the dominant false candidate, a second
+    detection of a cell that is already linked.
+    """
+    coords = [
+        np.array([[0.0, 0.0, 10.0]]),                       # t0: grandparent
+        np.array([[0.0, 0.0, 10.0]]),                       # t1: p
+        np.array([[0.0, 0.0, 8.0],                          # t2: ch
+                  [0.0, 0.0, 8.5],                          #     dup   (orphan)
+                  [0.0, 0.0, 13.0]]),                       #     sister(orphan)
+        np.array([[0.0, 0.0, 6.0],                          # t3: g1 (child of ch)
+                  [0.0, 0.0, 15.0]]),                       #     g2 (child of sister)
+    ]
+    links = [
+        [(0, 0, 0.0)],                                      # grandparent -> p
+        [(0, 0, 3.25)],                                     # p -> ch
+        [(0, 0, 3.25), (2, 1, 3.25)],                       # ch -> g1, sister -> g2
+    ]
+    return coords, links
+
+
+def test_single_nearest_orphan_hides_the_true_sister() -> None:
+    """n_cand=1 reproduces the reference rule, and it finds nothing here.
+
+    This is the failure no gate sweep could reach: every threshold in
+    `add_safe_divisions` was swept individually and none binds, because the
+    candidate that would pass them is never proposed. The pool audit
+    (`scripts/division_candidate_audit.py`) measured the consequence -- a median
+    of 1 candidate per frame against a cap of 2, and every true fork already
+    ranking first -- so the term is proposal-limited, not ranking-limited.
+    """
+    from volt_biohub.postprocess import add_safe_divisions
+
+    coords, links = _fork_fallback_fixture()
+    _c, out = add_safe_divisions(coords, links, 1.625, n_cand=1)
+    assert sum(1 for a, _, _ in out[1] if a == 0) == 1, "no fork should be added"
+
+
+def test_fallback_reaches_the_sister_the_duplicate_masked() -> None:
+    """n_cand=2 falls through the duplicate to the real second daughter."""
+    from volt_biohub.postprocess import add_safe_divisions
+
+    coords, links = _fork_fallback_fixture()
+    _c, out = add_safe_divisions(coords, links, 1.625, n_cand=2)
+    children_of_p = sorted(b for a, _b, _w in out[1] for b in [_b] if a == 0)
+    assert children_of_p == [0, 2], "p should parent ch and the sister, not the dup"
+
+
+def test_fallback_never_exceeds_two_children() -> None:
+    """The fallback stops at the first candidate that clears the gates.
+
+    Out-degree > 2 is truncated by the scorer silently, by lowest edge id, so a
+    multi-propose variant of this knob could lose edges with no visible failure.
+    Asking for more candidates than there are orphans also exercises
+    `cKDTree.query`'s habit of padding the result with an out-of-range index.
+    """
+    from volt_biohub.postprocess import add_safe_divisions
+
+    coords, links = _fork_fallback_fixture()
+    _c, out = add_safe_divisions(coords, links, 1.625, n_cand=10)
+    for t_links in out:
+        counts: dict[int, int] = {}
+        for a, _b, _w in t_links:
+            counts[a] = counts.get(a, 0) + 1
+        assert not counts or max(counts.values()) <= 2
+
+
+def test_reject_diagnostic_agrees_with_the_live_gate_order(tmp_path, monkeypatch) -> None:
+    """The diagnostic re-implements the gates; drift would misattribute the loss.
+
+    It is a re-implementation on purpose -- the live loop must stay exactly the
+    shipped behaviour and must not carry a diagnostic in its hot path -- so the
+    thing worth pinning is that the two agree on the same fixture. The pool
+    audit measured 19 of 25 GT divisions never reaching the pool at all, and
+    this is the column that says which gate loses them; a wrong gate order here
+    would point the next fix at the wrong clause.
+    """
+    import csv
+
+    from volt_biohub.postprocess import add_safe_divisions
+
+    out_csv = tmp_path / "reject.csv"
+    monkeypatch.setenv("VOLT_DIV_REJECT", str(out_csv))
+    coords, links = _fork_fallback_fixture()
+    add_safe_divisions(coords, links, 1.625, n_cand=1)
+
+    rows = list(csv.DictReader(out_csv.read_text().splitlines()))
+    by_rank = {int(r["k_rank"]): r["reason"] for r in rows}
+    # The duplicate is nearest and has no child of its own; the true sister is
+    # behind it and clears everything. That is exactly why n_cand=1 finds
+    # nothing here while n_cand=2 finds the fork.
+    assert by_rank[0] == "no_grandchild"
+    assert by_rank[1] == "pass"

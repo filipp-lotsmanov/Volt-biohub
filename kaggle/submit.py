@@ -605,6 +605,25 @@ def detect_and_candidates(
     return coords_per_t, candidates, kept_probs
 
 
+def _div_kwargs_for(div_kwargs, intensity, orphan_prob):
+    """Add the per-video extras to the static division kwargs.
+
+    Both are per-video objects that cannot live in a config dict built once
+    before the loop: the intensity volumes and the discarded orphan-parent
+    probabilities. Kept in one place because a missing key here degrades
+    silently -- `add_safe_divisions` simply ranks without the feature and
+    reports a plausible score.
+    """
+    extra = {}
+    if (div_kwargs or {}).get("rise_weight") and intensity is not None:
+        extra["intensity"] = intensity
+    if orphan_prob is not None:
+        extra["orphan_prob"] = orphan_prob
+    if not extra:
+        return div_kwargs
+    return {**(div_kwargs or {}), **extra}
+
+
 def run(
     test_dir: Path,
     out_path: Path,
@@ -625,6 +644,7 @@ def run(
     tta: bool = False,
     tta_views: int = 8,
     div_kwargs: dict | None = None,
+    div_orphan_probs: bool = False,
     ilp: bool = False,
     ilp_prune: bool = False,
     learned_bonus: float = 0.0,
@@ -637,10 +657,13 @@ def run(
     candidate_threshold: float = 0.48,
     real_pairs: bool = False,
     reference: bool = False,
+    temporal_tta: bool = False,
     ilp_kwargs: dict | None = None,
     gaps: bool = True,
     relink_kwargs: dict | None = None,
     gap_kwargs: dict | None = None,
+    smooth: bool = True,
+    smooth_kwargs: dict | None = None,
 ) -> Path:
     """Predict every video in *test_dir* and write a validated submission."""
     names = list_datasets(test_dir)
@@ -714,7 +737,8 @@ def run(
         if tuple(ref_down) != DOWNSAMPLE:
             raise SystemExit(f"checkpoint downsample {ref_down} != {DOWNSAMPLE}")
         ref_cfg = rp.PredictConfig(det_threshold=det_threshold if det_threshold
-                                   else 0.965, det_tta=tta)
+                                   else 0.965, det_tta=tta,
+                                   temporal_tta=temporal_tta)
         ref_secondary = rp.make_secondary(
             secondary_weights, resolve_device(), secondary_weight,
             secondary_edge_weight, window_size=ref_W,
@@ -727,6 +751,7 @@ def run(
                   f"{bidirectional_weight}",
                   flush=True)
         print(f"linker: REFERENCE path (det_tta={ref_cfg.det_tta}, "
+              f"temporal_tta={ref_cfg.temporal_tta}, "
               f"pool {ref_cfg.pool_kernel_um} um, edge threshold "
               f"{ref_cfg.threshold})", flush=True)
 
@@ -779,12 +804,24 @@ def run(
         if use_reference:
             from volt_biohub import reference_predict as rp
             from volt_biohub.ilp_link import prune_dp
+            # The probabilities the greedy resolution discards. Collected only
+            # on request: an unparented target contributes nothing to `sparse`,
+            # so a division's second daughter has no learned evidence attached
+            # to it by default, which is measured to matter (19 of 25 GT
+            # divisions never reach the candidate pool, and the two gates that
+            # refuse the rest sit at a 1:664 true:false knee where geometry
+            # cannot separate).
+            raw_orphans: list | None = [] if div_orphan_probs else None
             raw_coords, raw_edges = rp.predict_video(
                 ref_model, test_dir / f"{name}.zarr", resolve_device(),
                 cfg=ref_cfg, window_size=ref_W, downsample=DOWNSAMPLE,
-                secondary=ref_secondary, bidir=bidirectional_weight)
+                secondary=ref_secondary, bidir=bidirectional_weight,
+                orphan_parents=raw_orphans)
             coords, reference_links, sparse = rp.to_per_frame(
                 raw_coords, raw_edges, DOWNSAMPLE, n_frames, ISO_UM)
+            orphan_prob = (rp.orphan_parents_per_frame(
+                raw_coords, raw_orphans, DOWNSAMPLE, n_frames)
+                if raw_orphans is not None else None)
             probs_per_pair = rp.probs_as_matrices(coords, sparse)
             if ilp_prune:
                 # Applied here rather than through run_all's prune_fn so the
@@ -802,6 +839,9 @@ def run(
                 # checkpoint that trained on both our folds -- while the
                 # detection half helps our own held-out detector too.
                 reference_links = None
+
+        if not use_reference:
+            orphan_prob = None
 
         want_pair_probs = (not use_reference) and (
             ilp or ilp_prune or learned_bonus or (learned_edges and postprocess))
@@ -906,8 +946,7 @@ def run(
                 divisions=division_gate_um is not None,
                 min_track_len=min_track_len,
                 shape=vol_shape,
-                div_kwargs={**(div_kwargs or {}), "intensity": _intensity}
-                           if (div_kwargs or {}).get("rise_weight") else div_kwargs,
+                div_kwargs=_div_kwargs_for(div_kwargs, _intensity, orphan_prob),
                 links_per_t=(reference_links if reference_links is not None
                              else (links if candidates is not None
                                    else (learned_links
@@ -921,6 +960,15 @@ def run(
                        if probs_per_pair is not None and not use_reference else {}),
                 } or None,
                 gap_kwargs=gap_kwargs,
+                # Line-fit smoothing had no path from here at all, so it always
+                # ran at window 2 / weight 0.8 and could be neither swept nor
+                # switched off. It is the one pass the reference's own clean
+                # ablation prices unambiguously positive (+0.0072) and the only
+                # one of theirs we had never checked against our pipeline --
+                # where every other ported component's published delta failed to
+                # transfer, in both directions.
+                smooth=smooth,
+                smooth_kwargs=smooth_kwargs,
                 prune_fn=(_make_prune(probs_per_pair)
                           if ilp_prune and not use_reference else None),
             )

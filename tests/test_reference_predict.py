@@ -191,3 +191,80 @@ def test_secondary_rejects_a_mismatched_coordinate_space(tiny_checkpoint):
     with pytest.raises(ValueError, match="window"):
         rp.make_secondary(tiny_checkpoint, dev, det_weight=0.5,
                           window_size=5)
+
+
+def test_temporal_tta_averages_the_two_views_of_each_interior_frame(
+        tiny_checkpoint, clip, monkeypatch):
+    """Frame t's detections must come from the mean of both windows' views of t.
+
+    The lag is the part that can go wrong silently: frame t's second view only
+    exists once window (t, t+1) is encoded, so an off-by-one would average a
+    frame with its neighbour's map and still return a plausible node set. The
+    fake encoder below makes the right answer exact. Slot 0 of every window
+    returns ``base[t] - delta[t]`` and slot 1 ``base[t] + delta[t]``, with
+    integer fields so float arithmetic is exact, which makes the average
+    ``base[t]`` to the bit. The comparison run returns ``base[t]`` from both
+    slots with averaging off, so the interior frames must match it exactly.
+    """
+    dev = torch.device("cpu")
+    model, W, down = rp.load_model(tiny_checkpoint, dev)
+    real_encode = model.encode
+    loaded: list[int] = []
+    real_load = rp._load_frame
+
+    def load(zarr_arr, t, *a, **k):
+        loaded.append(int(t))
+        return real_load(zarr_arr, t, *a, **k)
+
+    monkeypatch.setattr(rp, "_load_frame", load)
+    gen = torch.Generator().manual_seed(0)
+    fields: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def field(t, shape):
+        # A handful of isolated peaks, not a noise field: integer noise makes
+        # plateaus, every plateau voxel is a local max, and the pairwise edge
+        # stage then scores tens of thousands of nodes squared. base[t] holds
+        # the true peaks; delta[t] plants bumps that only one slot sees
+        # (slot 1 gets +12 over a -10 floor, slot 0 gets -22), so either slot
+        # alone detects extra nodes and only the average recovers base[t].
+        if t not in fields:
+            n = int(np.prod(shape))
+            base = torch.full((n,), -10.0)
+            delta = torch.zeros(n)
+            idx = torch.randperm(n, generator=gen)[:24]
+            base[idx[:12]] = torch.randint(2, 7, (12,), generator=gen).float()
+            delta[idx[12:]] = 12.0
+            fields[t] = (base.view(shape), delta.view(shape))
+        return fields[t]
+
+    def fake_encode(imgs, *, spread):
+        unet_out, det = real_encode(imgs)
+        frames = loaded[-W:]
+        out = []
+        for f, t in enumerate(frames):
+            base, delta = field(t, tuple(det[f].shape))
+            sign = -1.0 if f == 0 else 1.0
+            out.append(base + sign * spread * delta)
+        return unet_out, out
+
+    cfg_t = rp.PredictConfig(det_threshold=0.05, det_tta=False, temporal_tta=True)
+    cfg_p = rp.PredictConfig(det_threshold=0.05, det_tta=False)
+
+    monkeypatch.setattr(model, "encode", lambda imgs: fake_encode(imgs, spread=1.0))
+    c_t, e_t = rp.predict_video(model, clip, dev, cfg=cfg_t, window_size=W,
+                                downsample=down)
+    c_first, _ = rp.predict_video(model, clip, dev, cfg=cfg_p, window_size=W,
+                                  downsample=down)
+    monkeypatch.setattr(model, "encode", lambda imgs: fake_encode(imgs, spread=0.0))
+    c_base, _ = rp.predict_video(model, clip, dev, cfg=cfg_p, window_size=W,
+                                 downsample=down)
+
+    T = int(c_base[:, 0].max()) + 1
+    interior = lambda c: c[(c[:, 0] > 0) & (c[:, 0] < T - 1)]  # noqa: E731
+    assert len(interior(c_base)) > 0, "no interior detections; the test proves nothing"
+    np.testing.assert_array_equal(interior(c_t), interior(c_base))
+    # Sensitivity: without averaging, the interior uses slot 1 alone, which differs.
+    assert not np.array_equal(interior(c_first), interior(c_base))
+    # Node order stays frame by frame, and every edge still spans one frame.
+    assert np.all(np.diff(c_t[:, 0]) >= 0)
+    assert all(c_t[b, 0] - c_t[a, 0] == 1 for a, b, _p, _d in e_t)
