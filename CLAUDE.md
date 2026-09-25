@@ -4062,6 +4062,14 @@ lost 0.001. **1.5 submitted as `56539713`.** The curve continues:
 
 It plateaus below 1.0.
 
+**`56536436` (the D4 TTA fix) scored 0.947, −0.006, the largest loss of any variant.**
+The likely mechanism is that **x138's coordinate head was trained on features from the
+buggy 7-view average.** Fixing the average shifts every input the head sees, and the head is
+worth ~+0.007. E7 could not see this because the instrument runs with the head off
+(+0.0010 there). General rule: x138's components are co-adapted, quirks included. Do not
+change the feature pipeline under a head fitted to it. **`56535734` (readmission 6) scored
+0.952, −0.001** (E7 +0.0042, mostly the division term on ~2 events).
+
 **`56535767` (smoothing window 3) scored 0.951, −0.002, against E7's +0.0008 (24/20).** A
 small E7 effect is not a signal. The instrument's large calls are the ones that have held:
 relink off −0.0118 and disappearance 3.0 −0.0084 both matched the board's direction. Other E7
