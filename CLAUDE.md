@@ -4031,7 +4031,21 @@ instrument:**
 | gap filler off | +0.0000 | 64/2 |
 
 So x138's relink settings are at or near their honest optimum, as far as the instrument can
-see.
+see. A second batch (E7, post-only, vs 0.8116):
+
+| change | Δ | adjusted-edge wins/losses (per movie) |
+|---|---|---|
+| **readmission radius 4 → 6 µm** | **+0.0042** (adjJ +0.0022, divJ +0.021, recall +0.0037) | 24/47 |
+| **line-fit window 2 → 3** | **+0.0008** (recall +0.0017) | 24/20 |
+| flow K 12 → 20 | +0.0004 | 33/33 |
+| flow radius 40 → 60 | −0.0001 | 3/4 |
+| readmission min score 0.965 → 0.9 | −0.0002 | 2/69 |
+| smoothing weight 0.8 → 0.9 | −0.0008 | 19/19 |
+| relaxed gate 10 → 12 | −0.0016 | 37/34 |
+| flow tight gate 7 → 8 | −0.0036 | 30/40 |
+
+The first two went to the board on 2026-09-25. Readmission matters more for E7, which misses
+more cells (recall 0.937), so expect a smaller effect on the public weights.
 
 **Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
 `56523276` = x138 with a same-run soup as the secondary (pubfull 381+400, md5 `3af2701d`,
