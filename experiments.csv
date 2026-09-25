@@ -301,3 +301,4 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-25T00:23:52,28a7170,linux-server,X138E7_flowk20,x138+E7,1,71,,,,,0.8120,0.8098,0.8154,0.0227,0.9356,,,"E7 honest instrument, post-only: flow K 12 -> 20. Base 0.8116."
 2026-09-25T00:23:52,28a7170,linux-server,X138E7_smooth09,x138+E7,1,71,,,,,0.8108,0.8084,0.8141,0.0233,0.9377,,,"E7 honest instrument, post-only: line-fit smoothing weight 0.8 -> 0.9. Base 0.8116."
 2026-09-25T00:23:52,28a7170,linux-server,X138E7_smoothw3,x138+E7,1,71,,,,,0.8124,0.8102,0.8158,0.0222,0.9386,,,"E7 honest instrument, post-only: line-fit smoothing window 2 -> 3. Base 0.8116."
+2026-09-25T01:16:47,437ae7c,linux-server,X138E7_d4fix,x138+E7,1,71,,,,,0.8126,0.8105,0.8163,0.0208,0.9364,,,"E7 honest instrument, full run: x138 with the D4 TTA fix (anti-transpose replaces the duplicated flip-x view). +0.0010 vs 0.8116, 37/34."

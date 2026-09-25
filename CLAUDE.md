@@ -4044,7 +4044,9 @@ see. A second batch (E7, post-only, vs 0.8116):
 | relaxed gate 10 → 12 | −0.0016 | 37/34 |
 | flow tight gate 7 → 8 | −0.0036 | 30/40 |
 
-The first two went to the board on 2026-09-25. Readmission matters more for E7, which misses
+The first two went to the board on 2026-09-25 as **`56535734`** (readmission 6) and
+**`56535767`** (window 3). The D4 TTA fix (`--fix-d4`) was also screened on E7 as a full
+run: +0.0010 (adjJ +0.0012, 37/34 movies), submitted as **`56536436`**. Readmission matters more for E7, which misses
 more cells (recall 0.937), so expect a smaller effect on the public weights.
 
 **Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
