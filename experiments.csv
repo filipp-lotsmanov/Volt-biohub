@@ -309,3 +309,5 @@ timestamp,git_sha,machine,run,detector,split,n_datasets,budget,separation_um,gat
 2026-09-25T02:39:13,a64c2c1,linux-server,X138E7_gapclose6,x138+E7,1,71,,,,,0.8109,0.8085,0.8142,0.0233,0.9371,,,"E7 honest instrument, post-only: gap close 5.0 -> 6.0 um. Base 0.8116."
 2026-09-25T02:39:13,a64c2c1,linux-server,X138E7_mintrack5,x138+E7,1,71,,,,,0.8124,0.8101,0.8165,0.0227,0.9395,,,"E7 honest instrument, post-only: min track length 6 -> 5. Base 0.8116."
 2026-09-25T02:39:13,a64c2c1,linux-server,X138E7_mintrack8,x138+E7,1,71,,,,,0.8074,0.8051,0.8090,0.0227,0.9289,,,"E7 honest instrument, post-only: min track length 6 -> 8. Base 0.8116."
+2026-09-25T04:18:59,71b8a17,linux-server,X138E7_dis15,x138+E7,1,71,,,,,0.8164,0.8141,0.8216,0.0233,0.9438,,,"E7 honest instrument: ILP disappearance 2 -> 1.5, relink on (full run): +0.0048, recall +0.0070, 30/41. Submitted on x138 as 56539713."
+2026-09-25T04:18:59,71b8a17,linux-server,X138E7_dis3,x138+E7,1,71,,,,,0.8032,0.8005,0.8030,0.0263,0.9204,,,"E7 honest instrument: ILP disappearance 2 -> 3.0, relink on (full run): -0.0084, recall -0.0164; matches the board's verdict on the preset."

@@ -4046,7 +4046,22 @@ see. A second batch (E7, post-only, vs 0.8116):
 
 The first two went to the board on 2026-09-25 as **`56535734`** (readmission 6) and
 **`56535767`** (window 3). The D4 TTA fix (`--fix-d4`) was also screened on E7 as a full
-run: +0.0010 (adjJ +0.0012, 37/34 movies), submitted as **`56536436`**. Readmission matters more for E7, which misses
+run: +0.0010 (adjJ +0.0012, 37/34 movies), submitted as **`56536436`**.
+
+**ILP disappearance cost on E7, relink on, full runs: 1.5 → +0.0048 (recall +0.0070);
+2.0 = x138; 3.0 → −0.0084 (recall −0.0164).** A lower cost keeps track-ending nodes the
+solver would otherwise drop. That pays on E7, which misses more cells than the public
+weights do on their own training embryos, and a third embryo is exactly where the public
+detector will miss more. The instrument's call for 3.0 matches the board, where the preset
+lost 0.001. **1.5 submitted as `56539713`**; 1.0 is running on E7 to map the curve. Other E7
+screens that night:
+
+- gap close 4.0 µm: −0.0003 (66/3).
+- gap close 6.0 µm: −0.0008 (2/66).
+- min track length 5: +0.0008 (12/59).
+- min track length 8: −0.0042.
+
+These node-retention knobs split pooled against per-movie, so none of them is clean. Readmission matters more for E7, which misses
 more cells (recall 0.937), so expect a smaller effect on the public weights.
 
 **Submissions:** `56522624` = x138 unchanged, to verify the number on our account.
