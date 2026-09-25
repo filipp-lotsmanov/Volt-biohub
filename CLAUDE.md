@@ -4053,7 +4053,18 @@ run: +0.0010 (adjJ +0.0012, 37/34 movies), submitted as **`56536436`**.
 solver would otherwise drop. That pays on E7, which misses more cells than the public
 weights do on their own training embryos, and a third embryo is exactly where the public
 detector will miss more. The instrument's call for 3.0 matches the board, where the preset
-lost 0.001. **1.5 submitted as `56539713`**; 1.0 is running on E7 to map the curve. Other E7
+lost 0.001. **1.5 submitted as `56539713`.** The curve continues:
+
+| disappearance cost | Δ on E7 | recall | movies better/worse |
+|---|---|---|---|
+| 1.0 | +0.0114 | +0.0173 | 39/32 |
+| 0.5 | +0.0118 | +0.0277 | 42/29 |
+
+It plateaus below 1.0.
+
+**`56535767` (smoothing window 3) scored 0.951, −0.002, against E7's +0.0008 (24/20).** A
+small E7 effect is not a signal. The instrument's large calls are the ones that have held:
+relink off −0.0118 and disappearance 3.0 −0.0084 both matched the board's direction. Other E7
 screens that night:
 
 - gap close 4.0 µm: −0.0003 (66/3).
