@@ -4088,6 +4088,12 @@ more cells (recall 0.937), so expect a smaller effect on the public weights.
 80 % of detection). That is one variable, and the shape that gave +0.001 as our v14.
 Record every result here by ref.
 
+**Where the tie-break leaves us (2026-09-25 ~10:00 UTC):** rank **247 of 3,898**. The
+0.953 pile is **217 teams** (ranks 154–370), and the top-10 % cutoff is rank 389 at 0.952.
+Our x138 entry went in at 13:40 UTC on 09-24, which puts it about **94th inside the pile**.
+Because ties break earliest-first, every later fork lands below us, so plain x138 alone
+holds a top-10 % position unless the private split reshuffles the pile against us.
+
 **The final pair follows from the tie-break.** Kaggle scores the *better* of the two
 selected submissions, so one slot should be **plain x138** (`56522624`), which guarantees
 the pile's private score. The other should be **the variant most likely to beat the pile
