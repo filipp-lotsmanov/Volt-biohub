@@ -189,6 +189,174 @@ def patch_d4(cells: list[dict]) -> None:
         raise SystemExit(f"--fix-d4: {left} old inverse(s) survived")
 
 
+# The division diagnosis. Every division number this repo has was measured on OUR
+# pipeline; x138's division pass adds a DeepCenter veto we never had, which rejected
+# 482 of 557 geometric candidates on the visible movies, and nobody knows what it
+# throws away. This wraps `add_safe_divisions_postlink` -- it does not edit it -- and
+# dumps, per movie: the graph the pass receives, every candidate pair with the value
+# of EVERY gate (no short-circuit, so a refused pair still shows which other gates it
+# would have failed), and the forks the pass actually added. The wrapper hands the
+# original function its arguments untouched and returns its result untouched, and the
+# DeepCenter scores are computed with caches of their own, so the submission is
+# byte-identical to the unpatched build. `scripts/x138_division_diagnosis.py` reads
+# the dumps. Diagnosis only: it costs a second DeepCenter pass, so never submit it.
+_DIVDIAG_ANCHOR = "def filter_short_track_components("
+_DIVDIAG_CODE = r'''# ---- volt patch: division diagnosis. READ-ONLY: the submission is unchanged. Do not submit. ----
+import csv as _volt_csv
+import inspect as _volt_inspect
+
+_VOLT_DIVDIAG_DIR = os.environ.get("VOLT_DIVDIAG_DIR", __OUT_DIR__).strip()
+# Wider than every shipped gate, so a refused true daughter is still logged with the value
+# that refused it. The 2026-09-22 reject log saw true parent distances up to 11.83 um and
+# sister distances up to 13.98 um.
+_VOLT_DIVDIAG_PAR_UM = 14.0
+_VOLT_DIVDIAG_SIS_UM = 18.0
+_VOLT_DIVDIAG_EXIST_UM = 14.0
+_VOLT_DIVDIAG_COLUMNS = [
+    "t", "source_id", "child_id", "cand_id", "d_exist", "d_par", "d_sis", "nn_rank",
+    "child_succ", "cand_succ", "div_margin", "symmetry", "dc_score", "rank_score",
+    "pass_exist", "pass_par", "pass_sis", "pass_nn", "pass_div", "pass_dc", "pass_sym",
+]
+_volt_asd_original = add_safe_divisions_postlink
+print(f"VOLT DIVISION DIAGNOSIS BUILD -> {_VOLT_DIVDIAG_DIR} (diagnosis only; do not submit)",
+      flush=True)
+
+
+def _volt_divdiag_dump(nodes_by_id, edges, dataset, deepcenter_bundle):
+    out_dir = Path(_VOLT_DIVDIAG_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ids = sorted(nodes_by_id)
+    np.savez_compressed(
+        out_dir / f"{dataset}_graph.npz",
+        node_id=np.asarray(ids, dtype=np.int64),
+        t=np.asarray([int(nodes_by_id[i]["t"]) for i in ids], dtype=np.int64),
+        zyx=np.asarray([node_point(nodes_by_id[i]) for i in ids], dtype=np.float64).reshape(-1, 3),
+        edge_src=np.asarray([int(e["source_id"]) for e in edges], dtype=np.int64),
+        edge_tgt=np.asarray([int(e["target_id"]) for e in edges], dtype=np.int64),
+    )
+    children, has_parent, by_t = {}, set(), {}
+    for e in edges:
+        s, d = int(e["source_id"]), int(e["target_id"])
+        children.setdefault(s, []).append(d)
+        has_parent.add(d)
+    for i in ids:
+        by_t.setdefault(int(nodes_by_id[i]["t"]), []).append(i)
+
+    # Caches of our own: the real pass never sees a frame or heatmap this loads.
+    frame_cache, heat_cache, dc_memo = {}, {}, {}
+    veto_on = bool(DEEPCENTER_SAFE_DIV_VETO and USE_DEEPCENTER_VETO)
+
+    def dc_score(cid):
+        if cid not in dc_memo:
+            node = nodes_by_id[cid]
+            s = deepcenter_score_point(dataset, int(node["t"]), node_point(node),
+                                       deepcenter_bundle, frame_cache, heat_cache)
+            dc_memo[cid] = float("nan") if s is None else float(s)
+        return dc_memo[cid]
+
+    rows = []
+    for t in sorted(by_t):
+        orphans = [i for i in by_t.get(t + 1, []) if i not in has_parent]
+        if not orphans:
+            continue
+        orphan_um = np.stack([_position_um(nodes_by_id[i]) for i in orphans])
+        tree = cKDTree(orphan_um)
+        for s_id in by_t[t]:
+            kids = children.get(s_id, [])
+            if len(kids) != 1:
+                continue
+            c1 = kids[0]
+            child = nodes_by_id.get(c1)
+            if child is None or int(child["t"]) != t + 1:
+                continue
+            source = nodes_by_id[s_id]
+            d_exist = edge_distance_um(source, child)
+            if d_exist > _VOLT_DIVDIAG_EXIST_UM:
+                continue
+            near = tree.query_ball_point(_position_um(source), _VOLT_DIVDIAG_PAR_UM)
+            if not near:
+                continue
+            # Rank of every orphan by distance to the existing child: rank 0 is the single
+            # candidate the mutual-nearest rule proposes.
+            to_child = np.linalg.norm(orphan_um - _position_um(child), axis=1)
+            rank = np.empty(len(orphans), dtype=np.int64)
+            rank[np.argsort(to_child, kind="stable")] = np.arange(len(orphans))
+            c1_succ = children.get(c1, [])
+            for k in near:
+                q_id = orphans[k]
+                cand = nodes_by_id[q_id]
+                d_par = edge_distance_um(source, cand)
+                d_sis = edge_distance_um(child, cand)
+                if d_par > _VOLT_DIVDIAG_PAR_UM or d_sis > _VOLT_DIVDIAG_SIS_UM:
+                    continue
+                q_succ = children.get(q_id, [])
+                margin, div_ok = float("nan"), False
+                if len(c1_succ) == 1 and len(q_succ) == 1:
+                    g1, g2 = nodes_by_id.get(c1_succ[0]), nodes_by_id.get(q_succ[0])
+                    if (g1 is not None and g2 is not None
+                            and int(g1["t"]) == t + 2 and int(g2["t"]) == t + 2):
+                        margin = edge_distance_um(g1, g2) - d_sis
+                        div_ok = margin >= SAFE_DIV_DIVERGE_UM
+                sym = abs(d_exist - d_par) / max((d_exist + d_par) / 2.0, 1e-6)
+                dc = dc_score(q_id) if veto_on else float("nan")
+                rows.append([
+                    t, s_id, c1, q_id, d_exist, d_par, d_sis, int(rank[k]),
+                    len(c1_succ), len(q_succ), margin, sym, dc, d_par + 0.15 * d_sis,
+                    int(d_exist <= SAFE_DIV_EXISTING_CHILD_MAX_UM),
+                    int(d_par <= SAFE_DIV_MAX_UM),
+                    int(d_sis <= SAFE_DIV_SISTER_MAX_UM),
+                    int((not SAFE_DIV_REQUIRE_MUTUAL_NN) or rank[k] == 0),
+                    int((not SAFE_DIV_REQUIRE_DIVERGENCE) or div_ok),
+                    # A missing score is accepted, exactly as deepcenter_accept_repair_point does.
+                    int((not veto_on) or not np.isfinite(dc) or dc >= DEEPCENTER_SAFE_DIV_THRESHOLD),
+                    int(SAFE_DIV_SISTER_SYMMETRY_TAU <= 0.0 or sym <= SAFE_DIV_SISTER_SYMMETRY_TAU),
+                ])
+    with open(out_dir / f"{dataset}_cands.csv", "w", newline="") as fh:
+        w = _volt_csv.writer(fh)
+        w.writerow(_VOLT_DIVDIAG_COLUMNS)
+        w.writerows(rows)
+    print(f"  [{dataset}] VOLT division diagnosis: {len(ids)} nodes, {len(rows)} candidate pairs",
+          flush=True)
+
+
+def _volt_divdiag_dump_added(out_edges, dataset):
+    added = [(int(e["source_id"]), int(e["target_id"])) for e in out_edges if e.get("safe_division")]
+    with open(Path(_VOLT_DIVDIAG_DIR) / f"{dataset}_added.csv", "w", newline="") as fh:
+        w = _volt_csv.writer(fh)
+        w.writerow(["source_id", "target_id"])
+        w.writerows(added)
+
+
+def add_safe_divisions_postlink(*args, **kwargs):
+    bound = _volt_inspect.signature(_volt_asd_original).bind(*args, **kwargs)
+    bound.apply_defaults()
+    a = bound.arguments
+    dataset = a.get("dataset")
+    if dataset:
+        try:
+            _volt_divdiag_dump(a["nodes_by_id"], a["edges"], dataset, a.get("deepcenter_bundle"))
+        except Exception as exc:  # the diagnosis must never cost the run
+            print(f"  [{dataset}] VOLT division diagnosis FAILED (output unaffected): "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+    result = _volt_asd_original(*args, **kwargs)
+    if dataset:
+        try:
+            _volt_divdiag_dump_added(result, dataset)
+        except Exception as exc:
+            print(f"  [{dataset}] VOLT division diagnosis FAILED on the added forks: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+    return result
+
+
+'''
+
+
+def patch_division_diagnosis(src: str, out_dir: str) -> str:
+    """Insert the read-only division logger in front of the next function in cell 5."""
+    code = _DIVDIAG_CODE.replace("__OUT_DIR__", repr(out_dir))
+    return _replace_once(src, _DIVDIAG_ANCHOR, code + _DIVDIAG_ANCHOR, "division-diagnosis")
+
+
 def patch_v1284_mode(src: str, mode: str) -> str:
     anchor = "os.environ['V1284_MODE']='candidate'\n"
     return _replace_once(src, anchor, f"os.environ['V1284_MODE']={mode!r}  # volt patch\n",
@@ -199,7 +367,8 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
           v1284_mode: str | None, env: dict[str, str] | None = None,
           v1284_head: tuple[str, str] | None = None,
           add_env: dict[str, str] | None = None,
-          replace: list[tuple[str, str]] | None = None, fix_d4: bool = False) -> Path:
+          replace: list[tuple[str, str]] | None = None, fix_d4: bool = False,
+          division_diagnosis: str | None = None) -> Path:
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     if sha != X138_SHA256:
@@ -223,6 +392,9 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
                         lambda s, k=key, v=value: patch_add_env(s, k, v)))
     for old, new in replace or []:
         patches.append((old, lambda s, o=old, n=new: _replace_once(s, o, n, f"replace {o!r}")))
+    if division_diagnosis:
+        patches.append((_DIVDIAG_ANCHOR,
+                        lambda s: patch_division_diagnosis(s, division_diagnosis)))
     if not patches and not fix_d4:
         raise SystemExit("no patch requested; that is the public notebook unchanged")
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
@@ -269,6 +441,12 @@ def main(argv=None) -> int:
                         "every TTA site, making it the full 8-element D4 average")
     p.add_argument("--v1284-head", default=None, metavar="FILE=MD5",
                    help="a head file in the soups dataset, with its md5")
+    p.add_argument("--division-diagnosis", default=None, metavar="DIR",
+                   help="log every division candidate with all gate values, the graph the "
+                        "division pass receives, and the forks it adds, into DIR (overridable "
+                        "at run time with VOLT_DIVDIAG_DIR). Read-only: the CSV is unchanged. "
+                        "For the local harness, not for submission. Analyse with "
+                        "scripts/x138_division_diagnosis.py")
     a = p.parse_args(argv)
     env = dict(kv.split("=", 1) for kv in a.set)
     head = tuple(a.v1284_head.split("=", 1)) if a.v1284_head else None
@@ -276,7 +454,7 @@ def main(argv=None) -> int:
     rep = [tuple(r.split("=>", 1)) for r in a.replace]
     build(a.notebook, a.out_dir, a.slug, secondary_soup=a.secondary_soup,
           v1284_mode=a.v1284_mode, env=env, v1284_head=head, add_env=add, replace=rep,
-          fix_d4=a.fix_d4)
+          fix_d4=a.fix_d4, division_diagnosis=a.division_diagnosis)
     return 0
 
 

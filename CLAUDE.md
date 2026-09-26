@@ -3975,6 +3975,20 @@ hundreds of places.
 - Dataset `oleksiikrasnoshtanov/volt-x138-soups`: md5-verified soups, flat layout, no
   subdirectory trap.
 
+**Tool built 2026-09-25, NOT YET RUN: the x138 division diagnosis.** Every division
+decomposition above was measured on *our* pipeline; x138's pass differs by the DeepCenter
+veto. `build_x138_variant.py --division-diagnosis DIR` wraps `add_safe_divisions_postlink`
+read-only and dumps, per movie, the graph the pass received, every candidate pair with the
+value of **every** gate (no short-circuit), and the forks it added. Checked against x138's
+real cell-5 code on 12 synthetic movies (scratch, never committed): output and stats
+identical, caches isolated, and replaying x138's selection over the logged flags reproduces
+all 79 forks. `scripts/x138_division_diagnosis.py` then buckets every missed GT division
+(P divider undetected, E0/E2 divider has 0/2 children, D2 divider linked to a non-daughter,
+D sister claimed by another parent, A found but refused, naming each gate, B free sub-threshold
+peak, C no free peak) and writes the labelled candidate pool. It costs a second DeepCenter
+pass, so never submit the build. Run it through the post-processing-only harness with
+`edge_cache` kept, on both folds.
+
 **CONFIRMED: `56522624` (x138 unchanged) scored 0.953** — rank **210 of 3,890**, inside the
 public top 10 % (cutoff rank 389 at 0.948) for the first time. The graded rerun took ~6.9 h.
 By that evening the 0.953 pile had grown from 49 to **122 teams** (ranks 114–235). We sit at
