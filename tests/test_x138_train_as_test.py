@@ -145,3 +145,24 @@ def test_main_counts_gt_divisions_from_the_geffs(tmp_path, capsys):
     got = [builder.read_stems(p) for p in sorted((tmp_path / "out").glob("divdiag_*.txt"))]
     assert got == [["44b6_00000001"], ["44b6_00000002", "6bba_00000003"]]
     assert "1 GT divisions in 1 of 3 movies" in capsys.readouterr().out
+
+
+# ---- the notebook argument and the ilpdis15 base -----------------------------------
+
+def test_notebook_argument_accepts_the_pull_directory(tmp_path):
+    (tmp_path / "x138").mkdir()
+    nb = tmp_path / "x138" / "volt-x138-ilpdis15.ipynb"
+    nb.write_text("{}")
+    (tmp_path / "x138" / "kernel-metadata.json").write_text("{}")
+    assert builder.resolve_notebook(tmp_path / "x138") == nb
+    assert builder.resolve_notebook(nb) == nb
+    with pytest.raises(SystemExit, match=r"0 \.ipynb"):
+        builder.resolve_notebook(tmp_path)
+    with pytest.raises(SystemExit, match="no such notebook"):
+        builder.resolve_notebook(tmp_path / "missing.ipynb")
+
+
+def test_ilpdis15_revert_changes_only_the_disappearance_value():
+    for old, new in builder.ILPDIS15_REVERT:
+        assert "BIOHUB_ILP_DISAPPEARANCE_WEIGHT" in old and "1.5" in old
+        assert new.split("#")[0].replace("2.0", "1.5") == old.split("#")[0]

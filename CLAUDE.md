@@ -3999,6 +3999,12 @@ per kernel (12 h cap, ~4.5 min/movie), putting movies with GT divisions first. `
 sets the kernel's account (default `$KAGGLE_USERNAME`); it used to be hardcoded to
 `oleksiikrasnoshtanov`.
 
+**The public x138 notebook is gone** (`kernels pull anvithpothula/biohub-x138` → 404 on
+2026-09-27). The builder now also accepts our own `volt-x138-ilpdis15.ipynb` (sha256
+`a9b1679c…`). It is x138 plus ILP disappearance 1.5 in cell 0 and cell 1's guard, and
+the builder puts x138's 2.0 back before any other patch. Keep a copy of that file. It is
+third-party code, so it is never committed, and it is now the only base we have.
+
 **CONFIRMED: `56522624` (x138 unchanged) scored 0.953** — rank **210 of 3,890**, inside the
 public top 10 % (cutoff rank 389 at 0.948) for the first time. The graded rerun took ~6.9 h.
 By that evening the 0.953 pile had grown from 49 to **122 teams** (ranks 114–235). We sit at

@@ -26,6 +26,17 @@ import os
 from pathlib import Path
 
 X138_SHA256 = "6b655e39bbfd2d3d6c762badea69847d3f00f5b548f385cb01b07ee2600fde6d"
+# The public notebook went 404 on 2026-09-27. Our own build of it, `volt-x138-ilpdis15`
+# (submitted as 56539713), differs from it by exactly one setting -- ILP disappearance cost
+# 1.5 instead of 2.0, in cell 0 and in cell 1's configuration guard -- so it is the other
+# accepted base, and the builder puts x138's 2.0 back before applying anything else.
+ILPDIS15_SHA256 = "a9b1679cdd1dca77eeb78bfc50657c2f3efb7bc56319eee2281d2ba66f3453cf"
+ILPDIS15_REVERT = [
+    ('os.environ["BIOHUB_ILP_DISAPPEARANCE_WEIGHT"] = "1.5"  # volt patch\n',
+     'os.environ["BIOHUB_ILP_DISAPPEARANCE_WEIGHT"] = "2.0"  # volt: x138 value restored\n'),
+    ('    "BIOHUB_ILP_DISAPPEARANCE_WEIGHT": 1.5,\n',
+     '    "BIOHUB_ILP_DISAPPEARANCE_WEIGHT": 2.0,\n'),
+]
 SOUPS_DATASET = "oleksiikrasnoshtanov/volt-x138-soups"
 # The kernel is pushed under the account of whoever holds the token.
 FALLBACK_OWNER = "oleksiikrasnoshtanov"
@@ -437,6 +448,19 @@ def patch_v1284_mode(src: str, mode: str) -> str:
                          "v1284-mode")
 
 
+def resolve_notebook(path: Path) -> Path:
+    """The notebook file itself; a directory holding exactly one .ipynb also works."""
+    if path.is_dir():
+        found = sorted(path.glob("*.ipynb"))
+        if len(found) != 1:
+            raise SystemExit(f"{path} is a directory with {len(found)} .ipynb files; "
+                             "pass the notebook file itself")
+        return found[0]
+    if not path.is_file():
+        raise SystemExit(f"{path}: no such notebook")
+    return path
+
+
 def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None,
           v1284_mode: str | None, env: dict[str, str] | None = None,
           v1284_head: tuple[str, str] | None = None,
@@ -444,11 +468,20 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
           replace: list[tuple[str, str]] | None = None, fix_d4: bool = False,
           division_diagnosis: str | None = None, train_as_test: list[str] | None = None,
           owner: str = DEFAULT_OWNER) -> Path:
+    nb_path = resolve_notebook(nb_path)
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
-    if sha != X138_SHA256:
-        raise SystemExit(f"{nb_path} sha256 {sha} is not the snapshot these patches target "
-                         f"({X138_SHA256}); re-derive the anchors before building")
+    if sha == X138_SHA256:
+        base = []
+    elif sha == ILPDIS15_SHA256:
+        base = [(old, lambda s, o=old, n=new: _replace_once(s, o, n, f"ilpdis15 revert {o!r}"))
+                for old, new in ILPDIS15_REVERT]
+        print(f"base: {nb_path.name} (volt-x138-ilpdis15); ILP disappearance restored to "
+              "x138's 2.0 in cell 0 and cell 1")
+    else:
+        raise SystemExit(f"{nb_path} sha256 {sha} is neither the public x138 snapshot "
+                         f"({X138_SHA256}) nor volt-x138-ilpdis15 ({ILPDIS15_SHA256}); "
+                         "re-derive the anchors before building")
     nb = json.loads(raw)
     patches = []
     if secondary_soup:
@@ -474,6 +507,7 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
         patches.append((_TRAIN_AS_TEST_ANCHOR, lambda s: patch_train_as_test(s, train_as_test)))
     if not patches and not fix_d4:
         raise SystemExit("no patch requested; that is the public notebook unchanged")
+    patches = base + patches
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
     if fix_d4:
         patch_d4(code_cells)
@@ -482,7 +516,7 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
         if len(hits) != 1:
             raise SystemExit(f"anchor {anchor!r} is in {len(hits)} cells, expected 1")
         hits[0]["source"] = apply("".join(hits[0]["source"]))
-    patched = len(patches) + int(fix_d4)
+    patched = len(patches) - len(base) + int(fix_d4)
     out_dir.mkdir(parents=True, exist_ok=True)
     meta = kernel_metadata(slug, owner, [SOUPS_DATASET] if (secondary_soup or v1284_head) else [])
     code_file = meta["code_file"]
