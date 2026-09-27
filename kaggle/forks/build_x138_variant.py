@@ -22,10 +22,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 
 X138_SHA256 = "6b655e39bbfd2d3d6c762badea69847d3f00f5b548f385cb01b07ee2600fde6d"
 SOUPS_DATASET = "oleksiikrasnoshtanov/volt-x138-soups"
+# The kernel is pushed under the account of whoever holds the token.
+FALLBACK_OWNER = "oleksiikrasnoshtanov"
+DEFAULT_OWNER = os.environ.get("KAGGLE_USERNAME", "").strip() or FALLBACK_OWNER
 # md5 of every file the soups dataset carries. The notebook re-checks the one it
 # loads: all soups of this architecture are 8,355,927 bytes, so a size cannot
 # tell them apart (kaggle/README.md, 2026-09-22).
@@ -357,6 +361,76 @@ def patch_division_diagnosis(src: str, out_dir: str) -> str:
     return _replace_once(src, _DIVDIAG_ANCHOR, code + _DIVDIAG_ANCHOR, "division-diagnosis")
 
 
+# Run x138 on TRAIN movies, which have ground truth, instead of the test placeholders.
+# With the old local harness gone, this is how the division diagnosis gets a labelled
+# run: Kaggle mounts the full train split under the competition input, so the kernel
+# links the chosen movies into a directory of its own and points TEST_DIR there.
+# Everything downstream (prediction, post-processing, the final dataset check) reads
+# TEST_DIR, and x138's validator -- the one cell that reads TRAIN_DIR -- is disabled
+# (BIOHUB_VALIDATOR_ENABLE=0), so the configuration is the submitted one. The links live
+# under /tmp, not /kaggle/working, so Kaggle never saves the movies as kernel output.
+# NEVER SUBMIT such a build: the graded rerun would grade train movies. The patch
+# refuses to run when the test directory holds an embryo that train does not, which is
+# what the hidden set is.
+_TRAIN_AS_TEST_ANCHOR = 'TEST_DIR = COMP_DIR / "test"\n'
+_TRAIN_AS_TEST_CODE = r'''# ---- volt patch: TRAIN movies as the test set. Diagnosis only -- NEVER SUBMIT. ----
+_VOLT_TRAIN_STEMS = __STEMS__
+_volt_train_dir = COMP_DIR / "train"
+_volt_real_test = COMP_DIR / "test"
+_volt_prefixes = lambda d: ({p.name.split("_", 1)[0] for p in d.iterdir() if p.name.endswith(".zarr")}
+                            if d.exists() else set())
+_volt_unseen = _volt_prefixes(_volt_real_test) - _volt_prefixes(_volt_train_dir)
+if _volt_unseen:
+    raise RuntimeError(f"volt train-as-test build is running on a test set with embryos {sorted(_volt_unseen)} "
+                       "that train does not have: this is a graded rerun. This build must never be submitted.")
+_volt_missing = [s for s in _VOLT_TRAIN_STEMS if not (_volt_train_dir / f"{s}.zarr").is_dir()]
+if _volt_missing:
+    raise FileNotFoundError(f"volt train-as-test: {len(_volt_missing)} movie(s) not under {_volt_train_dir}, "
+                            f"e.g. {_volt_missing[:5]}")
+TEST_DIR = Path(os.environ.get("VOLT_TRAIN_AS_TEST_DIR", "/tmp/volt_train_as_test"))
+if TEST_DIR.exists():
+    shutil.rmtree(TEST_DIR)
+TEST_DIR.mkdir(parents=True)
+for _volt_stem in _VOLT_TRAIN_STEMS:
+    (TEST_DIR / f"{_volt_stem}.zarr").symlink_to(_volt_train_dir / f"{_volt_stem}.zarr",
+                                                 target_is_directory=True)
+print(f"VOLT TRAIN-AS-TEST: {len(_VOLT_TRAIN_STEMS)} train movies from {_volt_train_dir} -> {TEST_DIR} "
+      "(diagnosis only; NEVER SUBMIT)", flush=True)
+'''
+
+
+def read_stems(path: Path) -> list[str]:
+    """One movie name per line; blank lines and ``#`` comments ignored; ``.zarr`` stripped."""
+    import re
+    stems = []
+    for line in path.read_text().splitlines():
+        s = line.split("#", 1)[0].strip()
+        if not s:
+            continue
+        s = s.removesuffix(".zarr")
+        if not re.fullmatch(r"[A-Za-z0-9]+_[A-Za-z0-9]+", s):
+            raise SystemExit(f"{path}: {s!r} is not a movie name like 44b6_0113de3b")
+        stems.append(s)
+    if not stems:
+        raise SystemExit(f"{path}: no movie names")
+    dup = sorted({s for s in stems if stems.count(s) > 1})
+    if dup:
+        raise SystemExit(f"{path}: duplicate movie names {dup[:5]}")
+    return stems
+
+
+def patch_train_as_test(src: str, stems: list[str]) -> str:
+    """Point x138's TEST_DIR at a directory of links to the given train movies."""
+    code = _TRAIN_AS_TEST_CODE.replace("__STEMS__", repr(list(stems)))
+    return _replace_once(src, _TRAIN_AS_TEST_ANCHOR, code, "train-as-test")
+
+
+def kernel_metadata(slug: str, owner: str, extra_datasets: list[str]) -> dict:
+    meta = {"id": f"{owner}/{slug}", "title": slug, "code_file": f"{slug}.ipynb", **BASE_METADATA}
+    meta["dataset_sources"] = [*meta["dataset_sources"], *extra_datasets]
+    return meta
+
+
 def patch_v1284_mode(src: str, mode: str) -> str:
     anchor = "os.environ['V1284_MODE']='candidate'\n"
     return _replace_once(src, anchor, f"os.environ['V1284_MODE']={mode!r}  # volt patch\n",
@@ -368,7 +442,8 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
           v1284_head: tuple[str, str] | None = None,
           add_env: dict[str, str] | None = None,
           replace: list[tuple[str, str]] | None = None, fix_d4: bool = False,
-          division_diagnosis: str | None = None) -> Path:
+          division_diagnosis: str | None = None, train_as_test: list[str] | None = None,
+          owner: str = DEFAULT_OWNER) -> Path:
     raw = nb_path.read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     if sha != X138_SHA256:
@@ -395,6 +470,8 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
     if division_diagnosis:
         patches.append((_DIVDIAG_ANCHOR,
                         lambda s: patch_division_diagnosis(s, division_diagnosis)))
+    if train_as_test:
+        patches.append((_TRAIN_AS_TEST_ANCHOR, lambda s: patch_train_as_test(s, train_as_test)))
     if not patches and not fix_d4:
         raise SystemExit("no patch requested; that is the public notebook unchanged")
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
@@ -407,14 +484,15 @@ def build(nb_path: Path, out_dir: Path, slug: str, *, secondary_soup: str | None
         hits[0]["source"] = apply("".join(hits[0]["source"]))
     patched = len(patches) + int(fix_d4)
     out_dir.mkdir(parents=True, exist_ok=True)
-    code_file = f"{slug}.ipynb"
+    meta = kernel_metadata(slug, owner, [SOUPS_DATASET] if (secondary_soup or v1284_head) else [])
+    code_file = meta["code_file"]
     (out_dir / code_file).write_text(json.dumps(nb, indent=1))
-    meta = {"id": f"oleksiikrasnoshtanov/{slug}", "title": slug, "code_file": code_file,
-            **BASE_METADATA}
-    if secondary_soup or v1284_head:
-        meta["dataset_sources"] = [*meta["dataset_sources"], SOUPS_DATASET]
     (out_dir / "kernel-metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
-    print(f"wrote {out_dir / code_file} ({patched} cell(s) patched) and kernel-metadata.json")
+    print(f"wrote {out_dir / code_file} ({patched} cell(s) patched) and kernel-metadata.json "
+          f"for kernel {meta['id']}")
+    if train_as_test:
+        print(f"TRAIN-AS-TEST build on {len(train_as_test)} train movies: push and run it, "
+              "download its output, and NEVER SUBMIT it.")
     return out_dir / code_file
 
 
@@ -423,7 +501,10 @@ def main(argv=None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("notebook", type=Path, help="the pulled public x138 .ipynb")
     p.add_argument("out_dir", type=Path)
-    p.add_argument("--slug", required=True, help="kernel slug under our account")
+    p.add_argument("--slug", required=True, help="kernel slug under --owner's account")
+    p.add_argument("--owner", default=DEFAULT_OWNER,
+                   help="Kaggle account the kernel is pushed to; must be the account of the "
+                        f"token you push with (default: $KAGGLE_USERNAME, else {FALLBACK_OWNER})")
     p.add_argument("--secondary-soup", choices=sorted(SOUP_MD5), default=None)
     p.add_argument("--v1284-mode", choices=("zero", "candidate"), default=None)
     p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
@@ -445,8 +526,13 @@ def main(argv=None) -> int:
                    help="log every division candidate with all gate values, the graph the "
                         "division pass receives, and the forks it adds, into DIR (overridable "
                         "at run time with VOLT_DIVDIAG_DIR). Read-only: the CSV is unchanged. "
-                        "For the local harness, not for submission. Analyse with "
+                        "For diagnosis runs (with --train-as-test on Kaggle), not for "
+                        "submission. Analyse with "
                         "scripts/x138_division_diagnosis.py")
+    p.add_argument("--train-as-test", type=Path, default=None, metavar="FILE",
+                   help="run on these TRAIN movies (one name per line) instead of the test "
+                        "placeholders, so the output can be scored against ground truth. "
+                        "Diagnosis only: never submit such a build")
     a = p.parse_args(argv)
     env = dict(kv.split("=", 1) for kv in a.set)
     head = tuple(a.v1284_head.split("=", 1)) if a.v1284_head else None
@@ -454,7 +540,9 @@ def main(argv=None) -> int:
     rep = [tuple(r.split("=>", 1)) for r in a.replace]
     build(a.notebook, a.out_dir, a.slug, secondary_soup=a.secondary_soup,
           v1284_mode=a.v1284_mode, env=env, v1284_head=head, add_env=add, replace=rep,
-          fix_d4=a.fix_d4, division_diagnosis=a.division_diagnosis)
+          fix_d4=a.fix_d4, division_diagnosis=a.division_diagnosis,
+          train_as_test=read_stems(a.train_as_test) if a.train_as_test else None,
+          owner=a.owner)
     return 0
 
 

@@ -3989,6 +3989,16 @@ peak, C no free peak) and writes the labelled candidate pool. It costs a second 
 pass, so never submit the build. Run it through the post-processing-only harness with
 `edge_cache` kept, on both folds.
 
+**2026-09-27: the server was rebuilt and the local harness and its stash are gone**, so
+the diagnosis runs on Kaggle instead. `--train-as-test FILE` links the listed TRAIN
+movies into a directory of the kernel's own and points x138's `TEST_DIR` there. That is
+safe because x138's validator, the only cell that reads `TRAIN_DIR`, is disabled. The
+build refuses to run on a test set holding an embryo that train lacks, which is what a
+graded rerun would be. `scripts/x138_divdiag_lists.py` splits the 199 movies into ≤100
+per kernel (12 h cap, ~4.5 min/movie), putting movies with GT divisions first. `--owner`
+sets the kernel's account (default `$KAGGLE_USERNAME`); it used to be hardcoded to
+`oleksiikrasnoshtanov`.
+
 **CONFIRMED: `56522624` (x138 unchanged) scored 0.953** — rank **210 of 3,890**, inside the
 public top 10 % (cutoff rank 389 at 0.948) for the first time. The graded rerun took ~6.9 h.
 By that evening the 0.953 pile had grown from 49 to **122 teams** (ranks 114–235). We sit at
