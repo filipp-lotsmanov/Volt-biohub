@@ -3952,6 +3952,15 @@ a secondary detection weight of 0.65 and relink off all lose too. **A submission
 finish before the deadline to count** (743765), and graded reruns take 6–11 h. So the last
 submissions go in by about 12:00 UTC on 09-29.
 
+**x138's repair stage is worth about +0.05 on the board, measured by accident.** Aman's
+`optimized-biohub-max-score` v6 uses `SAFE_DIV_HORIZON_FRAMES` without ever defining it.
+The resulting NameError is caught per dataset, and the notebook falls back to "the ILP
+graph with basic filtering": no relink, readmission, gap closing, safe divisions or
+smoothing. Its visible log shows `REPAIR FAILED` on all four datasets, and the version
+scored **0.901**; its best version, v4, scored 0.953. `kernels.LegacyKernelsService/
+GetKernelViewModel` returns `bestPublicScore` and the current version's score for any
+public notebook, and that is how this was found. The top 60 by score top out at 0.953.
+
 **Why division weight 0.4 is not a fine knob.** The ILP sees the greedily resolved graph.
 Its candidate edges are ≥ 0.48 and every target has at most one parent, so a fork is kept
 iff its second edge's probability exceeds the division weight. At ≥ 1.0 no fork survives;
@@ -3975,6 +3984,41 @@ for the patched config and a written submission, then submits.
 
 J2's visible run: 122,250 nodes against x138's 121,219 (+0.85 %), and readmissions per
 placeholder movie 94/662/84/497 → 164/1116/104/792.
+
+**The teammate's division diagnosis, run locally (`divdiag_for_teammate.zip`).** These are
+two x138 builds that use training movies as the test set, with a read-only hook in front
+of the safe-division pass. Build 1 has the 87 movies that hold all 151 GT divisions; build
+3 has 56 division-free movies. `$CLAUDE_JOB_DIR/tmp/launch_dd.sh` runs them against the
+stand-in `/kaggle` tree, and `scripts/x138_divdiag_audit.py` labels the dumps against GT.
+The movies are in-sample for every checkpoint involved. Where each of the 151 goes:
+
+| bucket | n | share |
+|---|---|---|
+| **second daughter already has another parent** (lost to the one-to-one relink) | 58 | 38 % |
+| a node was never detected | 26 | 17 % |
+| **added (true fork)** | 18 | 12 % |
+| refused by divergence / symmetry / parent distance | 17 / 14 / 9 | 11 / 9 / 6 % |
+| other (divider not single-child, DeepCenter, NN, cap, outside gates) | 9 | 6 % |
+
+x138 adds 1,087 forks in these 87 movies, only 64 of them on an annotated source, and 46
+are charged as FP. The 56 division-free movies add 12 more FPs. In-sample divJ is **0.086**.
+The largest bucket is structural: the relink is one-to-one, so the second daughter goes
+to a nearby unannotated cell, median 2.3 µm from it. The pass only considers orphans, so
+no gate reaches her. No geometric re-parenting rule separates these 18 cases from
+millions of false candidates (`tmp/reparent_audit.py`).
+
+**Symmetry is the one gate worth moving.** Simulating the pass with its caps reproduces
+x138 exactly at τ 0.6 (1,087 forks, 18 TP, 46 FP). Pooled over both builds:
+
+| τ | TP | annotated FP | divJ |
+|---|---|---|---|
+| 0.6 (x138) | 18 | 58 | 0.086 |
+| 0.8 | 23 | 74 | 0.102 |
+| **0.9** | **27** | **82** | **0.116** |
+| 1.0 | 27 | 89 | 0.113 |
+
+That is about +0.003 of score in-sample. Our own pipeline's LOEO read symmetry 0.9 at +0.0006
+on fold 0 and −0.0021 on fold 1, so the board has to decide. Built as `volt-x138-j2-sym09`.
 
 ### 2026-09-24 — READ THIS FIRST: the frontier is a public notebook, and the endgame is "it plus a real increment"
 

@@ -63,7 +63,8 @@ def match_frame(gt_um: np.ndarray, pr_um: np.ndarray) -> dict[int, int]:
     return {int(i): int(j) for i, j in zip(r, c, strict=True) if d[i, j] <= MATCH_UM}
 
 
-def audit_movie(ddir: Path, name: str, data_dir: Path, cand_rows: list, buckets: Counter):
+def audit_movie(ddir: Path, name: str, data_dir: Path, cand_rows: list, buckets: Counter,
+                buckets_forks: Counter):
     graph = np.load(ddir / f"{name}_graph.npz")
     p_ids, p_t, p_zyx = graph["node_id"], graph["t"], graph["zyx"]
     children: dict[int, list[int]] = {}
@@ -83,16 +84,14 @@ def audit_movie(ddir: Path, name: str, data_dir: Path, cand_rows: list, buckets:
             cands[key] = r
 
     g_ids, g_t, g_zyx, g_edges = gt_graph(data_dir, name)
-    g_index = {int(i): k for k, i in enumerate(g_ids)}
     g_children: dict[int, list[int]] = {}
     for s, d in g_edges:
         g_children.setdefault(int(s), []).append(int(d))
     divisions = [(s, kids) for s, kids in g_children.items() if len(kids) == 2]
-    if not divisions:
-        return
-    # GT -> prediction matches, only for the frames that hold a division.
-    frames = {int(g_t[g_index[s]]) for s, _ in divisions}
-    frames |= {f + 1 for f in frames}
+    # GT -> prediction matches on every annotated frame: division frames for the
+    # trace, and the rest to tell an added fork inside annotation (a division FP
+    # unless it is a TP) from one outside it (ignored by the scorer).
+    frames = {int(f) for f in np.unique(g_t)}
     match: dict[int, int] = {}
     for f in frames:
         gi = np.nonzero(g_t == f)[0]
@@ -128,9 +127,18 @@ def audit_movie(ddir: Path, name: str, data_dir: Path, cand_rows: list, buckets:
         true_keys.add((ps, exist, other))
         failing = [g for g in GATES if row[f"pass_{g}"] == "0"]
         buckets[f"refused by {failing[0]}" if failing else "passes every gate, not added (cap)"] += 1
+    matched_pred = set(match.values())
     for key, row in cands.items():
         cand_rows.append({**row, "movie": name, "true": int(key in true_keys),
-                          "added": int((key[0], key[2]) in added)})
+                          "added": int((key[0], key[2]) in added),
+                          "annotated": int(key[0] in matched_pred)})
+    true_forks = {(k[0], k[2]) for k in true_keys}
+    for src, tgt in added:
+        buckets_forks["added forks"] += 1
+        if src in matched_pred:
+            buckets_forks["  ...source on an annotated node"] += 1
+            if (src, tgt) not in true_forks:
+                buckets_forks["  ...annotated and not a GT division (charged FP)"] += 1
 
 
 def main(argv=None) -> int:
@@ -141,6 +149,7 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path, default=None, help="write the labelled candidates here")
     a = p.parse_args(argv)
     buckets: Counter = Counter()
+    forks: Counter = Counter()
     rows: list[dict] = []
     movies = 0
     for ddir in a.dirs:
@@ -148,12 +157,14 @@ def main(argv=None) -> int:
             name = f.name[: -len("_cands.csv")]
             if not (a.data_dir / f"{name}.geff").exists():
                 continue
-            audit_movie(ddir, name, a.data_dir, rows, buckets)
+            audit_movie(ddir, name, a.data_dir, rows, buckets, forks)
             movies += 1
     total = sum(buckets.values())
     print(f"{movies} movies, {total} GT divisions")
     for k, v in buckets.most_common():
         print(f"  {k:45s} {v:5d}  {v / max(total, 1):6.1%}")
+    for k, v in forks.items():
+        print(f"  {k:45s} {v:5d}")
     true = [r for r in rows if r["true"]]
     false = [r for r in rows if not r["true"]]
     print(f"\ncandidates logged: {len(rows)} ({len(true)} true, {len(false)} false)")
@@ -162,8 +173,13 @@ def main(argv=None) -> int:
     for g in GATES:
         others = [x for x in GATES if x != g]
         t_n = sum(r[f"pass_{g}"] == "0" and all(r[f"pass_{o}"] == "1" for o in others) for r in true)
-        f_n = sum(r[f"pass_{g}"] == "0" and all(r[f"pass_{o}"] == "1" for o in others) for r in false)
-        print(f"  opening only '{g}' admits {t_n} true and {f_n} false")
+        only = [r for r in false
+                if r[f"pass_{g}"] == "0" and all(r[f"pass_{o}"] == "1" for o in others)]
+        # Only a fork whose source sits on an annotated node can be charged as a
+        # division FP; the rest land outside annotation and the scorer ignores them.
+        f_ann = sum(r["annotated"] for r in only)
+        print(f"  opening only '{g}' admits {t_n} true and {len(only)} false "
+              f"({f_ann} of them on an annotated source)")
     for col in ("d_par", "d_sis", "symmetry", "div_margin", "dc_score"):
         tv = np.array([float(r[col]) for r in true if r[col] not in ("", "nan")])
         if len(tv):
