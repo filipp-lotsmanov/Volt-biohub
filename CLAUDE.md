@@ -3976,11 +3976,28 @@ for the patched config and a written submission, then submits.
 
 | arm | change on top of J2 | ref | board |
 |---|---|---|---|
-| `r1-j2` | none (John's two knobs) | `56637384` | pending |
-| `r1-div07` | division 0.7 | `56638506` | pending |
-| `r1-rm092` | readmit 0.92 | `56637974` | pending |
-| `r1-bonus5` | relink learned bonus 1.0 → 5.0 | `56638417` | pending |
-| `r1-head075` | V1284 shift × 0.75 (our LOEO heads' best cross-embryo shrink) | `56637805` | pending |
+| `r1-j2` | none (John's two knobs) | `56637384` | **0.956** |
+| `r1-div07` | division 0.7 | `56638506` | 0.955 |
+| `r1-rm092` | readmit 0.92 | `56637974` | 0.954 |
+| `r1-bonus5` | relink learned bonus 1.0 → 5.0 | `56638417` | 0.954 |
+| `r1-head075` | V1284 shift × 0.75 (our LOEO heads' best cross-embryo shrink) | `56637805` | 0.954 |
+
+**John's two knobs transfer to plain x138 in full: 0.953 → 0.956**, so J2 alone is worth
++0.003. That put us at **rank 275 of 3,972** at 18:10 UTC on 09-28, back inside the top
+10 % (cutoff rank 397, 0.954). All four steps on top of J2 lost, so J2 is a local optimum
+on four axes. Division 0.4 beats 0.7, which means keeping more candidate forks is better.
+Readmit 0.94 beats 0.92. Relink bonus 1.0 beats 5.0. Head scale 1.0 beats 0.75.
+
+**Round 2 is auto-submitted at 00:01 UTC on 09-29** by `tmp/r2/midnight.sh` from
+`tmp/r2/plan.txt`. It has three arms on J2:
+- `sym09`: symmetry 0.9;
+- `head125`: V1284 shift × 1.25, the other direction of the × 0.75 read;
+- `cand044`: ILP candidate threshold 0.44, the next step on the fork-admission axis that
+  division 0.7 → 0.4 confirmed.
+
+Also visible-run and ready: `cand052`, `bidir025` (both bidirectional guards patched;
+the second one lives in cell 5), `mtl5` and `gapfill04`. The last two slots go in
+around 08:00 UTC, once round 2 has scored.
 
 J2's visible run: 122,250 nodes against x138's 121,219 (+0.85 %), and readmissions per
 placeholder movie 94/662/84/497 → 164/1116/104/792.
