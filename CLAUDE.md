@@ -3929,6 +3929,53 @@ scoring bug.
 
 ## Plan
 
+### 2026-09-28 — the board moved past x138; the board itself is now the instrument
+
+**Where we stand (09:34 UTC):** 3,968 teams, and the top 10 % is rank 396. The cutoff sits
+inside a **134-team pile at 0.954** (ranks 334–467). Above it: 89 teams at 0.955, 65 at
+0.956, 42 at 0.957. We are **rank 554 at 0.953**; the 0.953 pile is 424 teams. No public
+notebook scores above 0.953. Three recent ones are x138 with only cosmetic changes: Harmonic
+Fusion V3, kunaldesale and "0.953 LB ORIGINAL", the last byte-identical to x138. Aman Atar's
+`optimized-biohub-max-score` is x138 with about 15 knob changes. The kernel list, sorted by
+score, puts it between two functionally identical x138 copies, so it too reads about 0.953.
+
+**The teams above 0.953 are tuning x138 privately, using the board as the instrument.**
+Discussion 743929 (John Taylor, 09-27) reports x138 at 0.953 → 0.957 with a ported
+post-processing stage the post does not name, then two one-line steps: **ILP division
+weight 1.2 → 0.4** (+0.001), then **readmit min score 0.965 → 0.94** (+0.001). Both changed
+the node count by under 1 %. His method: submit each knob in both directions in one round,
+write down in the description what each result would mean before it comes back, and
+visible-run the next round's candidates while the graded reruns run. Discussion 743222
+(imissher) reports eight single-variable board tests on the 0.947 stack, all negative.
+Detection threshold 0.960 and 0.970 both lose, so 0.965 is already optimal. Extra TTA views,
+a secondary detection weight of 0.65 and relink off all lose too. **A submission must
+finish before the deadline to count** (743765), and graded reruns take 6–11 h. So the last
+submissions go in by about 12:00 UTC on 09-29.
+
+**Why division weight 0.4 is not a fine knob.** The ILP sees the greedily resolved graph.
+Its candidate edges are ≥ 0.48 and every target has at most one parent, so a fork is kept
+iff its second edge's probability exceeds the division weight. At ≥ 1.0 no fork survives;
+at 0.4, and at 0.25, every candidate fork does. So 0.25 ≈ 0.4, and the informative second
+point is 0.7, which keeps only forks with p > 0.7.
+
+**Kaggle allows two concurrent batch GPU sessions** (`Maximum batch GPU session count of 2
+reached` on push). Each x138 visible run takes ~18–24 min, so five arms need about an hour
+of visible runs. `$CLAUDE_JOB_DIR/tmp/r1/arm.sh` retries the push, waits, checks the log
+for the patched config and a written submission, then submits.
+
+**Round 1, submitted 09-28, every arm built on J2 = x138 + division 0.4 + readmit 0.94:**
+
+| arm | change on top of J2 | ref | board |
+|---|---|---|---|
+| `r1-j2` | none (John's two knobs) | `56637384` | pending |
+| `r1-div07` | division 0.7 | `56638506` | pending |
+| `r1-rm092` | readmit 0.92 | `56637974` | pending |
+| `r1-bonus5` | relink learned bonus 1.0 → 5.0 | `56638417` | pending |
+| `r1-head075` | V1284 shift × 0.75 (our LOEO heads' best cross-embryo shrink) | `56637805` | pending |
+
+J2's visible run: 122,250 nodes against x138's 121,219 (+0.85 %), and readmissions per
+placeholder movie 94/662/84/497 → 164/1116/104/792.
+
 ### 2026-09-24 — READ THIS FIRST: the frontier is a public notebook, and the endgame is "it plus a real increment"
 
 **The board moved while we tuned.** 3,873 teams on 2026-09-24. A new pile at **0.953**:
