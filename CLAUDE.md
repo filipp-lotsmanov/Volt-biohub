@@ -3988,6 +3988,26 @@ for the patched config and a written submission, then submits.
 on four axes. Division 0.4 beats 0.7, which means keeping more candidate forks is better.
 Readmit 0.94 beats 0.92. Relink bonus 1.0 beats 5.0. Head scale 1.0 beats 0.75.
 
+**Round 2 scored, and every arm lost against J2's 0.956:**
+
+| arm on J2 | ref | board |
+|---|---|---|
+| symmetry 0.6 → 0.9 | `56655546` | **0.950** |
+| V1284 shift × 1.25 | `56655571` | 0.954 |
+| ILP candidate threshold 0.44 | `56655587` | 0.954 |
+
+**Symmetry 0.9 lost 0.006, while the in-sample x138 audit predicted +0.003.** On train
+movies the checkpoints detect the extra daughters reliably. On the hidden embryo the
+looser gate admits forks that the scorer charges as FPs. This is the same fold-1 sign our
+own LOEO gave, and the sixth time a division-gate relaxation has reversed off-sample. Head
+scale 1.0 beats both 0.75 and 1.25 by 0.002. Candidate threshold 0.48 beats 0.44.
+**Nine single-knob perturbations of J2 have now been read, and all nine lost 0.001–0.006.**
+J2 is a sharp optimum on the public 29 %.
+
+**Round 3, the last two slots of 09-29, submitted 06:30 UTC:** `56665403` candidate
+threshold 0.52 (the other direction of 0.44) and `56665406` bidirectional weight 0.25.
+Board at 06:30: 3,987 teams, top 10 % = rank 398 at 0.955, **us rank 313 at 0.956**.
+
 **Round 2 went in at 00:01 UTC on 09-29**: `56655546` sym09, `56655571` head125, `56655587` cand044 (scores pending). The round-3 combos are visible-run and ready: sym09+head125, sym09+cand044, head125+cand044 and all three. Originally planned as: **Round 2 is auto-submitted at 00:01 UTC on 09-29** by `tmp/r2/midnight.sh` from
 `tmp/r2/plan.txt`. It has three arms on J2:
 - `sym09`: symmetry 0.9;
