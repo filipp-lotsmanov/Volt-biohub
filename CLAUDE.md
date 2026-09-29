@@ -4005,8 +4005,26 @@ scale 1.0 beats both 0.75 and 1.25 by 0.002. Candidate threshold 0.48 beats 0.44
 J2 is a sharp optimum on the public 29 %.
 
 **Round 3, the last two slots of 09-29, submitted 06:30 UTC:** `56665403` candidate
-threshold 0.52 (the other direction of 0.44) and `56665406` bidirectional weight 0.25.
-Board at 06:30: 3,987 teams, top 10 % = rank 398 at 0.955, **us rank 313 at 0.956**.
+threshold 0.52 scored **0.954**, so 0.48 beats both 0.44 and 0.52 by 0.002. `56665406`
+bidirectional weight 0.25 scored **0.956**, a tie with J2 at the board's resolution.
+**No slots remain.** Board at 13:48 UTC: 3,999 teams, top 10 % = rank 399 at 0.955, **us
+rank 295 at 0.956**. Our J2 went in at 10:07 on 09-28, early inside a 149-team 0.956 pile
+(ranks 243–391).
+
+**Final pair, recommended: `56637384` (J2, 0.956) + `56665406` (J2 + bidirectional 0.25,
+0.956).** Kaggle scores the better of the two on the private 71 %. The second pick should
+be the variant most likely to beat J2 there, which is a near-twin at the same public
+score rather than a hedge several thousandths behind. The conservative alternative for the
+second slot is `56522624` (plain x138, 0.953). It pays only if J2's two knobs are a
+public-only effect, and two independent stacks moved the same way. Selection is a human
+action on the website and must happen before 23:59 UTC on 09-29.
+
+**The endgame lesson.** Two one-line knobs someone else found on the board were worth
++0.003. Our own instruments could not see them: E7 and contaminated CV went 0/4 on
+positives, and the in-sample audit called symmetry 0.9 at +0.003 against a board −0.006.
+Twelve further board reads around J2 then lost or tied. When the only unbiased instrument
+is the public board, read it in both directions per knob and write the reading down before
+submitting. Expect most perturbations of a board-tuned optimum to lose.
 
 **Round 2 went in at 00:01 UTC on 09-29**: `56655546` sym09, `56655571` head125, `56655587` cand044 (scores pending). The round-3 combos are visible-run and ready: sym09+head125, sym09+cand044, head125+cand044 and all three. Originally planned as: **Round 2 is auto-submitted at 00:01 UTC on 09-29** by `tmp/r2/midnight.sh` from
 `tmp/r2/plan.txt`. It has three arms on J2:
