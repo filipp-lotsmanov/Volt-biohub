@@ -3929,6 +3929,152 @@ scoring bug.
 
 ## Plan
 
+### 2026-09-28 — the board moved past x138; the board itself is now the instrument
+
+**Where we stand (09:34 UTC):** 3,968 teams, and the top 10 % is rank 396. The cutoff sits
+inside a **134-team pile at 0.954** (ranks 334–467). Above it: 89 teams at 0.955, 65 at
+0.956, 42 at 0.957. We are **rank 554 at 0.953**; the 0.953 pile is 424 teams. No public
+notebook scores above 0.953. Three recent ones are x138 with only cosmetic changes: Harmonic
+Fusion V3, kunaldesale and "0.953 LB ORIGINAL", the last byte-identical to x138. Aman Atar's
+`optimized-biohub-max-score` is x138 with about 15 knob changes. The kernel list, sorted by
+score, puts it between two functionally identical x138 copies, so it too reads about 0.953.
+
+**The teams above 0.953 are tuning x138 privately, using the board as the instrument.**
+Discussion 743929 (John Taylor, 09-27) reports x138 at 0.953 → 0.957 with a ported
+post-processing stage the post does not name, then two one-line steps: **ILP division
+weight 1.2 → 0.4** (+0.001), then **readmit min score 0.965 → 0.94** (+0.001). Both changed
+the node count by under 1 %. His method: submit each knob in both directions in one round,
+write down in the description what each result would mean before it comes back, and
+visible-run the next round's candidates while the graded reruns run. Discussion 743222
+(imissher) reports eight single-variable board tests on the 0.947 stack, all negative.
+Detection threshold 0.960 and 0.970 both lose, so 0.965 is already optimal. Extra TTA views,
+a secondary detection weight of 0.65 and relink off all lose too. **A submission must
+finish before the deadline to count** (743765), and graded reruns take 6–11 h. So the last
+submissions go in by about 12:00 UTC on 09-29.
+
+**x138's repair stage is worth about +0.05 on the board, measured by accident.** Aman's
+`optimized-biohub-max-score` v6 uses `SAFE_DIV_HORIZON_FRAMES` without ever defining it.
+The resulting NameError is caught per dataset, and the notebook falls back to "the ILP
+graph with basic filtering": no relink, readmission, gap closing, safe divisions or
+smoothing. Its visible log shows `REPAIR FAILED` on all four datasets, and the version
+scored **0.901**; its best version, v4, scored 0.953. `kernels.LegacyKernelsService/
+GetKernelViewModel` returns `bestPublicScore` and the current version's score for any
+public notebook, and that is how this was found. The top 60 by score top out at 0.953.
+
+**Why division weight 0.4 is not a fine knob.** The ILP sees the greedily resolved graph.
+Its candidate edges are ≥ 0.48 and every target has at most one parent, so a fork is kept
+iff its second edge's probability exceeds the division weight. At ≥ 1.0 no fork survives;
+at 0.4, and at 0.25, every candidate fork does. So 0.25 ≈ 0.4, and the informative second
+point is 0.7, which keeps only forks with p > 0.7.
+
+**Kaggle allows two concurrent batch GPU sessions** (`Maximum batch GPU session count of 2
+reached` on push). Each x138 visible run takes ~18–24 min, so five arms need about an hour
+of visible runs. `$CLAUDE_JOB_DIR/tmp/r1/arm.sh` retries the push, waits, checks the log
+for the patched config and a written submission, then submits.
+
+**Round 1, submitted 09-28, every arm built on J2 = x138 + division 0.4 + readmit 0.94:**
+
+| arm | change on top of J2 | ref | board |
+|---|---|---|---|
+| `r1-j2` | none (John's two knobs) | `56637384` | **0.956** |
+| `r1-div07` | division 0.7 | `56638506` | 0.955 |
+| `r1-rm092` | readmit 0.92 | `56637974` | 0.954 |
+| `r1-bonus5` | relink learned bonus 1.0 → 5.0 | `56638417` | 0.954 |
+| `r1-head075` | V1284 shift × 0.75 (our LOEO heads' best cross-embryo shrink) | `56637805` | 0.954 |
+
+**John's two knobs transfer to plain x138 in full: 0.953 → 0.956**, so J2 alone is worth
++0.003. That put us at **rank 275 of 3,972** at 18:10 UTC on 09-28, back inside the top
+10 % (cutoff rank 397, 0.954). All four steps on top of J2 lost, so J2 is a local optimum
+on four axes. Division 0.4 beats 0.7, which means keeping more candidate forks is better.
+Readmit 0.94 beats 0.92. Relink bonus 1.0 beats 5.0. Head scale 1.0 beats 0.75.
+
+**Round 2 scored, and every arm lost against J2's 0.956:**
+
+| arm on J2 | ref | board |
+|---|---|---|
+| symmetry 0.6 → 0.9 | `56655546` | **0.950** |
+| V1284 shift × 1.25 | `56655571` | 0.954 |
+| ILP candidate threshold 0.44 | `56655587` | 0.954 |
+
+**Symmetry 0.9 lost 0.006, while the in-sample x138 audit predicted +0.003.** On train
+movies the checkpoints detect the extra daughters reliably. On the hidden embryo the
+looser gate admits forks that the scorer charges as FPs. This is the same fold-1 sign our
+own LOEO gave, and the sixth time a division-gate relaxation has reversed off-sample. Head
+scale 1.0 beats both 0.75 and 1.25 by 0.002. Candidate threshold 0.48 beats 0.44.
+**Nine single-knob perturbations of J2 have now been read, and all nine lost 0.001–0.006.**
+J2 is a sharp optimum on the public 29 %.
+
+**Round 3, the last two slots of 09-29, submitted 06:30 UTC:** `56665403` candidate
+threshold 0.52 scored **0.954**, so 0.48 beats both 0.44 and 0.52 by 0.002. `56665406`
+bidirectional weight 0.25 scored **0.956**, a tie with J2 at the board's resolution.
+**No slots remain.** Board at 13:48 UTC: 3,999 teams, top 10 % = rank 399 at 0.955, **us
+rank 295 at 0.956**. Our J2 went in at 10:07 on 09-28, early inside a 149-team 0.956 pile
+(ranks 243–391).
+
+**Final pair, recommended: `56637384` (J2, 0.956) + `56665406` (J2 + bidirectional 0.25,
+0.956).** Kaggle scores the better of the two on the private 71 %. The second pick should
+be the variant most likely to beat J2 there, which is a near-twin at the same public
+score rather than a hedge several thousandths behind. The conservative alternative for the
+second slot is `56522624` (plain x138, 0.953). It pays only if J2's two knobs are a
+public-only effect, and two independent stacks moved the same way. Selection is a human
+action on the website and must happen before 23:59 UTC on 09-29.
+
+**The endgame lesson.** Two one-line knobs someone else found on the board were worth
++0.003. Our own instruments could not see them: E7 and contaminated CV went 0/4 on
+positives, and the in-sample audit called symmetry 0.9 at +0.003 against a board −0.006.
+Twelve further board reads around J2 then lost or tied. When the only unbiased instrument
+is the public board, read it in both directions per knob and write the reading down before
+submitting. Expect most perturbations of a board-tuned optimum to lose.
+
+**Round 2 went in at 00:01 UTC on 09-29**: `56655546` sym09, `56655571` head125, `56655587` cand044 (scores pending). The round-3 combos are visible-run and ready: sym09+head125, sym09+cand044, head125+cand044 and all three. Originally planned as: **Round 2 is auto-submitted at 00:01 UTC on 09-29** by `tmp/r2/midnight.sh` from
+`tmp/r2/plan.txt`. It has three arms on J2:
+- `sym09`: symmetry 0.9;
+- `head125`: V1284 shift × 1.25, the other direction of the × 0.75 read;
+- `cand044`: ILP candidate threshold 0.44, the next step on the fork-admission axis that
+  division 0.7 → 0.4 confirmed.
+
+Also visible-run and ready: `cand052`, `bidir025` (both bidirectional guards patched;
+the second one lives in cell 5), `mtl5` and `gapfill04`. The last two slots go in
+around 08:00 UTC, once round 2 has scored.
+
+J2's visible run: 122,250 nodes against x138's 121,219 (+0.85 %), and readmissions per
+placeholder movie 94/662/84/497 → 164/1116/104/792.
+
+**The teammate's division diagnosis, run locally (`divdiag_for_teammate.zip`).** These are
+two x138 builds that use training movies as the test set, with a read-only hook in front
+of the safe-division pass. Build 1 has the 87 movies that hold all 151 GT divisions; build
+3 has 56 division-free movies. `$CLAUDE_JOB_DIR/tmp/launch_dd.sh` runs them against the
+stand-in `/kaggle` tree, and `scripts/x138_divdiag_audit.py` labels the dumps against GT.
+The movies are in-sample for every checkpoint involved. Where each of the 151 goes:
+
+| bucket | n | share |
+|---|---|---|
+| **second daughter already has another parent** (lost to the one-to-one relink) | 58 | 38 % |
+| a node was never detected | 26 | 17 % |
+| **added (true fork)** | 18 | 12 % |
+| refused by divergence / symmetry / parent distance | 17 / 14 / 9 | 11 / 9 / 6 % |
+| other (divider not single-child, DeepCenter, NN, cap, outside gates) | 9 | 6 % |
+
+x138 adds 1,087 forks in these 87 movies, only 64 of them on an annotated source, and 46
+are charged as FP. The 56 division-free movies add 12 more FPs. In-sample divJ is **0.086**.
+The largest bucket is structural: the relink is one-to-one, so the second daughter goes
+to a nearby unannotated cell, median 2.3 µm from it. The pass only considers orphans, so
+no gate reaches her. No geometric re-parenting rule separates these 18 cases from
+millions of false candidates (`tmp/reparent_audit.py`).
+
+**Symmetry is the one gate worth moving.** Simulating the pass with its caps reproduces
+x138 exactly at τ 0.6 (1,087 forks, 18 TP, 46 FP). Pooled over both builds:
+
+| τ | TP | annotated FP | divJ |
+|---|---|---|---|
+| 0.6 (x138) | 18 | 58 | 0.086 |
+| 0.8 | 23 | 74 | 0.102 |
+| **0.9** | **27** | **82** | **0.116** |
+| 1.0 | 27 | 89 | 0.113 |
+
+That is about +0.003 of score in-sample. Our own pipeline's LOEO read symmetry 0.9 at +0.0006
+on fold 0 and −0.0021 on fold 1, so the board has to decide. Built as `volt-x138-j2-sym09`.
+
 ### 2026-09-24 — READ THIS FIRST: the frontier is a public notebook, and the endgame is "it plus a real increment"
 
 **The board moved while we tuned.** 3,873 teams on 2026-09-24. A new pile at **0.953**:
